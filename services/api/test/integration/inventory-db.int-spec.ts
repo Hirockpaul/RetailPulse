@@ -3,7 +3,7 @@
  * Each test runs in its own transaction and rolls back, except the concurrency test.
  */
 import pg from 'pg';
-import { prepareTestDatabase } from './test-db';
+import { prepareTestDatabase, releaseTestDatabase } from './test-db';
 
 let url: string;
 let db: pg.Client;
@@ -25,7 +25,10 @@ beforeAll(async () => {
   storeId = rows[0].location_id;
 }, 60_000);
 
-afterAll(async () => db?.end());
+afterAll(async () => {
+  await db?.end();
+  await releaseTestDatabase();
+});
 
 beforeEach(() => db.query('BEGIN'));
 afterEach(() => db.query('ROLLBACK'));

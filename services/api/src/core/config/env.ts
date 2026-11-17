@@ -3,11 +3,23 @@ import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { z } from 'zod';
 
-const EnvSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  DATABASE_URL: z.string().url().startsWith('postgres'),
-});
+const EnvSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    DATABASE_URL: z.string().url().startsWith('postgres'),
+    /** Run the event worker inside this process. Default: on, except when NODE_ENV=test. */
+    EVENT_WORKER_ENABLED: z.enum(['true', 'false']).optional(),
+    /** How often the event worker looks for new events. */
+    EVENT_POLL_MS: z.coerce.number().int().min(50).max(60_000).default(1000),
+  })
+  .transform((env) => ({
+    ...env,
+    EVENT_WORKER_ENABLED:
+      env.EVENT_WORKER_ENABLED === undefined
+        ? env.NODE_ENV !== 'test'
+        : env.EVENT_WORKER_ENABLED === 'true',
+  }));
 
 export type Env = z.infer<typeof EnvSchema>;
 

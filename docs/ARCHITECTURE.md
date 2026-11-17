@@ -17,7 +17,6 @@ flowchart LR
   api[Core API<br/>NestJS modular monolith :3000]
   db[(PostgreSQL<br/>source of truth)]
   fc[Forecasting service<br/>FastAPI :8000]
-  kafka[[Kafka<br/>optional, Day 5]]
   pos([POS simulator<br/>scripts/simulation])
 
   user --> web -->|HTTP /api/v1| api
@@ -25,7 +24,8 @@ flowchart LR
   api -->|SQL, transactions| db
   api -->|POST /forecast/run| fc
   fc -->|read sales, write forecast.*| db
-  api -->|outbox publisher| kafka -->|consumers| api
+  api -->|outbox rows, same transaction| db
+  db -->|event worker inside the API| api
 ```
 
 | Component       | Owns                                             | Never does                                |
@@ -34,7 +34,7 @@ flowchart LR
 | Core API        | All business rules, all writes to operational data | Long-running ML work                    |
 | PostgreSQL      | Truth for stock, orders, ledger, recommendations | —                                         |
 | Forecasting     | Demand models, backtests, `forecast.*` tables    | Writing inventory, orders or recommendations |
-| Kafka (Day 5)   | Delivering committed events to consumers         | Being required for a sale to succeed      |
+| Event worker (in the API) | Delivering committed outbox events to consumers | Being required for a sale to succeed |
 
 **Why a modular monolith:** one deployable API keeps transactions simple (a sale, its ledger
 entry and its outbox event commit together). Modules give the separation of microservices
@@ -75,19 +75,20 @@ flowchart TB
   auth --> database
   catalog --> database
   locations --> database
-  inventory --> catalog & locations
+  inventory --> catalog & locations & events
   sales --> inventory
   transfers --> inventory & locations
   purchasing --> inventory
   replenishment --> inventory & purchasing & transfers
   events --> database
-  alerts --> events
+  alerts --> events & inventory
 ```
 
 - Arrows point at what a module may call. **No cycles.**
 - **`inventory` is the only module that writes `inventory_balances` and `inventory_ledger`.**
   Sales, transfers, purchasing and adjustments all call `InventoryService.applyMovement()`.
 - `events` writes the outbox *inside the caller's transaction* (it receives the `client`).
+  It knows nothing about its consumers: they register themselves with the `ConsumerRegistry`.
 
 ### 2.3 Cross-cutting behaviour (already in place)
 
@@ -120,7 +121,7 @@ sequenceDiagram
   I->>DB: INSERT inventory_ledger (deltas, reason, ref)
   Note over DB: BEFORE INSERT trigger: UPDATE inventory_balances (row lock),<br/>CHECKs reject oversell, after-values copied onto the ledger row
   I->>I: CHECK violation → 409 INSUFFICIENT_STOCK
-  I->>DB: INSERT outbox_events (Day 5)
+  I->>DB: INSERT outbox_events (same transaction)
   S->>DB: store idempotency response
   S->>DB: COMMIT  (all or nothing)
 ```
@@ -135,7 +136,7 @@ Guarantees and how they are enforced:
 | Ledger can't be rewritten         | DB trigger rejects `UPDATE`/`DELETE` on `inventory_ledger`       |
 | Movements go the right direction  | `ledger_delta_matches_type` CHECK (e.g. `SALE` must be negative, `RESERVATION` only touches reserved) |
 | Retries don't double-apply        | `idempotency_keys` table, unique per (key, endpoint)             |
-| Event published iff tx committed  | Outbox row in the same transaction (Day 5)                       |
+| Event exists iff tx committed     | Outbox row in the same transaction; a rolled-back change creates no event (tested) |
 
 Lock ordering: when a movement touches several balance rows (multi-line sale, transfer), lock
 them in a fixed order (`product_id, location_id` ascending) to avoid deadlocks.
@@ -176,7 +177,7 @@ erDiagram
 | 2   | `categories`, `suppliers`, `products`, `supplier_products`, `locations`, `inventory_balances`, `inventory_ledger` |
 | 3 ✅ | `sales_orders`, `sales_order_lines`, `reservations`, `idempotency_keys`                   |
 | 4 ✅ | `users`, `user_store_access`, `sessions`, `stock_transfers`, `stock_transfer_lines` (+ ledger `actor_id` FK) |
-| 5   | `outbox_events`, `processed_events`, `alerts`                                              |
+| 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6   | `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations`, `forecast.forecast_runs`, `forecast.forecast_points` |
 
 ### Key table shapes
@@ -266,6 +267,12 @@ Transitions are checked in the service and guarded in SQL
 Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound` per row: units on
 `APPROVED` / `DISPATCHED` transfers heading to that location (derived, never stored).
 
+| `GET /alerts`                         | `status, kind, locationId, productId, page, pageSize` | store managers: own stores only |
+| `POST /alerts/rescan`                 | —                                              | admin / inventory manager |
+| `GET /ops/events`                     | —                                              | backlog, retries, dead letters, worker state — admin / inventory manager |
+| `GET /ops/events/dead`                | `page, pageSize`                               | admin / inventory manager |
+| `POST /ops/events/:id/replay`         | —                                              | `409 EVENT_ALREADY_PENDING` if still queued |
+
 ### Roles and access
 
 | Capability                                   | Admin | Inventory mgr | Store mgr (own stores) | Analyst |
@@ -294,17 +301,40 @@ Business errors: `409 INSUFFICIENT_STOCK` (with `details`), `409 PRODUCT_INACTIV
 
 ---
 
-## 6. Events (Day 5)
+## 6. Events (no message broker)
 
 ```mermaid
 flowchart LR
-  tx[Business transaction] -->|same COMMIT| outbox[(outbox_events)]
-  outbox --> pub[Publisher loop<br/>FOR UPDATE SKIP LOCKED]
-  pub -->|at-least-once| topic[[inventory.movements]]
-  topic --> cons[Alert consumer]
-  cons -->|eventId seen?| processed[(processed_events)]
-  cons -->|after 3 failures| dlq[[inventory.movements.dlq]]
+  tx[Stock movement<br/>applyMovement] -->|same COMMIT| outbox[(outbox_events)]
+  outbox --> w[Event worker in the API<br/>claims one event: FOR UPDATE SKIP LOCKED]
+  w -->|first time for this consumer?| processed[(processed_events)]
+  w --> cons[Low-stock consumer]
+  cons --> alerts[(alerts)]
+  w -->|consumer throws: roll back, retry with backoff| outbox
+  w -->|3rd failure| dead[DEAD rows = dead letters]
 ```
+
+There is deliberately **no Kafka**: nothing in RetailPulse needs a broker, and the valuable part —
+the transactional outbox with idempotent consumers — works on PostgreSQL alone. A broker can be
+added later by writing one more consumer that forwards events (see decision #26).
+
+**How one event is processed** (one transaction per event, `EventDispatcher`):
+
+1. Claim the oldest due event (`FOR UPDATE SKIP LOCKED`), so several workers never take the same one.
+2. For each consumer of that event type: insert `(consumer, eventId)` into `processed_events`;
+   if it already exists the consumer already handled this event → **skip** (idempotent).
+3. Run the consumer; its writes happen in the same transaction (a `SAVEPOINT` wraps them).
+4. Success: mark the event `PROCESSED` and commit. Failure: roll back to the savepoint (the
+   consumer's partial writes disappear), record `attempts + 1`, `last_error` and a backoff
+   (2 s, 4 s); after **3** attempts the event becomes `DEAD`.
+5. Operators see the backlog on `GET /ops/events`, list `DEAD` events on `/ops/events/dead`, and
+   re-deliver one with `POST /ops/events/:id/replay` (consumers that already handled it skip it).
+
+Guarantees: at-least-once delivery, effectively-once effects; a sale never depends on the worker
+(with the worker stopped, events simply queue); a "due" brand-new event never depends on the
+wall clock (clocks can step backwards — retries are the only clock-based wait).
+Not guaranteed: strict ordering (a failing event is retried later while newer ones continue), so
+consumers judge **current state**, not the event's numbers.
 
 Envelope:
 
@@ -315,12 +345,36 @@ Envelope:
   "schemaVersion": 1,
   "occurredAt": "2026-01-01T10:00:00Z",
   "correlationId": "uuid",
+  "aggregateType": "inventory_balance",
   "aggregateId": "<product_id>:<location_id>",
-  "payload": { "movementType": "SALE", "onHandDelta": -2, "onHandAfter": 6 }
+  "payload": {
+    "ledgerId": "123", "productId": "…", "locationId": "…", "movementType": "SALE",
+    "onHandDelta": -2, "reservedDelta": 0, "onHandAfter": 6, "reservedAfter": 0,
+    "referenceType": "SALES_ORDER", "referenceId": "…", "actorId": "…"
+  }
 }
 ```
 
-The sale path never waits for Kafka. If Kafka is down, events wait in the outbox.
+Payloads carry business data only — no free-text ledger reason, no personal data.
+The columns of an event are immutable after insert (a trigger rejects edits); only its
+processing state (status, attempts, error) changes.
+
+### Low-stock alerts (the first consumer)
+
+After every movement the `low-stock-alerts` consumer judges the **current** stock of that
+product at that location (`available = on hand − reserved`) and makes the alerts match:
+
+| State                       | Alert                              | Severity |
+| --------------------------- | ---------------------------------- | -------- |
+| `available ≤ 0`             | `OUT_OF_STOCK`                     | HIGH     |
+| `available < one pack`      | `LOW_STOCK`                        | MEDIUM   |
+| otherwise                   | none — any open alert is resolved  | —        |
+
+At most one **OPEN** alert exists per product, location and kind (a partial unique index), so
+duplicate or concurrent processing cannot create two. Each alert stores its inputs
+(`available`, `onHand`, `reserved`, `packSize`, the event) so the UI can answer "why?".
+`POST /alerts/rescan` re-checks every low position (use it after loading data that did not go
+through events, such as the seed). Day 6 replaces "one pack" with a forecast-based reorder point.
 
 ---
 
@@ -355,7 +409,7 @@ RetailPulse/
 ├── README.md                        what it is + quick start
 ├── docs/
 │   └── ARCHITECTURE.md ✅           this file
-├── docker-compose.yml ✅            postgres by default; kafka/observability profiles later
+├── docker-compose.yml ✅            postgres (observability profile later)
 ├── .env.example ✅
 ├── package.json ✅                  npm workspaces + root scripts
 ├── eslint.config.mjs ✅  .prettierrc.json ✅
@@ -385,13 +439,13 @@ RetailPulse/
 │   │   │       ├── reservations/ ✅
 │   │   │       ├── transfers/ ✅    request → approve → dispatch → receive / cancel
 │   │   │       ├── auth/ ✅         login, logout, me, login throttle
-│   │   │       ├── events/ (D5)     outbox writer, publisher, consumers
-│   │   │       ├── alerts/ (D5)
+│   │   │       ├── events/ ✅       outbox writer, worker (dispatcher), retries, dead letters, ops endpoints
+│   │   │       ├── alerts/ ✅
 │   │   │       ├── purchasing/ (D6)
 │   │   │       └── replenishment/ (D6)
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
-│   │       └── integration/ ✅      *.int-spec.ts against a real <db>_test database
+│   │       └── integration/ ✅      *.int-spec.ts, each in its own throw-away database
 │   │
 │   └── forecasting/                 FastAPI + ML
 │       ├── app/
@@ -466,13 +520,13 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 4 | Own tiny migration runner | No dependency; checksums stop edited migrations | Fewer features than big tools |
 | 5 | Integer unit quantities | No fractional stock in this domain | Weight-based items out of scope |
 | 6 | Ledger deltas + after-values | Balance is provable from the ledger | Slightly larger rows |
-| 7 | Transactional outbox (D5) | Event iff commit; Kafka outage doesn't block sales | Publisher process to run |
+| 7 | Transactional outbox | Event iff commit; the worker being down never blocks a sale | Delivered by a worker (see #26) |
 | 8 | Forecasting writes only `forecast.*` | ML can't mutate operational data | API must read forecast tables |
 | 9 | npm workspaces, one lockfile | Simple, built in | No task caching |
 | 10 | NestJS 12 with `module: nodenext` | Nest 12 is ESM-only; matches official template | Jest needs `--experimental-vm-modules` |
 | 11 | Balances maintained by a ledger trigger (Day 2) | The DB itself guarantees balance = Σ ledger, even for scripts/SQL that bypass the API | Logic lives partly in SQL; covered by integration tests |
 | 12 | Hash router + `useAsync` hook in the web app | Five screens don't justify a router/data library | Revisit if the UI grows a lot |
-| 13 | Integration tests use a separate `<db>_test` database | Tests never touch dev data; reseeded per test file | Needs Postgres running (`npm run db:up`) |
+| 13 | Integration tests use separate databases (refined by #32: one per test file) | Tests never touch dev data; reseeded per test file | Needs Postgres running (`npm run db:up`) |
 | 14 | Idempotency key row lives in the same transaction as the work (Day 3) | A failed request leaves no key, so it can be retried; concurrent duplicates wait, then replay | Keys accumulate; a cleanup job is planned (Day 7) |
 | 15 | Multi-line writes lock balance rows in `product_id` order | Prevents deadlocks between concurrent multi-line sales (tested) | Callers must use `sortByProduct()` |
 | 16 | Damaged returns write a ledger row with `on_hand_delta = 0` and the quantity in the reason text | Keeps the ledger complete without making damaged goods sellable | Damaged quantity is not queryable as a number yet |
@@ -485,3 +539,10 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 23 | Approval does not reserve stock; dispatch fails with `INSUFFICIENT_STOCK` if the source ran short | Keeps transfers simple; stock stays sellable until it physically leaves | A sale can consume stock between approval and dispatch |
 | 24 | Transfers send and receive the full requested quantity | No partial-delivery workflow in the MVP; shortages are fixed with an adjustment | No per-line discrepancy tracking |
 | 25 | Transfer status order is enforced by a DB trigger + CHECK, not only by the service | No code path or manual SQL can skip a step | Logic partly in SQL; covered by tests |
+| 26 | **No Kafka**: PostgreSQL outbox + a worker inside the API (user decision, Day 5) | No extra container or ~1 GB of RAM; nothing here needs a broker; the outbox/idempotent-consumer pattern is the same | Only in-process consumers; to feed another system later, add a consumer that publishes to a broker |
+| 27 | One transaction per event: claim → consumers → mark processed (`SAVEPOINT` around consumers) | A consumer's writes and "handled" commit or roll back together; a failure leaves no partial effect | Events are processed one at a time per worker |
+| 28 | `processed_events (consumer, event_id)` makes consumers idempotent | Replays and duplicates are harmless (tested, incl. 3 concurrent workers) | Table grows; cleanup with the outbox (Day 7) |
+| 29 | Dead letters are `DEAD` rows in `outbox_events`, not a second table | One place to monitor and replay; no copying | Listing dead events filters the same table |
+| 30 | Alerts judge *current* stock, not the event's numbers | Correct even if events arrive late or out of order; re-processing is harmless | One extra read per event |
+| 31 | A never-attempted event is due immediately; only retries wait on the clock | The test machine's clock stepped backwards (up to ~480 ms) and freshly created events looked "in the future" — found by stress-testing | Retry backoff can be a little longer after a backwards clock step |
+| 32 | Integration tests use one throw-away database per test file | Two test runs at once (yours, CI, an editor) used to wipe each other's data; found while chasing flaky tests | ~3 s extra setup per file |

@@ -158,3 +158,16 @@ export interface MovementResult {
   reservedAfter: number;
   occurredAt: Date;
 }
+
+/** Current stock of one product at one location, with what is needed to judge "is it low?". */
+export interface StockPosition {
+  productId: string;
+  locationId: string;
+  sku: string;
+  productName: string;
+  packSize: number;
+  locationCode: string;
+  onHand: number;
+  reserved: number;
+  available: number;
+}

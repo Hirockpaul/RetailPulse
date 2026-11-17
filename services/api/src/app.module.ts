@@ -4,8 +4,10 @@ import { AuthCoreModule } from './core/auth/auth-core.module';
 import { AuthGuard } from './core/auth/auth.guard';
 import { ENV, type Env } from './core/config/env';
 import { DatabaseModule } from './core/database/database.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { EventsModule } from './modules/events/events.module';
 import { HealthModule } from './modules/health/health.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { LocationsModule } from './modules/locations/locations.module';
@@ -35,6 +37,8 @@ export class AppModule {
         SalesModule,
         ReservationsModule,
         TransfersModule,
+        EventsModule,
+        AlertsModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

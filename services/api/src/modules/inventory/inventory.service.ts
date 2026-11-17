@@ -9,6 +9,8 @@ import {
 } from '../../core/idempotency/idempotency.service';
 import type { Page } from '../../core/http/query';
 import { CatalogService } from '../catalog/catalog.service';
+import { INVENTORY_MOVEMENT_RECORDED } from '../events/events.schemas';
+import { EventsService } from '../events/events.service';
 import { LocationsService } from '../locations/locations.service';
 import type { Location } from '../locations/locations.schemas';
 import { InventoryRepository } from './inventory.repository';
@@ -22,6 +24,7 @@ import type {
   MovementResult,
   ProductStockRow,
   ReceiptBody,
+  StockPosition,
   ReturnBody,
   WithAsOf,
 } from './inventory.schemas';
@@ -45,6 +48,7 @@ export class InventoryService {
     private readonly catalog: CatalogService,
     private readonly locations: LocationsService,
     private readonly idempotency: IdempotencyService,
+    private readonly events: EventsService,
   ) {}
 
   // ------------------------------------------------------------------ reads
@@ -99,11 +103,45 @@ export class InventoryService {
    * After an error the transaction is aborted by PostgreSQL, so callers must not continue.
    */
   async applyMovement(client: PoolClient, movement: Movement): Promise<MovementResult> {
+    let entry: MovementResult;
     try {
-      return await this.repo.insertLedgerEntry(client, movement);
+      entry = await this.repo.insertLedgerEntry(client, movement);
     } catch (err) {
       throw translateMovementError(err, movement);
     }
+
+    // Same transaction as the ledger row: the event exists if and only if the movement commits.
+    // Payload is business data only (no free-text reason, no personal data).
+    await this.events.record(client, {
+      eventType: INVENTORY_MOVEMENT_RECORDED,
+      aggregateType: 'inventory_balance',
+      aggregateId: `${entry.productId}:${entry.locationId}`,
+      correlationId: movement.correlationId,
+      occurredAt: entry.occurredAt,
+      payload: {
+        ledgerId: entry.ledgerId,
+        productId: entry.productId,
+        locationId: entry.locationId,
+        movementType: entry.movementType,
+        onHandDelta: entry.onHandDelta,
+        reservedDelta: entry.reservedDelta,
+        onHandAfter: entry.onHandAfter,
+        reservedAfter: entry.reservedAfter,
+        referenceType: movement.referenceType ?? null,
+        referenceId: movement.referenceId ?? null,
+        actorId: movement.actorId ?? null,
+      },
+    });
+    return entry;
+  }
+
+  /** Current stock for one product at one location (inside the caller's transaction). */
+  stockPosition(
+    client: PoolClient,
+    productId: string,
+    locationId: string,
+  ): Promise<StockPosition | null> {
+    return this.repo.stockPosition(client, productId, locationId);
   }
 
   // ------------------------------------------- movements driven directly by users

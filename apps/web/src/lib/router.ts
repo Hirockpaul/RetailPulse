@@ -7,6 +7,7 @@ export type Route =
   | { name: 'products' }
   | { name: 'product'; id: string }
   | { name: 'stock'; locationId?: string }
+  | { name: 'alerts' }
   | { name: 'transfers' }
   | { name: 'transfer'; id: string }
   | { name: 'health' }
@@ -19,6 +20,7 @@ export function parseRoute(hash: string): Route {
   }
   if (parts[0] === 'products' && parts.length === 2) return { name: 'product', id: parts[1] };
   if (parts[0] === 'stock' && parts.length <= 2) return { name: 'stock', locationId: parts[1] };
+  if (parts[0] === 'alerts' && parts.length === 1) return { name: 'alerts' };
   if (parts[0] === 'transfers' && parts.length === 1) return { name: 'transfers' };
   if (parts[0] === 'transfers' && parts.length === 2) return { name: 'transfer', id: parts[1] };
   if (parts[0] === 'health' && parts.length === 1) return { name: 'health' };
@@ -29,6 +31,7 @@ export const href = {
   products: () => '#/products',
   product: (id: string) => `#/products/${id}`,
   stock: (locationId?: string) => (locationId ? `#/stock/${locationId}` : '#/stock'),
+  alerts: () => '#/alerts',
   transfers: () => '#/transfers',
   transfer: (id: string) => `#/transfers/${id}`,
   health: () => '#/health',

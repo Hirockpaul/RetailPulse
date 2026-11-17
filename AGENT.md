@@ -22,7 +22,8 @@ Not a CRUD demo. Not over-engineered either.
 - **One API app** (NestJS modular monolith) + **one Python service** (forecasting). No other services.
 - **Plain SQL** migrations and queries with `pg`. No ORM.
 - **No Redis, Superset, Kubernetes, Java** unless the user approves a concrete need.
-- Kafka, Prometheus, Grafana run as **optional compose profiles**, never by default.
+- **No Kafka** (decision with the user, Day 5): events use the PostgreSQL outbox and an in-API
+  worker. Prometheus and Grafana, when added, are optional compose profiles, never by default.
 - No new framework/library without a concrete requirement. Prefer the standard library.
 - One package manager: **npm** (workspaces, one root `package-lock.json`). Python: `pip` + `.venv`.
 - Write the smallest code that satisfies the day's acceptance checklist, then stop.
@@ -35,7 +36,7 @@ Not a CRUD demo. Not over-engineered either.
 | API         | NestJS 11, TypeScript, `pg`, Zod (env + request validation) |
 | DB          | PostgreSQL 17                                               |
 | Forecasting | Python 3.12, FastAPI, Pandas, NumPy, scikit-learn, Pydantic |
-| Events      | Kafka (Day 5, compose profile `events`)                     |
+| Events      | PostgreSQL transactional outbox + in-API worker (no Kafka)  |
 | Tests       | Jest + Supertest (API), Pytest (Python)                     |
 | Lint/format | ESLint (flat config), Prettier, Ruff                        |
 
@@ -112,8 +113,14 @@ Transfer lifecycle: `REQUESTED → APPROVED → DISPATCHED → RECEIVED` (or `CA
 ### Events (Day 5+)
 
 - Transactional outbox; at-least-once delivery; consumers idempotent via `processed_events`.
-- Envelope: `eventId, eventType, occurredAt, schemaVersion, correlationId, aggregateId, payload`.
-- Retries with a limit, then a dead-letter topic. No secrets/PII in events.
+- Produce events only by calling `EventsService.record(client, …)` inside the transaction of the
+  change (today `InventoryService.applyMovement()` does it). Never publish after commit.
+- Add a consumer by implementing `EventConsumer` and registering it with the `ConsumerRegistry`.
+  Consumers must judge current state (events can be late or out of order) and keep all their
+  writes on the `client` they are given, so a failure rolls them back.
+- Envelope: `eventId, eventType, occurredAt, schemaVersion, correlationId, aggregateType, aggregateId, payload`.
+- Retries with backoff, 3 attempts, then `DEAD` (dead letter). No secrets/PII in events.
+- Never rely on the wall clock for "is a new event ready" (clocks step backwards).
 
 ### Forecasting & replenishment
 
@@ -203,16 +210,21 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   (store manager can't touch another store), login rate limit. Web: login + transfers page.
 - **Checklist:** transfer touches both locations only via ledger · authZ enforced server-side.
 
-### Day 5 — Events (outbox + Kafka)
+### Day 5 — Events (outbox, no Kafka) ✅
 
-- **A — Build:** `outbox_events` written inside the movement transaction; publisher loop
-  (`FOR UPDATE SKIP LOCKED`, batch, mark published); Kafka (KRaft, single broker) under
-  compose profile `events`; topic `inventory.movements`; consumer that raises
-  low-stock `alerts`; `processed_events` for idempotency; retry ×3 → `inventory.movements.dlq`.
-- **B — Verify:** committed tx ⇒ event eventually published · rolled-back tx ⇒ no event ·
-  same event twice ⇒ one alert · poison message ⇒ DLQ. Outbox backlog + consumer lag visible
-  on an `/api/v1/ops/events` endpoint.
-- **Checklist:** core sale works with Kafka **stopped** (outbox just queues).
+- **A — Build:** `outbox_events` written inside the movement transaction; an in-API worker
+  (`FOR UPDATE SKIP LOCKED`, one transaction per event) runs registered consumers; a consumer
+  raises low-stock `alerts`; `processed_events` for idempotency; retry ×3 with backoff, then
+  `DEAD` (dead letters). **Decision: no Kafka** — it adds a container and ~1 GB of RAM and
+  nothing here needs a broker.
+- **B — Verify:** committed tx ⇒ event · rolled-back tx ⇒ no event · same event twice ⇒ one
+  alert · poison event ⇒ dead letter, replay recovers it · three workers at once ⇒ each event
+  exactly once. Backlog, retries and dead letters visible on `/api/v1/ops/events`.
+- **Checklist:** core sale works with the worker **stopped** (events just queue) ·
+  worker stops cleanly on shutdown.
+- **Done notes:** web has an Alerts page and an events card on Health. Setting
+  `EVENT_WORKER_ENABLED=false` runs the API without the worker; tests use that and call
+  `dispatcher.runOnce()` themselves. Old events are not purged yet (Day 7).
 
 ### Day 6 — Forecasting & replenishment
 

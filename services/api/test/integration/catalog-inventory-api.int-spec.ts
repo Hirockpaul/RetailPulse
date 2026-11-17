@@ -6,7 +6,7 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
 import { loadEnv } from '../../src/core/config/env';
 import { DEMO, login } from './auth-helpers';
-import { prepareTestDatabase } from './test-db';
+import { prepareTestDatabase, releaseTestDatabase } from './test-db';
 
 const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 let app: INestApplication;
@@ -23,7 +23,10 @@ beforeAll(async () => {
   cookie = await login(app, DEMO.admin);
 }, 60_000);
 
-afterAll(async () => app?.close());
+afterAll(async () => {
+  await app?.close();
+  await releaseTestDatabase();
+});
 
 function expectNotFound(res: request.Response) {
   expect(res.status).toBe(404);

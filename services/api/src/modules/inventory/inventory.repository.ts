@@ -11,6 +11,7 @@ import type {
   Movement,
   MovementResult,
   ProductStockRow,
+  StockPosition,
 } from './inventory.schemas';
 
 /** Units on open transfers heading to this balance's location. Derived, never stored. */
@@ -143,5 +144,25 @@ export class InventoryRepository {
       ],
     );
     return rows[0];
+  }
+
+  /** Current on-hand / reserved for a pair (zero if never stocked); null if either id is unknown. */
+  async stockPosition(
+    client: PoolClient,
+    productId: string,
+    locationId: string,
+  ): Promise<StockPosition | null> {
+    const { rows } = await client.query<StockPosition>(
+      `SELECT p.id AS "productId", l.id AS "locationId", p.sku::text AS sku,
+              p.name AS "productName", p.pack_size AS "packSize", l.code::text AS "locationCode",
+              COALESCE(b.on_hand, 0) AS "onHand", COALESCE(b.reserved, 0) AS reserved,
+              COALESCE(b.on_hand - b.reserved, 0) AS available
+         FROM products p
+         CROSS JOIN locations l
+         LEFT JOIN inventory_balances b ON b.product_id = p.id AND b.location_id = l.id
+        WHERE p.id = $1 AND l.id = $2`,
+      [productId, locationId],
+    );
+    return rows[0] ?? null;
   }
 }

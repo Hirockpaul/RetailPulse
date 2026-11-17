@@ -2,6 +2,7 @@ import { Empty, Loading } from './components/Status';
 import { AuthProvider, useAuth, useUser } from './lib/auth';
 import { ROLE_LABEL } from './lib/permissions';
 import { href, type Route, useRoute } from './lib/router';
+import { AlertsPage } from './pages/AlertsPage';
 import { HealthPage } from './pages/HealthPage';
 import { LoginPage } from './pages/LoginPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
@@ -22,6 +23,7 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     to: href.transfers(),
     active: (r) => r.name === 'transfers' || r.name === 'transfer',
   },
+  { label: 'Alerts', to: href.alerts(), active: (r) => r.name === 'alerts' },
   { label: 'Health', to: href.health(), active: (r) => r.name === 'health' },
 ];
 
@@ -33,6 +35,8 @@ function Page({ route }: { route: Route }) {
       return <ProductDetailPage key={route.id} id={route.id} />;
     case 'stock':
       return <StockPage locationId={route.locationId} />;
+    case 'alerts':
+      return <AlertsPage />;
     case 'transfers':
       return <TransfersPage />;
     case 'transfer':

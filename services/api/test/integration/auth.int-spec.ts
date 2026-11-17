@@ -8,7 +8,7 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
 import { loadEnv } from '../../src/core/config/env';
 import { DEMO, demoPassword } from './auth-helpers';
-import { prepareTestDatabase } from './test-db';
+import { prepareTestDatabase, releaseTestDatabase } from './test-db';
 
 let app: INestApplication;
 let db: pg.Client;
@@ -30,6 +30,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await db?.end();
   await app?.close();
+  await releaseTestDatabase();
 });
 
 describe('POST /auth/login', () => {

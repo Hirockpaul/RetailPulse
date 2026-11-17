@@ -24,7 +24,7 @@ append-only ledger, forecasts demand, and suggests replenishment that a manager 
 | Core API            | Node.js, NestJS, TypeScript                    | Day 1 ✅  |
 | Database            | PostgreSQL 17 (plain SQL migrations)           | Day 1 ✅  |
 | Forecasting service | Python, FastAPI, Pandas, NumPy, scikit-learn   | Day 1 ✅  |
-| Event streaming     | Apache Kafka (optional compose profile)        | Day 5     |
+| Events              | PostgreSQL outbox + in-API worker (no Kafka)   | Day 5 ✅  |
 | Metrics             | Prometheus + Grafana (optional compose profile)| Day 7     |
 | Local infra         | Docker Compose                                 | Day 1 ✅  |
 
@@ -38,7 +38,7 @@ Redis and Superset from the original idea are **deferred** until a concrete need
                                    │    ▲                     │
                                    │    └── HTTP ── FastAPI forecasting (8000)
                                    │                          │ (reads sales history)
-                                   └── outbox ──▶ Kafka ──▶ consumers (alerts)   [Day 5]
+                                   └── outbox (same transaction) ──▶ worker ──▶ alerts
 ```
 
 - **Modular monolith** API: one NestJS app, one module per domain (catalog, inventory, orders…).
@@ -122,7 +122,8 @@ Open http://localhost:5173 and sign in with one of the **synthetic demo accounts
 
 Then use Products, Stock (per location), product detail (record sales, receipts, returns,
 adjustments and reservations, and watch the ledger update), Transfers (request, approve,
-dispatch, receive) and Health.
+dispatch, receive), **Alerts** (raised automatically after stock movements; admins and inventory
+managers can press *Re-scan stock* once after seeding) and Health (event worker status).
 
 Generate synthetic POS traffic against the running API (stock falls, some sales are rejected
 for no stock — that is expected):
@@ -166,7 +167,8 @@ npm run check
 
 Runs format check, lint, typecheck, unit tests and build for the TypeScript apps.
 
-Integration tests (real PostgreSQL; uses a separate `retailpulse_test` database, never your dev data):
+Integration tests (real PostgreSQL; every test file gets its own temporary database, created and dropped
+automatically, so your dev data is never touched and two runs can safely overlap):
 
 ```bash
 npm run test:int
