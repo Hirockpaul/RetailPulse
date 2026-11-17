@@ -710,6 +710,9 @@ describe('who can see what', () => {
     const waiting = (await admin().get('/ops/events').expect(200)).body.events;
     expect(waiting.pending).toBe(2);
     expect(waiting.oldestPendingSeconds).toBeGreaterThanOrEqual(0);
+    // The same backlog is exported to Prometheus (no session needed for /metrics).
+    const metrics = (await request(app.getHttpServer()).get('/metrics').expect(200)).text;
+    expect(metrics).toContain('retailpulse_outbox_events{state="pending"} 2');
     await drain();
     const after = (await admin().get('/ops/events').expect(200)).body.events;
     expect(after.pending).toBe(0);

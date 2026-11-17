@@ -9,6 +9,7 @@ import { PurchaseOrdersPage } from './pages/PurchaseOrdersPage';
 import { RecommendationDetailPage } from './pages/RecommendationDetailPage';
 import { ReplenishmentPage } from './pages/ReplenishmentPage';
 import { LoginPage } from './pages/LoginPage';
+import { OverviewPage } from './pages/OverviewPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { StockPage } from './pages/StockPage';
@@ -16,6 +17,7 @@ import { TransferDetailPage } from './pages/TransferDetailPage';
 import { TransfersPage } from './pages/TransfersPage';
 
 const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
+  { label: 'Overview', to: href.overview(), active: (r) => r.name === 'overview' },
   {
     label: 'Products',
     to: href.products(),
@@ -43,6 +45,8 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
+    case 'overview':
+      return <OverviewPage />;
     case 'products':
       return <ProductsPage />;
     case 'product':
@@ -103,7 +107,7 @@ function Shell() {
           <div className="flex items-center gap-6">
             <h1 className="text-lg font-semibold">RetailPulse</h1>
             {signedIn && (
-              <nav aria-label="Main" className="flex gap-1">
+              <nav aria-label="Main" className="flex flex-wrap gap-1">
                 {NAV.map((item) => {
                   const active = item.active(route);
                   return (

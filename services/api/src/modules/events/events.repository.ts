@@ -123,6 +123,26 @@ export class EventsRepository {
     return { rows: rows.rows, total: count.rows[0].total };
   }
 
+  /**
+   * Delete up to `batchSize` PROCESSED events older than `days`, with their handled marks.
+   * DEAD and PENDING events are never purged. One statement: the FK from processed_events is
+   * checked at its end, after both deletes. Returns the number of events removed.
+   */
+  async purgeProcessed(days: number, batchSize: number): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(
+      `WITH doomed AS (
+         SELECT id FROM outbox_events
+          WHERE status = 'PROCESSED' AND processed_at < now() - make_interval(days => $1)
+          ORDER BY seq LIMIT $2
+          FOR UPDATE SKIP LOCKED),
+       marks AS (DELETE FROM processed_events WHERE event_id IN (SELECT id FROM doomed)),
+       events AS (DELETE FROM outbox_events WHERE id IN (SELECT id FROM doomed) RETURNING 1)
+       SELECT COUNT(*)::int AS n FROM events`,
+      [days, batchSize],
+    );
+    return rows[0].n;
+  }
+
   /** Put a finished or dead event back in the queue. Returns false if it was already pending. */
   async requeue(id: string): Promise<'requeued' | 'already-pending' | 'not-found'> {
     const updated = await this.db.query(

@@ -16,7 +16,10 @@ INTERVAL_Z = 1.2816  # 80% prediction interval from backtest errors
 
 
 def _load_dotenv() -> None:
-    candidates = (Path.cwd() / ".env", Path(__file__).resolve().parents[3] / ".env")
+    # The repo root is three levels up in a checkout; a container image (/app/app/config.py)
+    # is shallower and gets its settings from the environment instead.
+    parents = Path(__file__).resolve().parents
+    candidates = [Path.cwd() / ".env"] + ([parents[3] / ".env"] if len(parents) > 3 else [])
     for candidate in candidates:
         if not candidate.is_file():
             continue

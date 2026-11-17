@@ -25,8 +25,9 @@ append-only ledger, forecasts demand, and suggests replenishment that a manager 
 | Database            | PostgreSQL 17 (plain SQL migrations)           | Day 1 ✅  |
 | Forecasting service | Python, FastAPI, Pandas, NumPy, scikit-learn   | Day 6 ✅  |
 | Events              | PostgreSQL outbox + in-API worker (no Kafka)   | Day 5 ✅  |
-| Metrics             | Prometheus + Grafana (optional compose profile)| Day 7     |
-| Local infra         | Docker Compose                                 | Day 1 ✅  |
+| Metrics             | Prometheus + Grafana (optional compose profile)| Day 7 ✅  |
+| Local infra         | Docker Compose (Postgres; full demo profile)   | Day 7 ✅  |
+| End-to-end test     | Playwright (one happy path)                    | Day 7 ✅  |
 
 Redis and Superset from the original idea are **deferred** until a concrete need appears
 (see `AGENT.md` → "Keep it simple").
@@ -56,7 +57,8 @@ RetailPulse/
 ├── apps/web/src/
 │   ├── api/                  fetch client + typed API calls
 │   ├── components/           shared UI pieces
-│   └── pages/                one component per screen
+│   └── pages/                one component per screen (Overview is the landing page)
+├── apps/web/e2e/             Playwright happy path
 ├── services/api/
 │   ├── migrations/           Plain SQL migrations (0001_*.sql, 0002_*.sql …)
 │   ├── scripts/migrate.mjs   Tiny migration runner (checksums + advisory lock)
@@ -66,13 +68,51 @@ RetailPulse/
 ├── services/forecasting/     FastAPI forecasting service
 ├── docs/ARCHITECTURE.md      System design
 ├── .github/workflows/ci.yml  Lint, typecheck, test, migrate
-├── docker-compose.yml        PostgreSQL (more services added as optional profiles)
+├── docker-compose.yml        PostgreSQL; profiles `full` (whole app) and `observability`
+├── ops/observability/        Prometheus config + Grafana dashboard
+├── scripts/simulation/       POS simulator, `npm run demo`, `npm run measure`
 ├── .env.example
 ├── AGENT.md                  Rules + 7-day build plan for AI coding agents
 └── README.md
 ```
 
-## Quick start (WSL2 / Linux)
+## Run the whole demo in Docker (fastest)
+
+Requirements: Docker with Compose. From a fresh clone:
+
+```bash
+cp .env.example .env
+```
+
+```bash
+docker compose --profile full up --build -d --wait
+```
+
+That builds three images, migrates and seeds the database with **synthetic** data, generates
+12 months of synthetic sales history, and starts the API, the forecasting service and the web
+app. Open **http://localhost:8080** and sign in as `inventory@retailpulse.test` with the
+`DEMO_PASSWORD` from your `.env`. The first build takes a few minutes (2.5 min measured on a laptop).
+
+Then, in the app: **Replenishment → Refresh forecasts** (about 30 s), and start at **Overview**.
+To also simulate shop traffic and fill in alerts and recommendations from the command line
+(needs Node; uses the API on port 3000 like any client):
+
+```bash
+npm install && npm run demo
+```
+
+Stop it with `docker compose --profile full down` (add `-v` to also delete the database volume).
+The full profile uses the same PostgreSQL container and volume as local development, and ports
+3000 and 8080: stop `npm run dev:api` first.
+
+**Metrics (optional):** Prometheus on http://localhost:9090 and Grafana on http://localhost:3001
+(dashboard *RetailPulse API*: requests, p95 latency, errors, outbox backlog; anonymous read-only):
+
+```bash
+docker compose --profile full --profile observability up -d --wait
+```
+
+## Quick start for development (WSL2 / Linux)
 
 Requirements: Node 20+ (tested on 24), Python 3.12, Docker with Compose.
 
@@ -125,11 +165,18 @@ adjustments and reservations, and watch the ledger update), Transfers (request, 
 dispatch, receive), **Alerts** (raised automatically after stock movements; admins and inventory
 managers can press *Re-scan stock* once after seeding) and Health (event worker status).
 
-Generate synthetic POS traffic against the running API (stock falls, some sales are rejected
-for no stock — that is expected):
+Generate synthetic POS traffic against the running API (it signs in as the synthetic inventory
+manager; stock falls, some sales are rejected for no stock — that is expected):
 
 ```bash
 npm run sim:pos -- --sales=100 --concurrency=4
+```
+
+Or do the whole demo setup at once — migrate, seed, POS traffic, alert re-scan and, if the
+forecasting service is running, a forecast plus recommendations (all through the API):
+
+```bash
+npm run demo
 ```
 
 > **Security note:** every API route needs a session and an allowed role (see
@@ -178,6 +225,8 @@ npm run forecast:test
 | `GET http://localhost:8000/health`    | Forecasting service status            |
 | `POST http://localhost:3000/api/v1/forecasts/run` | Start a forecast run (admin / inventory manager) |
 | `GET http://localhost:3000/api/v1/replenishment/recommendations` | Suggested transfers and orders |
+| `GET http://localhost:3000/api/v1/overview` | Landing-page summary: stock-outs, at risk, excess, freshness |
+| `GET http://localhost:3000/metrics` | Prometheus metrics (outside `/api/v1`; not proxied by the web container) |
 
 All endpoints: [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-api-conventions).
 
@@ -201,6 +250,66 @@ Python:
 ```bash
 cd services/forecasting && .venv/bin/ruff check . && .venv/bin/pytest
 ```
+
+End-to-end (Playwright, one happy path: sign in → Overview → receive and sell stock → transfer
+from a DC to a store through every step). It builds the API, creates its own `<db>_e2e`
+database and runs on ports 3100/5174, so it does not disturb your dev servers or data.
+One-time browser download, then the test:
+
+```bash
+npx playwright install --only-shell chromium
+```
+
+```bash
+npm run test:e2e
+```
+
+## A five-minute walkthrough
+
+1. **Overview** (landing page): how many product × store positions are out of stock now, which
+   will run out within 7 days (available + inbound below the forecast), surplus stock (> 60 days of
+   cover), pending recommendations, and *how fresh each number is* (last movement, forecast run
+   and its history end, last processed event).
+2. Click a product in “Soonest to run out” → **product page**: stock per location, the forecast
+   chart with its 80 % range, and the **ledger** explaining every unit.
+3. **Replenishment** → open a recommendation: the “why” panel shows every input (forecast, safety
+   stock, reorder point, position, pack rounding, source). Approve it: an approved transfer or
+   purchase order is created — nothing moves yet.
+4. **Transfers** → dispatch and receive it: two ledger rows (`TRANSFER_OUT`, `TRANSFER_IN`), and
+   the alert for that store resolves on its own (event worker).
+5. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+
+## Measured numbers
+
+Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with the seeded synthetic data
+(200 products × 7 locations), the API running in its production Docker image. Reproduce with
+`npm run measure` and `npm run sim:pos`. These are local measurements, not benchmark claims.
+
+| What | Result |
+| ---- | ------ |
+| Read latency, 200 sequential requests each (products search, stock, ledger, alerts, recommendations) | p95 **6–10 ms** |
+| `GET /overview` (classifies all 1,000 product × store positions) | p50 19 ms, p95 **24 ms** |
+| 500 simulated POS sales, 8 at a time | **2.4 s** (≈ 200 sales/s), 0 unexpected errors |
+| Forecast run, 1,000 series (3 models + backtest) | 25–30 s |
+| Forecast accuracy (test window, WAPE) | gradient boosting 52.2 %, best baseline 54.3 %, noise floor 50.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
+| Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
+| Image sizes | API 288 MB, web 82 MB, forecasting 736 MB |
+| Tests | 119 unit/HTTP + 202 integration (TypeScript), 56 Python, 1 end-to-end |
+
+## Known limitations
+
+- **Synthetic data only.** Forecast accuracy is measured on generated sales; it says nothing about
+  real retail demand. Demand is not corrected for stock-outs.
+- **Single instance.** The login rate limit is in memory; the event worker and housekeeping are
+  safe with several instances, but this was only tested with one API process.
+- **Local demo, not a deployment.** Ports are bound to `127.0.0.1`; the forecasting service has no
+  login and is only reachable inside the compose network; `/metrics` is unauthenticated (counts and
+  latencies only); Grafana allows anonymous read-only viewing. The session cookie is `Secure` in the
+  container, which browsers accept on `http://localhost` only.
+- **Retention.** Processed outbox events and idempotency keys are deleted after 7 days (a retry
+  with the same key after that counts as a new request). Dead letters are kept until replayed.
+- **Not built:** a generated OpenAPI page (the endpoint table in ARCHITECTURE §5 is the
+  reference), manual purchase orders, partial transfer deliveries, Redis/Superset, hosting.
 
 ## Principles
 

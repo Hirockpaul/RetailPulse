@@ -4,14 +4,17 @@ import { AuthCoreModule } from './core/auth/auth-core.module';
 import { AuthGuard } from './core/auth/auth.guard';
 import { ENV, type Env } from './core/config/env';
 import { DatabaseModule } from './core/database/database.module';
+import { MetricsModule } from './core/metrics/metrics.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { EventsModule } from './modules/events/events.module';
 import { ForecastsModule } from './modules/forecasts/forecasts.module';
 import { HealthModule } from './modules/health/health.module';
+import { HousekeepingModule } from './modules/housekeeping/housekeeping.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { LocationsModule } from './modules/locations/locations.module';
+import { OverviewModule } from './modules/overview/overview.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { ReplenishmentModule } from './modules/replenishment/replenishment.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
@@ -31,6 +34,7 @@ export class AppModule {
       global: true,
       imports: [
         DatabaseModule,
+        MetricsModule,
         AuthCoreModule,
         AuthModule,
         HealthModule,
@@ -45,6 +49,8 @@ export class AppModule {
         ForecastsModule,
         PurchasingModule,
         ReplenishmentModule,
+        OverviewModule,
+        HousekeepingModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

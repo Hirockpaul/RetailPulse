@@ -39,6 +39,16 @@ export class EventsService {
     return { data: rows, page: query.page, pageSize: query.pageSize, total };
   }
 
+  /** Housekeeping: delete processed events older than `days` (dead letters are kept). */
+  async purgeProcessed(days: number, batchSize = 5000): Promise<number> {
+    let total = 0;
+    for (;;) {
+      const n = await this.repo.purgeProcessed(days, batchSize);
+      total += n;
+      if (n < batchSize) return total;
+    }
+  }
+
   /** Re-deliver an event. Consumers that already handled it skip it (idempotent). */
   async replay(id: string): Promise<{ id: string; status: 'PENDING' }> {
     const result = await this.repo.requeue(id);

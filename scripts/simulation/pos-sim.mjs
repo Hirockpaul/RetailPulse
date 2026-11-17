@@ -4,9 +4,19 @@
 // POS would (with Idempotency-Key). Use it to see stock fall, stock-outs appear (409s), and to
 // exercise concurrency. It never edits the database directly.
 //
+// It signs in like any user (default: the synthetic inventory manager, who may sell at every
+// store) with the shared DEMO_PASSWORD from the repo-root .env.
+//
 // Usage: npm run sim:pos -- [--sales=50] [--concurrency=4] [--api=http://localhost:3000]
 //                           [--seed=1] [--max-lines=3] [--max-qty=3]
+//                           [--email=inventory@retailpulse.test]
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const rootEnv = resolve(dirname(fileURLToPath(import.meta.url)), '../../.env');
+if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 const args = Object.fromEntries(
   process.argv
@@ -28,6 +38,7 @@ const MAX_LINES = num('max-lines', 3, 1, 10);
 const MAX_QTY = num('max-qty', 3, 1, 20);
 let state = num('seed', 1, 0, 2 ** 31);
 const API = (args.api ?? 'http://localhost:3000').replace(/\/$/, '') + '/api/v1';
+const EMAIL = args.email ?? 'inventory@retailpulse.test';
 
 // Deterministic RNG (mulberry32) so a run can be repeated with the same --seed.
 function rand() {
@@ -39,11 +50,30 @@ function rand() {
 const int = (min, max) => min + Math.floor(rand() * (max - min + 1));
 const pick = (arr) => arr[Math.floor(rand() * arr.length)];
 
+let cookie = '';
+
+/** Sign in and keep the session cookie for every later request. */
+async function signIn() {
+  if (!process.env.DEMO_PASSWORD) {
+    console.error('DEMO_PASSWORD is not set (see .env.example).');
+    process.exit(1);
+  }
+  const res = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: EMAIL, password: process.env.DEMO_PASSWORD }),
+  });
+  if (!res.ok) throw new Error(`login as ${EMAIL} → ${res.status}`);
+  cookie = res.headers.getSetCookie()[0].split(';')[0];
+}
+
 async function getAll(path) {
   const rows = [];
   for (let page = 1; ; page++) {
     const sep = path.includes('?') ? '&' : '?';
-    const res = await fetch(`${API}${path}${sep}page=${page}&pageSize=100`);
+    const res = await fetch(`${API}${path}${sep}page=${page}&pageSize=100`, {
+      headers: { cookie },
+    });
     if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
     const body = await res.json();
     rows.push(...body.data);
@@ -53,10 +83,11 @@ async function getAll(path) {
 
 let stores, products;
 try {
+  await signIn();
   stores = await getAll('/locations?type=STORE');
   products = await getAll('/products');
 } catch (err) {
-  console.error(`Cannot reach the API at ${API} (${err.message}). Is "npm run dev:api" running?`);
+  console.error(`API at ${API} failed (${err.message}). Is "npm run dev:api" running and seeded?`);
   process.exit(1);
 }
 if (stores.length === 0 || products.length === 0) {
@@ -81,7 +112,7 @@ async function sendSale() {
   const body = makeSale();
   const res = await fetch(`${API}/sales`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
+    headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), cookie },
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));

@@ -13,6 +13,8 @@
     "db:migrate": "npm run migrate -w services/api",
     "db:seed": "npm run seed -w services/api --",
     "sim:pos": "node scripts/simulation/pos-sim.mjs",
+    "demo": "npm run db:migrate && npm run db:seed && node scripts/simulation/demo.mjs",
+    "measure": "node scripts/simulation/measure.mjs",
     "forecast:history": "cd services/forecasting && .venv/bin/python -m app.synthetic",
     "forecast:serve": "cd services/forecasting && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
     "forecast:test": "cd services/forecasting && .venv/bin/ruff check . && .venv/bin/pytest -q",
@@ -22,6 +24,7 @@
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm run test --workspaces --if-present",
     "test:int": "npm run test:int -w services/api",
+    "test:e2e": "npm run build -w services/api && npm run test:e2e -w apps/web",
     "build": "npm run build --workspaces",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },

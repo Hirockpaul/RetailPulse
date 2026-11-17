@@ -251,7 +251,7 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   exist only via approved recommendations. The forecasting service needs `DATABASE_URL`
   (read from `.env`) and has no login: keep it on localhost.
 
-### Day 7 — Dashboard, observability, demo
+### Day 7 — Dashboard, observability, demo ✅
 
 - **A — Build:** web pages: Overview (stock-out risk, excess, pending recommendations,
   freshness timestamps), Recommendation detail ("why" panel with every input), Forecast
@@ -261,6 +261,13 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   `npm run demo` (seed + simulated POS traffic), one Playwright happy-path test, README
   walkthrough + measured numbers + known limitations.
 - **Checklist:** fresh clone → demo in < 10 commands · all claims backed by measurements.
+- **Done notes:** Overview is the landing page (`GET /overview`, read model in `modules/overview`);
+  the recommendation "why" panel and forecast chart existed since Day 6. `/metrics` uses
+  `@prometheus-io/client` (prom-client was deprecated in its favour). Housekeeping purges processed
+  events and idempotency keys after 7 days. Fresh clone → demo: `cp .env.example .env` and
+  `docker compose --profile full up --build -d --wait` (2 commands). `npm run demo`,
+  `npm run measure`, `npm run test:e2e` (own `<db>_e2e` database). Measured numbers and known
+  limitations are in README. No OpenAPI page (ARCHITECTURE decision #47).
 
 **After Day 7 (only if wanted):** Superset for BI, Redis cache, hosted demo (check costs first).
 

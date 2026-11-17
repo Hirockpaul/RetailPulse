@@ -83,11 +83,15 @@ flowchart TB
   replenishment --> forecasts & purchasing & transfers
   events --> database
   alerts --> events & inventory
+  overview --> forecasts & events
+  housekeeping --> events
 ```
 
 - Arrows point at what a module may call. **No cycles.**
 - **`inventory` is the only module that writes `inventory_balances` and `inventory_ledger`.**
   Sales, transfers, purchasing and adjustments all call `InventoryService.applyMovement()`.
+- `overview` is a **read model**: its repository reads across stock, forecast, recommendation and
+  alert tables for one landing-page query and writes nothing (decision #42).
 - `events` writes the outbox *inside the caller's transaction* (it receives the `client`).
   It knows nothing about its consumers: they register themselves with the `ConsumerRegistry`.
 
@@ -99,7 +103,9 @@ flowchart TB
 | DB access        | `core/database/database.service.ts`        | One `pg` pool, `query()`, `transaction()`, `ping()` |
 | Correlation ID   | `core/http/correlation-id.middleware.ts`   | Accept or create `x-correlation-id`, echo it      |
 | Errors           | `core/http/http-exception.filter.ts`       | `{ error: { code, message }, correlationId }`     |
-| Versioning       | `bootstrap.ts`                             | Global prefix `/api/v1`                           |
+| Versioning       | `bootstrap.ts`                             | Global prefix `/api/v1` (except `/metrics`)       |
+| Metrics          | `core/metrics/`                            | Prometheus registry per app; request latency by route **template**; `GET /metrics` (public, counts only) |
+| Housekeeping     | `modules/housekeeping/`                    | Hourly: delete processed outbox events and idempotency keys older than 7 days (`HOUSEKEEPING_ENABLED`) |
 
 ---
 
@@ -234,7 +240,7 @@ Transitions are checked in the service and guarded in SQL
 | Business errors| `409 INSUFFICIENT_STOCK`, `409 INVALID_STATE_TRANSITION`, `404 NOT_FOUND`   |
 | Idempotency    | `Idempotency-Key` header (8–100 chars) required on every stock-changing `POST`: `/sales`, `/receipts`, `/returns`, `/adjustments`, `/reservations` (Day 4+: `/transfers`, `/purchase-orders`). A retry returns the stored response with `Idempotent-Replayed: true`; same key + different body → `422 IDEMPOTENCY_KEY_REUSED`. |
 | Auth           | Server-side session in an `HttpOnly; SameSite=Strict` cookie (`Secure` in production), 8 h. A **global guard** requires a session and an allowed role on every route; a route without `@Roles()` is ADMIN-only and a test fails if any route declares neither `@Roles` nor `@Public`. Store managers are further limited to their stores in the service layer. Details: *Roles and access* below. |
-| Docs           | Endpoint table below; generated OpenAPI at `/api/v1/docs` planned for Day 7  |
+| Docs           | The endpoint table below is the reference (a generated OpenAPI page was not built; see decision #47) |
 
 ### Endpoints so far
 
@@ -284,6 +290,15 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note? }`            | approve creates the approved transfer / purchase order |
 | `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
 | `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
+
+| `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; store managers: own stores |
+| `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
+
+**Overview rules** (`modules/overview/overview.calc.ts`, unit-tested): `position = available + inbound`
+(inbound = approved/dispatched transfers + approved purchase orders). *Out of stock*: available ≤ 0
+(no forecast needed). *At risk*: available > 0 and position < forecast demand of the next 7 days.
+*Excess*: position > 60 × average daily forecast. Positions without a forecast are counted, never
+guessed. Thresholds live in `overview.config.ts` and are returned with the response.
 
 ### Roles and access
 
@@ -375,6 +390,11 @@ Envelope:
 Payloads carry business data only — no free-text ledger reason, no personal data.
 The columns of an event are immutable after insert (a trigger rejects edits); only its
 processing state (status, attempts, error) changes.
+
+**Retention:** processed events (and their `processed_events` marks) are deleted after 7 days by
+the housekeeping job, in batches, in one statement per batch. Dead and pending events are never
+purged. The outbox backlog is exported to Prometheus as `retailpulse_outbox_events{state}` and
+`retailpulse_outbox_oldest_pending_seconds`.
 
 ### Low-stock alerts (the first consumer)
 
@@ -496,7 +516,9 @@ RetailPulse/
 ├── README.md                        what it is + quick start
 ├── docs/
 │   └── ARCHITECTURE.md ✅           this file
-├── docker-compose.yml ✅            postgres (observability profile later)
+├── docker-compose.yml ✅            postgres; profiles `full` (whole app) and `observability`
+├── .dockerignore ✅
+├── ops/observability/ ✅           prometheus.yml, grafana/ (datasource + one dashboard JSON)
 ├── .env.example ✅
 ├── package.json ✅                  npm workspaces + root scripts
 ├── eslint.config.mjs ✅  .prettierrc.json ✅
@@ -504,6 +526,7 @@ RetailPulse/
 │
 ├── services/
 │   ├── api/                         NestJS core API
+│   │   ├── Dockerfile ✅            multi-stage: build → prod deps → runtime (non-root)
 │   │   ├── migrations/ ✅           0001_init.sql, 0002_….sql (never edit applied files)
 │   │   ├── scripts/
 │   │   │   ├── migrate.mjs ✅       migration runner
@@ -516,7 +539,9 @@ RetailPulse/
 │   │   │   │   ├── config/ ✅       env.ts
 │   │   │   │   ├── database/ ✅     database.module.ts, database.service.ts, sql.ts
 │   │   │   │   ├── http/ ✅         correlation-id, exception filter, zod pipe, query.ts (page/sort)
-│   │   │   │   └── auth/ (D4)       session guard, roles decorator, store-access guard
+│   │   │   │   ├── auth/ ✅         session guard, roles decorator, store-access helpers
+│   │   │   │   ├── idempotency/ ✅  Idempotency-Key handling (+ purge of old keys)
+│   │   │   │   └── metrics/ ✅      Prometheus registry, request-latency middleware, GET /metrics
 │   │   │   └── modules/             one folder per business domain
 │   │   │       ├── health/ ✅
 │   │   │       ├── catalog/ ✅      products, categories, supplier terms
@@ -530,7 +555,9 @@ RetailPulse/
 │   │   │       ├── alerts/ ✅
 │   │   │       ├── forecasts/ ✅    reads forecast.*, starts runs in the Python service
 │   │   │       ├── purchasing/ ✅   purchase orders (created by approving a recommendation)
-│   │   │       └── replenishment/ ✅ calc (pure), recommendations, approve / reject
+│   │   │       ├── replenishment/ ✅ calc (pure), recommendations, approve / reject
+│   │   │       ├── overview/ ✅     read model for the landing page (calc is pure)
+│   │   │       └── housekeeping/ ✅ hourly cleanup of processed events and old idempotency keys
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
 │   │       └── integration/ ✅      *.int-spec.ts, each in its own throw-away database
@@ -545,21 +572,28 @@ RetailPulse/
 │       │   ├── models/ ✅           baselines.py, ml.py
 │       │   ├── evaluation/ ✅       backtest.py (windows, selection rule), metrics.py
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                55 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                56 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
 │
 ├── apps/
 │   └── web/                         React + Vite + Tailwind
+│       ├── Dockerfile, nginx.conf ✅ static build served by unprivileged nginx; proxies /api only
+│       ├── e2e/ ✅                  Playwright happy path + start-api.mjs (own <db>_e2e database)
+│       ├── playwright.config.ts ✅
 │       └── src/
 │           ├── main.tsx ✅          entry
 │           ├── App.tsx ✅           layout shell (header, nav, page outlet)
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
 │           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
-│           └── pages/ ✅            Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
+│           └── pages/ ✅            Overview (landing), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
-└── scripts/simulation/pos-sim.mjs ✅  POS traffic simulator (npm run sim:pos)
+└── scripts/simulation/ ✅
+    ├── pos-sim.mjs                  POS traffic simulator (npm run sim:pos; signs in)
+    ├── demo.mjs                     npm run demo: POS traffic, alert re-scan, forecast, recommendations
+    └── measure.mjs                  npm run measure: sequential read-latency percentiles
 ```
 
 ### Module file convention (API)
@@ -595,7 +629,8 @@ modules/inventory/
 | Unit               | Jest / Pytest              | Pure rules: reorder point, state transitions, rounding | every check |
 | HTTP               | Jest + Supertest (mock DB) | Routing, validation, error shape                       | every check |
 | Integration        | Jest + real Postgres       | Constraints, concurrency, rollback, idempotency        | CI + locally with DB up |
-| E2E (D7)           | Playwright                 | One happy path through the UI                          | CI |
+| E2E ✅             | Playwright                 | One happy path through the UI (`npm run test:e2e`, own `<db>_e2e` database) | CI + locally |
+| Images ✅          | `docker build` in CI       | The three demo images keep building                    | CI |
 
 Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 
@@ -646,3 +681,9 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 39 | Approving a recommendation creates an already-approved transfer / purchase order | The manager's decision is the approval; no second click | Stock still moves only at dispatch/receipt, so there can be a delay |
 | 40 | Purchase orders exist only via recommendations (no manual PO form yet) | Keeps one audited path; matches "ML never orders by itself" | Manual ordering is a later feature |
 | 41 | `forecast.runs` has a unique index on `(true) WHERE status = 'RUNNING'` | One run at a time without a lock service | A crashed run blocks new ones for up to 30 minutes (then auto-failed) |
+| 42 | `overview` is a read-only read model with its own cross-domain SQL (Day 7) | One fast query set for the landing page (p95 24 ms measured) instead of many service calls | It reads other modules' tables; it must never write, and its rules are re-stated in `overview.calc.ts` |
+| 43 | Overview thresholds: at risk = position below 7 days of forecast; excess = more than 60 days of cover | Simple, explainable, printed on the page | Not tuned per category; slow movers with a near-zero forecast show as excess |
+| 44 | Prometheus metrics via `@prometheus-io/client` (the maintained successor of `prom-client`), one registry per app, route **templates** as labels | Bounded label cardinality, no ids in metrics; tests can build several apps | `/metrics` is public — keep it off the public proxy (the web container does not forward it) |
+| 45 | Housekeeping in the API (hourly timer), 7-day retention for processed events and idempotency keys | Tables stopped growing without another service or cron container | A retry with the same key after 7 days is treated as new (tested and documented) |
+| 46 | Compose profiles `full` and `observability`; ports bound to 127.0.0.1; forecasting not published | One command for a full local demo; Prometheus/Grafana stay optional | Not a deployment: no TLS, shared demo password, anonymous Grafana viewer |
+| 47 | No generated OpenAPI page | It would need either decorators on every route or a hand-kept route list; the endpoint table here is reviewed with each change | API consumers read this document instead of an interactive spec |

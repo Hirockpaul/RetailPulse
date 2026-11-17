@@ -1,4 +1,15 @@
-# Only PostgreSQL starts by default. Kafka / observability are added later as optional profiles.
+# By default only PostgreSQL starts (for local development: `npm run db:up`).
+#
+# Optional profiles:
+#   full           the whole app in containers: migrate + seed, synthetic history, API, forecasting,
+#                  web on http://localhost:8080          docker compose --profile full up --build
+#   observability  Prometheus (:9090) + Grafana (:3001) with one dashboard. Scrapes the API in the
+#                  `full` profile, or a dev API on the host (npm run dev:api).
+#                                                        docker compose --profile observability up
+# All published ports are bound to 127.0.0.1: this is a local demo, not a deployment.
+
+x-database-url: &database-url postgresql://${POSTGRES_USER:-retailpulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-retailpulse}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -17,6 +28,95 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- profile: full
+  # One-shot: apply migrations, then load the synthetic demo data (both safe to re-run).
+  setup:
+    profiles: [full]
+    build: { context: ., dockerfile: services/api/Dockerfile }
+    image: retailpulse/api:local
+    command: ['sh', '-c', 'node scripts/migrate.mjs && node scripts/seed.mjs']
+    environment:
+      DATABASE_URL: *database-url
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?set DEMO_PASSWORD in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+
+  # One-shot: 12 months of synthetic sales history for the forecasts (fictional data).
+  forecast-history:
+    profiles: [full]
+    build: services/forecasting
+    image: retailpulse/forecasting:local
+    command: ['python', '-m', 'app.synthetic']
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    restart: 'no'
+
+  # Internal only (no login of its own): reachable from the API, never published.
+  forecasting:
+    profiles: [full]
+    build: services/forecasting
+    image: retailpulse/forecasting:local
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      forecast-history: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  api:
+    profiles: [full]
+    build: { context: ., dockerfile: services/api/Dockerfile }
+    image: retailpulse/api:local
+    environment:
+      DATABASE_URL: *database-url
+      FORECAST_URL: http://forecasting:8000
+      API_PORT: '3000'
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    profiles: [full]
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    image: retailpulse/web:local
+    ports:
+      - '127.0.0.1:8080:8080'
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- profile: observability
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '127.0.0.1:9090:9090'
+    restart: unless-stopped
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana-oss:12.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true' # read-only viewers without a login (localhost only)
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-grafana}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '127.0.0.1:3001:3000'
+    depends_on: [prometheus]
     restart: unless-stopped
 
 volumes:

@@ -10,6 +10,8 @@ const EnvSchema = z
     DATABASE_URL: z.string().url().startsWith('postgres'),
     /** Run the event worker inside this process. Default: on, except when NODE_ENV=test. */
     EVENT_WORKER_ENABLED: z.enum(['true', 'false']).optional(),
+    /** Hourly cleanup of old outbox events and idempotency keys. Default: on, except in tests. */
+    HOUSEKEEPING_ENABLED: z.enum(['true', 'false']).optional(),
     /** Where the internal forecasting service listens (it has no login: keep it private). */
     FORECAST_URL: z.string().url().default('http://127.0.0.1:8000'),
     /** How often the event worker looks for new events. */
@@ -21,6 +23,10 @@ const EnvSchema = z
       env.EVENT_WORKER_ENABLED === undefined
         ? env.NODE_ENV !== 'test'
         : env.EVENT_WORKER_ENABLED === 'true',
+    HOUSEKEEPING_ENABLED:
+      env.HOUSEKEEPING_ENABLED === undefined
+        ? env.NODE_ENV !== 'test'
+        : env.HOUSEKEEPING_ENABLED === 'true',
   }));
 
 export type Env = z.infer<typeof EnvSchema>;

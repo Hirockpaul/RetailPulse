@@ -270,6 +270,40 @@ describe('write endpoints validate before touching the database', () => {
   });
 });
 
+describe('GET /metrics (Prometheus)', () => {
+  let app: INestApplication;
+  beforeAll(async () => {
+    app = await buildApp(async () => 1);
+  });
+  afterAll(async () => app.close());
+
+  it('is public, lives outside /api/v1, and labels requests by route template, not raw URL', async () => {
+    await request(app.getHttpServer()).get('/api/v1/health').expect(200);
+    await request(app.getHttpServer())
+      .get(`/api/v1/products/${ID}`)
+      .set('Cookie', as('tok-analyst'))
+      .expect(500); // the mocked database has no query(): any status is fine for this test
+    await request(app.getHttpServer()).get('/api/v1/no-such-route').expect(404);
+
+    const res = await request(app.getHttpServer()).get('/metrics').expect(200);
+    expect(res.headers['content-type']).toMatch(/^text\/plain/);
+    expect(res.text).toContain(
+      'http_request_duration_seconds_count{method="GET",route="/api/v1/health",status="200"} 1',
+    );
+    expect(res.text).toContain('route="/api/v1/products/:id",status="500"');
+    expect(res.text).toContain('route="unmatched",status="404"');
+    expect(res.text).not.toContain(ID); // ids never become label values
+    expect(res.text).toContain('process_cpu_seconds_total');
+    await request(app.getHttpServer()).get('/api/v1/metrics').expect(404);
+  });
+
+  it('still answers when the database is unreachable (outbox gauges are simply empty)', async () => {
+    const res = await request(app.getHttpServer()).get('/metrics').expect(200);
+    expect(res.text).toContain('# TYPE retailpulse_outbox_events gauge');
+    expect(res.text).not.toMatch(/^retailpulse_outbox_events\{/m);
+  });
+});
+
 describe('loadEnv', () => {
   it('rejects a missing DATABASE_URL without echoing values', () => {
     expect(() => loadEnv({ API_PORT: '3000' })).toThrow(/DATABASE_URL/);

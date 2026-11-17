@@ -76,4 +76,24 @@ export class IdempotencyService {
       return { ...result, replayed: false };
     });
   }
+
+  /**
+   * Forget finished keys older than `days` (housekeeping). After that a retry with the same key
+   * counts as a new request, so `days` must be longer than any client keeps retrying.
+   * Deletes in batches so no single statement holds many row locks. Returns the number removed.
+   */
+  async purgeOlderThan(days: number, batchSize = 5000): Promise<number> {
+    let total = 0;
+    for (;;) {
+      const { rowCount } = await this.db.query(
+        `DELETE FROM idempotency_keys WHERE (key, endpoint) IN (
+           SELECT key, endpoint FROM idempotency_keys
+            WHERE created_at < now() - make_interval(days => $1) AND response_status IS NOT NULL
+            LIMIT $2)`,
+        [days, batchSize],
+      );
+      total += rowCount ?? 0;
+      if ((rowCount ?? 0) < batchSize) return total;
+    }
+  }
 }

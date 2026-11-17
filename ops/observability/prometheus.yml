@@ -1,0 +1,14 @@
+# Scrapes the RetailPulse API's /metrics. Two targets, use whichever is running:
+#   api-compose  the API container from `docker compose --profile full`
+#   api-host     a dev API on the host (`npm run dev:api`, port 3000)
+# The one that is not running simply shows as "down" under Status → Targets.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: api-compose
+    static_configs:
+      - targets: ['api:3000']
+  - job_name: api-host
+    static_configs:
+      - targets: ['host.docker.internal:3000']

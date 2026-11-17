@@ -4,6 +4,7 @@ import { EventDispatcher } from './event-dispatcher';
 import { EventsController } from './events.controller';
 import { EventsRepository } from './events.repository';
 import { EventsService } from './events.service';
+import { OutboxMetrics } from './outbox.metrics';
 
 /**
  * Transactional outbox + in-process worker (no message broker).
@@ -12,7 +13,7 @@ import { EventsService } from './events.service';
  */
 @Module({
   controllers: [EventsController],
-  providers: [EventsService, EventsRepository, ConsumerRegistry, EventDispatcher],
+  providers: [EventsService, EventsRepository, ConsumerRegistry, EventDispatcher, OutboxMetrics],
   exports: [EventsService, ConsumerRegistry, EventDispatcher],
 })
 export class EventsModule {}
