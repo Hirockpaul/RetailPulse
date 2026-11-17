@@ -509,6 +509,18 @@ for 0–0.5 and 78.4 % for 8+ (measured once with a diagnostic in step 1b; the r
 `tests/test_intervals.py`). Slow sellers stay above 80 % because sales of 0 or 1 unit leave no
 narrower honest range.
 
+**Other models tried (V2 1d)** — `npm run forecast:measure -- --candidates`, same protocol, rule fixed
+before measuring (join production only if ≥ 0.5 points better on *validation*):
+
+| Candidate | WAPE (validation) | WAPE (test) | Bias (test) | Run time |
+| --------- | ----------------: | ----------: | ----------: | -------: |
+| Gradient boosting (production, seed 42) | 50.9 % | 51.6 % | +0.1 % | 25 s |
+| Gradient boosting, seed 43 (noise check: 0.15 points apart) | 51.0 % | 51.6 % | −0.3 % | 27 s |
+| Random Forest (150 trees, leaf ≥ 50, 30 % rows per tree) | 51.4 % | 52.1 % | +2.3 % | 132 s |
+
+The Random Forest is 0.5 points worse on validation, also worse on test, biased upwards and 5× slower,
+so it was **not** added to production (peak memory of the comparison: 0.67 GB).
+
 Gradient boosting test WAPE by days ahead (1 → 7): 53.5 · 52.3 · 52.6 · 50.2 · 47.2 · 53.3 · 54.8 %
 (it varies with the weekday mix of each horizon more than with distance).
 
@@ -596,9 +608,9 @@ RetailPulse/
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
 │       │   ├── models/ ✅           baselines.py, ml.py, explain.py (SHAP)
-│       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), intervals.py (conformal ranges), metrics.py, report.py (npm run forecast:measure)
+│       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), intervals.py (conformal ranges), compare.py (candidate models), metrics.py, report.py (npm run forecast:measure)
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                77 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                85 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
@@ -718,4 +730,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 50 | Anomalies are injected with labels on a separate random stream | Detection can be measured (precision/recall) and every other day keeps the value it had before | The injected kinds (spike, 3-day drop) are simpler than real anomalies |
 | 51 | Forecast ranges by split conformal, grouped by forecast level (V2 1b) | Uses the model's real errors, no normal assumption; skewed counts get asymmetric ranges; coverage is checked on data the calibration never saw | Assumes the coming weeks resemble the calibration weeks; days 8–14 reuse the 1–7-day quantiles; the daily ranges cannot be summed into a range for a total |
 | 52 | SHAP explanations only for the served ML model, only if they add up, shown as multiplying factors (V2 1c) | Exact for our tree model (verified per run, 1e-6); factors match how a Poisson model works (log scale) and are easy to read; refusing non-additive output prevents silently wrong explanations (tested with the Day-6 encoding) | Explains the first forecast day only; `tree_path_dependent` SHAP describes the model, not cause and effect; adds `shap` (~5 MB) to the service |
+| 53 | New model types must beat production by ≥ 0.5 WAPE points on validation, rule written before measuring (V2 1d) | Seed-to-seed noise is ~0.15 points; a smaller gain is not worth a second model; deciding on validation keeps the test window honest | A real but small improvement could be rejected; the Random Forest was 0.5 points worse, so no doubt this time |
 

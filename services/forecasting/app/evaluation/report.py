@@ -42,6 +42,11 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=365)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--anomaly-share", type=float, default=ANOMALY_SHARE)
+    parser.add_argument(
+        "--candidates",
+        action="store_true",
+        help="compare candidate ML models (V2 step 1d) instead of feature configurations",
+    )
     args = parser.parse_args()
 
     end = (datetime.now(UTC) - timedelta(days=1)).date()
@@ -76,6 +81,10 @@ def main() -> None:
     )
     print(f"Noise floor (knows the true expected demand): test WAPE {pct(floor)}\n")
 
+    if args.candidates:
+        compare_candidates(hist)
+        return
+
     header = (
         f"{'model':20} {'val WAPE':>9} {'test WAPE':>9} {'bias':>7} {'80% cover':>9} {'width':>6}"
     )
@@ -99,6 +108,33 @@ def main() -> None:
             if h["model"] == ml_name() and h["split"] == "test"
         ]
         print(f"{ml_name()} test WAPE by days ahead (1..7): {' '.join(by_h)}\n")
+
+
+def compare_candidates(hist) -> None:
+    from app.evaluation.compare import CANDIDATES, decide, evaluate
+
+    print("Candidate models, same protocol as production (decision rule: docs/V2-PLAN.md 1d)\n")
+    print(
+        f"{'candidate':36} {'val WAPE':>9} {'test WAPE':>9} {'val MAE':>8} {'test bias':>9} "
+        f"{'80% cover':>9} {'time':>6}"
+    )
+    results = []
+    for name, (trainer, seed) in CANDIDATES.items():
+        r = evaluate(hist, name, trainer, seed)
+        results.append(r)
+        print(
+            f"{name:36} {pct(r.validation['wape']):>9} {pct(r.test['wape']):>9} "
+            f"{r.validation['mae']:8.3f} {pct(r.test['bias']):>9} "
+            f"{pct(r.test['interval_coverage']):>9} {r.seconds:5.0f}s",
+            flush=True,
+        )
+    production, noise = results[0], results[1]
+    print(
+        "\nSeed-to-seed difference of hgb_direct on validation: "
+        f"{100 * abs(production.validation['wape'] - noise.validation['wape']):.2f} points"
+    )
+    for candidate in results[2:]:
+        print(decide(production, candidate))
 
 
 def ml_name() -> str:

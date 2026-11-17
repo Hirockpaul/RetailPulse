@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1c built** (see §9);
-waiting for approval of step 1d.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1d built** (see §9);
+waiting for approval of step 1e.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -348,7 +348,7 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
   every level group 78.5–84.2 % / 93.8–95.7 %; 80 % range narrower than before (4.94 vs 5.09 units).
 - Tests: Python 66 → 73, API integration 202 → 204; all checks and e2e green.
 
-### Step 1c — explanations (SHAP) ✅ (2026-11-17, not committed yet)
+### Step 1c — explanations (SHAP) ✅ (2026-11-17, commit 4a46ac0)
 
 - `shap==0.54.1` (adds shap, slicer, tqdm; ~5 MB). `app/models/explain.py`: TreeExplainer on the
   served model; additivity checked per run (measured error ~1e-15); a non-additive result stores
@@ -366,4 +366,30 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
 - Fixed on the way: the product page said "Tomorrow" for the first forecast day, which is the day
   after the history ends (today, when the history ends yesterday); it now shows the date.
 - Tests: Python 73 → 77, API unit 119 → 124, API integration 204 → 206; all checks and e2e green.
+
+
+### Step 1d — model comparison: decision rule (written 2026-11-17, BEFORE any measurement)
+
+Candidate: scikit-learn `RandomForestRegressor`, same features and training rows as `hgb_direct`,
+fixed settings chosen before measuring and sized for this 3.6 GB machine: 150 trees,
+`min_samples_leaf=50`, `max_features=0.5`, `max_samples=0.3` (each tree sees 30 % of the rows),
+squared-error criterion. No tuning on validation or test. To show what "noise" means, the same
+report also trains `hgb_direct` with a second seed (43).
+
+The Random Forest joins the production model selection **only if** its **validation** WAPE is at
+least **0.5 points** lower than `hgb_direct`'s on the same data (a smaller gap is within run-to-run
+noise and not worth a second model). The test window is reported but never used to decide.
+If it does not pass, it is documented here and in ARCHITECTURE §7.3 and is **not** added to
+production; the comparison stays reproducible with `npm run forecast:measure -- --candidates`.
+
+### Step 1d — model comparison: result ✅ (2026-11-17, not committed yet)
+
+- `app/evaluation/compare.py`: candidates are scored on exactly the production protocol (a test
+  proves gradient boosting scored here equals the pipeline's numbers); `decide()` applies the rule
+  above (tested at its boundary, and that the test window is ignored).
+- Measured: production 50.9 % validation / 51.6 % test WAPE; second seed 51.0 / 51.6 (noise 0.15
+  points); Random Forest 51.4 / 52.1, bias +2.3 %, 132 s vs 25 s. **Random Forest does not pass** —
+  it is 0.52 points worse on validation. Production is unchanged.
+- Tests: Python 77 → 85. Nothing in the API or UI changed (the accuracy card already shows WAPE,
+  MAE, bias and range coverage per model and window).
 
