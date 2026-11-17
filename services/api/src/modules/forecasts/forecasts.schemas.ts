@@ -43,8 +43,31 @@ export interface ModelMetric {
   rmse: string | null;
   /** Weighted absolute percentage error as a fraction: 0.25 = 25%. */
   wape: string | null;
+  /** Σ(forecast − actual) / Σ actual: +0.05 = 5% over-forecast. */
+  bias: string | null;
+  /** Test window only: share of actual values inside the 80% / 95% range, and mean width (units). */
+  intervalCoverage: string | null;
+  intervalWidth: string | null;
+  interval95Coverage: string | null;
+  interval95Width: string | null;
   nPoints: number;
   nSeries: number;
+}
+
+/**
+ * How the forecast ranges were built for one range level and forecast-level group, and how well
+ * the same method held on the untouched test window (see services/forecasting intervals.py).
+ */
+export interface RangeGroup {
+  level: 80 | 95;
+  /** Forecast level of the group in units/day: [forecastFrom, forecastTo); null = no limit. */
+  forecastFrom: number;
+  forecastTo: number | null;
+  /** Added to the forecast to get the lower / upper bound (from measured errors). */
+  qLow: number;
+  qHigh: number;
+  testCoverage: number | null;
+  testPoints: number;
 }
 
 export interface SeriesForecast {
@@ -54,9 +77,20 @@ export interface SeriesForecast {
   historyDays: number;
   avgDaily28: number;
   stdDaily90: number;
-  /** Typical forecast error (backtest RMSE); the 80% interval is yhat ± 1.28 × sigma. */
+  /** Typical forecast error (backtest RMSE) of this series. */
   sigma: number;
   testWape: number | null;
   history: { day: string; units: number }[];
-  points: { day: string; horizonDay: number; yhat: number; lower: number; upper: number }[];
+  /** lower/upper = 80% range; lower95/upper95 = 95% range (null for runs before V2 step 1b). */
+  points: {
+    day: string;
+    horizonDay: number;
+    yhat: number;
+    lower: number;
+    upper: number;
+    lower95: number | null;
+    upper95: number | null;
+  }[];
+  /** Range calibration of the run, to say how reliable this forecast's range has been. */
+  ranges: RangeGroup[];
 }

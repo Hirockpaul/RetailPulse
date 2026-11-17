@@ -106,23 +106,16 @@ def score_by_horizon(
     return rows
 
 
-def score_interval(
-    actual: np.ndarray,
-    predicted: np.ndarray,
-    sigma: np.ndarray,
-    eligible: np.ndarray,
-    z: float,
-) -> dict:
-    """Coverage and mean width of the range predicted ± z·sigma (clipped at 0), pooled over
-    eligible series. `sigma` (one per series) must come from data BEFORE `actual` — e.g. the
-    validation window when scoring the test window — or the coverage would be flattering."""
-    lower = np.clip(predicted - z * sigma[:, None], 0.0, None)
-    upper = predicted + z * sigma[:, None]
-    mask = eligible[:, None] & np.isfinite(actual) & np.isfinite(sigma)[:, None]
-    return {
-        "interval_coverage": interval_coverage(actual[mask], lower[mask], upper[mask]),
-        "interval_width": interval_width(lower[mask], upper[mask]),
-    }
+def score_range(
+    actual: np.ndarray, lower: np.ndarray, upper: np.ndarray, mask: np.ndarray
+) -> tuple[float, float]:
+    """(coverage, mean width) of a forecast range over the points in `mask`. The range must be
+    built from data BEFORE `actual` (e.g. calibrated on validation, scored on test), or the
+    coverage would be flattering."""
+    return (
+        interval_coverage(actual[mask], lower[mask], upper[mask]),
+        interval_width(lower[mask], upper[mask]),
+    )
 
 
 @dataclass(frozen=True)

@@ -30,15 +30,43 @@ export interface ModelMetric {
   rmse: string | null;
   /** Fraction: 0.25 = 25%. */
   wape: string | null;
+  /** Σ(forecast − actual) ÷ Σ actual: +0.05 = 5% too high. */
+  bias: string | null;
+  /** Test window: share of actual values inside the 80% / 95% range; mean width in units. */
+  intervalCoverage: string | null;
+  intervalWidth: string | null;
+  interval95Coverage: string | null;
+  interval95Width: string | null;
   nPoints: number;
   nSeries: number;
+}
+
+/** How the ranges were built for one sales level, and how well they held on the test window. */
+export interface RangeGroup {
+  level: 80 | 95;
+  forecastFrom: number;
+  forecastTo: number | null;
+  qLow: number;
+  qHigh: number;
+  testCoverage: number | null;
+  testPoints: number;
 }
 
 export interface ForecastOverview {
   latest: ForecastRun | null;
   current: ForecastRun | null;
   metrics: ModelMetric[];
+  ranges: RangeGroup[];
 }
+
+/** The range group a forecast of `perDay` units/day belongs to. */
+export const rangeGroupFor = (ranges: RangeGroup[], level: 80 | 95, perDay: number) =>
+  ranges.find(
+    (g) =>
+      g.level === level &&
+      perDay >= g.forecastFrom &&
+      (g.forecastTo === null || perDay < g.forecastTo),
+  );
 
 export interface SeriesForecast {
   run: {
@@ -55,7 +83,17 @@ export interface SeriesForecast {
   sigma: number;
   testWape: number | null;
   history: { day: string; units: number }[];
-  points: { day: string; horizonDay: number; yhat: number; lower: number; upper: number }[];
+  /** lower/upper: 80% range; lower95/upper95: 95% range (null for older runs). */
+  points: {
+    day: string;
+    horizonDay: number;
+    yhat: number;
+    lower: number;
+    upper: number;
+    lower95: number | null;
+    upper95: number | null;
+  }[];
+  ranges: RangeGroup[];
 }
 
 export const fetchForecastOverview = () => getJson<ForecastOverview>('/forecasts/runs/latest');

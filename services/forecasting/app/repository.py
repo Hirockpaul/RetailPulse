@@ -184,8 +184,9 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                 cur.execute(
                     """INSERT INTO forecast.model_metrics
                          (run_id, model, split, mae, rmse, wape, bias, interval_coverage,
-                          interval_width, n_points, n_series)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                          interval_width, interval95_coverage, interval95_width, n_points,
+                          n_series)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         run_id,
                         model,
@@ -196,10 +197,32 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                         num(m["bias"]),
                         num(m["interval_coverage"]),
                         num(m["interval_width"]),
+                        num(m["interval95_coverage"]),
+                        num(m["interval95_width"]),
                         m["n_points"],
                         m["n_series"],
                     ),
                 )
+        for g in outcome.interval_groups:
+            cur.execute(
+                """INSERT INTO forecast.interval_calibration
+                     (run_id, level, group_index, forecast_from, forecast_to, q_low, q_high,
+                      n_calibration, pooled, test_coverage, test_points)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    run_id,
+                    g["level"],
+                    g["group"],
+                    g["forecast_from"],
+                    None if g["forecast_to"] == float("inf") else g["forecast_to"],
+                    round(g["q_low"], 4),
+                    round(g["q_high"], 4),
+                    g["n_calibration"],
+                    g["pooled"],
+                    num(g["test_coverage"]),
+                    g["test_points"],
+                ),
+            )
         for h in outcome.horizon_metrics:
             cur.execute(
                 """INSERT INTO forecast.horizon_metrics
@@ -237,7 +260,7 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                 )
         with cur.copy(
             "COPY forecast.points (run_id, product_id, location_id, target_day, horizon_day, "
-            "yhat, lower, upper) FROM STDIN"
+            "yhat, lower, upper, lower95, upper95) FROM STDIN"
         ) as copy:
             last = day[-1].astype("datetime64[D]").item()
             for i in range(hist.n_series):
@@ -252,6 +275,8 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                             round(float(outcome.yhat[i, h]), 4),
                             round(float(outcome.lower[i, h]), 4),
                             round(float(outcome.upper[i, h]), 4),
+                            round(float(outcome.lower95[i, h]), 4),
+                            round(float(outcome.upper95[i, h]), 4),
                         )
                     )
     prune_runs(conn)
@@ -333,7 +358,7 @@ def series_forecast(
     if head is None:
         return None
     points = conn.execute(
-        """SELECT target_day, horizon_day, yhat, lower, upper FROM forecast.points
+        """SELECT target_day, horizon_day, yhat, lower, upper, lower95, upper95 FROM forecast.points
             WHERE run_id = %s AND product_id = %s AND location_id = %s ORDER BY target_day""",
         (run["id"], head[7], head[8]),
     ).fetchall()
@@ -356,6 +381,8 @@ def series_forecast(
                 "yhat": float(p[2]),
                 "lower": float(p[3]),
                 "upper": float(p[4]),
+                "lower95": None if p[5] is None else float(p[5]),
+                "upper95": None if p[6] is None else float(p[6]),
             }
             for p in points
         ],

@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Step 1a built** (see §9);
-waiting for approval of step 1b.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a, 1b built** (see §9);
+waiting for approval of step 1c.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -318,7 +318,7 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
 
 ## 9. Progress log
 
-### Step 1a — data foundation ✅ (2026-11-17, not committed yet)
+### Step 1a — data foundation ✅ (2026-11-17, commit 4ccd5d2)
 
 - Migration `0007_forecast_foundation.sql`: `forecast.promotions`, `forecast.injected_anomalies`,
   `forecast.horizon_metrics`; `bias`, `interval_coverage`, `interval_width` on `model_metrics`.
@@ -331,4 +331,20 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
 - Measured (ARCHITECTURE §7.3): test WAPE **51.6 %** (Day 6 model on the same data 52.2 %, best
   baseline 54.4 %, noise floor 51.0 %); bias +0.1 %; 80 % range covers 83.4 %.
 - Tests: Python 56 → 66; TypeScript unchanged and green (119 + 202), e2e green.
+
+### Step 1b — probabilistic forecast ✅ (2026-11-17, not committed yet)
+
+- Diagnosis: the Day-6 "80 %" band (± 1.28 σ) held 83.4 % overall but 91 % for slow sellers and
+  78 % for fast ones.
+- New `evaluation/intervals.py`: split-conformal 80 % and 95 % ranges, grouped by forecast level,
+  calibrated on validation and checked on test; live ranges use both windows.
+- Migration `0008_forecast_ranges.sql`: 95 % range on points (nested CHECK), 95 % coverage/width,
+  `forecast.interval_calibration` (quantiles + honest test coverage per level group).
+- API: bias, coverage and per-level calibration in `/forecasts/runs/latest`; 95 % range and
+  calibration in `/forecasts/series`.
+- UI: chart shows 80 % and 95 % bands; the product page states the range in words with its measured
+  reliability; the accuracy card adds bias, coverage and a per-level reliability table.
+- Measured (dev data, served model, test window): 80 % range held **80.0 %**, 95 % held **94.9 %**;
+  every level group 78.5–84.2 % / 93.8–95.7 %; 80 % range narrower than before (4.94 vs 5.09 units).
+- Tests: Python 66 → 73, API integration 202 → 204; all checks and e2e green.
 

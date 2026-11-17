@@ -15,11 +15,11 @@ import numpy as np
 from app import repository
 from app.config import (
     EVAL_HORIZON_DAYS,
-    INTERVAL_Z,
     MIN_HISTORY_DAYS,
 )
 from app.data import History, load_history
 from app.db import connect
+from app.evaluation import intervals
 from app.evaluation.backtest import (
     BASELINES,
     ML_MODEL,
@@ -29,7 +29,7 @@ from app.evaluation.backtest import (
     rolling_forecast,
     score,
     score_by_horizon,
-    score_interval,
+    score_range,
     select_model,
 )
 from app.models import baselines, ml
@@ -55,8 +55,12 @@ class Outcome:
     model_names: list[str]  # per series
     is_fallback: np.ndarray
     yhat: np.ndarray  # (series, horizon)
-    lower: np.ndarray
+    lower: np.ndarray  # 80 % range (conformal, see evaluation/intervals.py)
     upper: np.ndarray
+    lower95: np.ndarray
+    upper95: np.ndarray
+    # Per range level and forecast-level group: live quantiles + honest test coverage
+    interval_groups: list[dict]
     avg_daily_28: np.ndarray
     std_daily_90: np.ndarray
     sigma: np.ndarray
@@ -127,16 +131,20 @@ def compute(
     selection = select_model(scores)
     served_model = selection.model
 
-    # Range quality, measured honestly: the 80 % range for the TEST window uses each series'
-    # error from the VALIDATION window only. (The served forecast's range uses both windows.)
+    # Range quality, measured honestly: ranges for the TEST window are calibrated on the
+    # VALIDATION window's errors only. (Live ranges are calibrated on both windows, below.)
+    masks = {split: eligible[:, None] & np.isfinite(actual[split]) for split in spans}
+    honest: dict[str, intervals.Calibration] = {}
     for model, preds in predictions.items():
-        sigma_val = scores[model]["validation"]["series_rmse"]
-        scores[model]["test"].update(
-            score_interval(actual["test"], preds["test"], sigma_val, eligible, INTERVAL_Z)
-        )
-        scores[model]["validation"].update(
-            {"interval_coverage": float("nan"), "interval_width": float("nan")}
-        )
+        cal = intervals.calibrate(preds["validation"], actual["validation"], masks["validation"])
+        honest[model] = cal
+        for level, prefix in ((80, "interval"), (95, "interval95")):
+            lower, upper = intervals.apply(cal, preds["test"], level)
+            cov, width = score_range(actual["test"], lower, upper, masks["test"])
+            scores[model]["test"].update({f"{prefix}_coverage": cov, f"{prefix}_width": width})
+            scores[model]["validation"].update(
+                {f"{prefix}_coverage": float("nan"), f"{prefix}_width": float("nan")}
+            )
     horizon_metrics = [
         {"model": model, "split": split, **row}
         for model, preds in predictions.items()
@@ -164,10 +172,41 @@ def compute(
     sigma = np.where(eligible & np.isfinite(backtest_rmse), backtest_rmse, std90)
 
     f_avg, f_std = _fallback_values(hist, served, avg28, std90)
-    yhat = np.where(served[:, None], base_forecast, f_avg[:, None])
+    yhat = np.clip(np.where(served[:, None], base_forecast, f_avg[:, None]), 0.0, None)
     sigma = np.where(served, sigma, f_std)
-    lower = np.clip(yhat - INTERVAL_Z * sigma[:, None], 0.0, None)
-    upper = yhat + INTERVAL_Z * sigma[:, None]
+
+    # Live ranges: the served model's errors from BOTH windows (more data, most recent included).
+    live = intervals.calibrate(
+        np.hstack([predictions[served_model][s] for s in spans]),
+        np.hstack([actual[s] for s in spans]),
+        np.hstack([masks[s] for s in spans]),
+    )
+    lower, upper = intervals.apply(live, yhat, 80)
+    lower95, upper95 = intervals.apply(live, yhat, 95)
+    interval_groups = []
+    for level in intervals.LEVELS:
+        test_cov, test_n = intervals.coverage_by_group(
+            honest[served_model],
+            predictions[served_model]["test"],
+            actual["test"],
+            masks["test"],
+            level,
+        )
+        for g in range(len(live.edges) - 1):
+            interval_groups.append(
+                {
+                    "level": level,
+                    "group": g,
+                    "forecast_from": live.edges[g],
+                    "forecast_to": live.edges[g + 1],
+                    "q_low": float(live.low[level][g]),
+                    "q_high": float(live.high[level][g]),
+                    "n_calibration": int(live.n_points[g]),
+                    "pooled": bool(live.pooled[g]),
+                    "test_coverage": float(test_cov[g]),
+                    "test_points": int(test_n[g]),
+                }
+            )
 
     test_wape = np.where(eligible & served, scores[served_model]["test"]["series_wape"], np.nan)
     names = [served_model if s else FALLBACK_MODEL for s in served]
@@ -187,9 +226,12 @@ def compute(
         selection=selection,
         model_names=names,
         is_fallback=~served,
-        yhat=np.clip(yhat, 0.0, None),
+        yhat=yhat,
         lower=lower,
         upper=upper,
+        lower95=lower95,
+        upper95=upper95,
+        interval_groups=interval_groups,
         avg_daily_28=avg28,
         std_daily_90=std90,
         sigma=sigma,

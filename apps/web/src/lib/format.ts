@@ -21,6 +21,13 @@ export const humanize = (s: string) => s.toLowerCase().replace(/_/g, ' ');
 export const formatPercent = (fraction: number | string | null | undefined) =>
   fraction === null || fraction === undefined ? '—' : `${(Number(fraction) * 100).toFixed(1)}%`;
 
+/** A signed fraction as a percentage: 0.012 → "+1.2%", -0.03 → "−3.0%". */
+export const formatSignedPercent = (fraction: number | string | null | undefined) => {
+  if (fraction === null || fraction === undefined) return '—';
+  const v = Number(fraction) * 100;
+  return `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
+};
+
 /** One decimal place, for forecast quantities. */
 export const formatDecimal = (n: number) => (Math.round(n * 10) / 10).toLocaleString();
 

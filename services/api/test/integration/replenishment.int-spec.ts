@@ -236,7 +236,7 @@ it('cannot generate recommendations before any forecast exists', async () => {
   const res = await inv().post('/replenishment/generate').expect(409);
   expect(res.body.error.code).toBe('NO_FORECAST');
   const overview = (await admin().get('/forecasts/runs/latest').expect(200)).body;
-  expect(overview).toEqual({ latest: null, current: null, metrics: [] });
+  expect(overview).toEqual({ latest: null, current: null, metrics: [], ranges: [] });
 });
 
 // ------------------------------------------------------------------ with a forecast
@@ -734,6 +734,65 @@ describe('forecasts API', () => {
     expect(res.history[0].day < res.history[19].day).toBe(true); // oldest first
     expect(res.points).toHaveLength(14);
     expect(res.points[0]).toMatchObject({ horizonDay: 1, yhat: 6, lower: 4, upper: 8 });
+    // Runs written before V2 step 1b have no 95 % range and no calibration: reported as such.
+    expect(res.points[0]).toMatchObject({ lower95: null, upper95: null });
+    expect(res.ranges).toEqual([]);
+  });
+
+  it('V2 1b: returns the 95 % range, bias, range coverage and the calibration per sales level', async () => {
+    await db.query(
+      `UPDATE forecast.points SET lower95 = greatest(lower - 1, 0), upper95 = upper + 1.5
+        WHERE run_id = $1`,
+      [runId],
+    );
+    await db.query(
+      `UPDATE forecast.model_metrics SET bias = 0.012, interval_coverage = 0.81,
+              interval_width = 4.9, interval95_coverage = 0.948, interval95_width = 7.4
+        WHERE run_id = $1 AND split = 'test'`,
+      [runId],
+    );
+    await db.query(
+      `INSERT INTO forecast.interval_calibration (run_id, level, group_index, forecast_from,
+          forecast_to, q_low, q_high, n_calibration, pooled, test_coverage, test_points)
+       VALUES ($1, 80, 0, 0, 4, -1.2, 1.8, 900, false, 0.79, 450),
+              ($1, 80, 1, 4, NULL, -3.1, 4.4, 300, false, 0.82, 150),
+              ($1, 95, 0, 0, 4, -2, 3.2, 900, false, 0.95, 450),
+              ($1, 95, 1, 4, NULL, -5, 7.1, 300, false, 0.94, 150)`,
+      [runId],
+    );
+    const latest = (await as('analyst').get('/forecasts/runs/latest').expect(200)).body;
+    const ml = latest.metrics.find((m: any) => m.model === 'hgb_direct' && m.split === 'test'); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(ml).toMatchObject({
+      bias: '0.0120',
+      intervalCoverage: '0.8100',
+      intervalWidth: '4.9000',
+      interval95Coverage: '0.9480',
+      interval95Width: '7.4000',
+    });
+    expect(latest.ranges).toHaveLength(4);
+    expect(latest.ranges[1]).toEqual({
+      level: 80,
+      forecastFrom: 4,
+      forecastTo: null,
+      qLow: -3.1,
+      qHigh: 4.4,
+      testCoverage: 0.82,
+      testPoints: 150,
+    });
+
+    const series = (
+      await as('store2')
+        .get(`/forecasts/series?productId=${P.id}&locationId=${loc.str2}`)
+        .expect(200)
+    ).body;
+    expect(series.points[0]).toMatchObject({ lower: 4, upper: 8, lower95: 3, upper95: 9.5 });
+    expect(series.ranges).toHaveLength(4);
+  });
+
+  it('V2 1b: the database refuses a 95 % range that does not contain the 80 % range', async () => {
+    await expect(
+      db.query(`UPDATE forecast.points SET lower95 = lower + 0.5 WHERE run_id = $1`, [runId]),
+    ).rejects.toThrow(/points_ranges_nested/);
   });
 
   it('respects store scope and reports missing forecasts', async () => {

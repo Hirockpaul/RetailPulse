@@ -95,3 +95,18 @@ def test_a_run_is_deterministic_for_a_seed(hist: History, outcome) -> None:
 def test_too_little_history_is_a_clear_error() -> None:
     with pytest.raises(ValueError, match="at least"):
         compute(make_history(days=90, new_share=0.0), horizon=7)
+
+
+def test_ranges_are_conformal_nested_and_their_test_coverage_is_reported() -> None:
+    from app.evaluation import intervals
+
+    hist = make_history(days=200)
+    out = compute(hist, 7)
+    assert (out.lower95 <= out.lower).all() and (out.lower <= out.yhat).all()
+    assert (out.yhat <= out.upper).all() and (out.upper <= out.upper95).all()
+    groups = len(intervals.LEVEL_EDGES) - 1
+    assert len(out.interval_groups) == 2 * groups
+    checked = [g for g in out.interval_groups if g["test_points"] > 0]
+    assert checked and all(0 <= g["test_coverage"] <= 1 for g in checked)
+    served = out.metrics[out.selection.model]["test"]
+    assert 0 < served["interval_coverage"] < served["interval95_coverage"] <= 1

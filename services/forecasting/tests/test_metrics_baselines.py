@@ -78,13 +78,15 @@ def test_score_by_horizon_reports_each_day_ahead() -> None:
     assert all(r["n_points"] == 2 * 2 for r in rows)  # 2 eligible series x 2 days each
 
 
-def test_interval_scoring_matches_the_nominal_level_when_errors_really_are_normal() -> None:
-    from app.evaluation.backtest import score_interval
+def test_range_scoring_matches_the_nominal_level_when_errors_really_are_normal() -> None:
+    from app.evaluation.backtest import score_range
+    from app.evaluation.intervals import normal_band
 
     rng = np.random.default_rng(0)
     sigma = rng.uniform(1, 3, 400)
     predicted = np.full((400, 50), 100.0)
     actual = predicted + rng.normal(0, 1, (400, 50)) * sigma[:, None]
-    out = score_interval(actual, predicted, sigma, np.ones(400, bool), 1.2816)
-    assert out["interval_coverage"] == pytest.approx(0.80, abs=0.01)
-    assert out["interval_width"] == pytest.approx(2 * 1.2816 * sigma.mean(), rel=1e-6)
+    lower, upper = normal_band(predicted, sigma, 1.2816)
+    coverage, width = score_range(actual, lower, upper, np.ones_like(actual, bool))
+    assert coverage == pytest.approx(0.80, abs=0.01)
+    assert width == pytest.approx(2 * 1.2816 * sigma.mean(), rel=1e-6)

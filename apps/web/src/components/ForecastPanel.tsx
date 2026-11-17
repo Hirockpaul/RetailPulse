@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useState } from 'react';
-import { fetchSeriesForecast } from '../api/forecasts';
+import { fetchSeriesForecast, rangeGroupFor, type SeriesForecast } from '../api/forecasts';
 import { listLocations } from '../api/locations';
 import { useUser } from '../lib/auth';
 import { formatDateTime, formatDecimal, formatPercent } from '../lib/format';
@@ -74,6 +74,7 @@ function StoreForecast({ productId, locationId }: { productId: string; locationI
   return (
     <div className="space-y-3 rounded-lg border bg-white p-4">
       <ForecastChart history={f.history} points={f.points} />
+      <RangeExplanation f={f} />
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
         <Fact label="Model">
           {f.model} {f.isFallback && <Badge tone="warn" label="fallback" />}
@@ -88,6 +89,55 @@ function StoreForecast({ productId, locationId }: { productId: string; locationI
         {f.run.dataLabel === 'SYNTHETIC' && <Badge tone="warn" label="Synthetic data" />} Forecast
         generated {f.run.finishedAt ? formatDateTime(f.run.finishedAt) : '—'} from history up to{' '}
         {f.run.historyEnd ?? '—'}. A forecast is advice; it never orders or moves stock by itself.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The range in words, with how often ranges like it held on the untouched test window. The
+ * daily ranges are not added up: a range for the 14-day total would need its own calculation.
+ */
+function RangeExplanation({ f }: { f: SeriesForecast }) {
+  if (f.points.length === 0) return null;
+  const total = f.points.reduce((n, p) => n + p.yhat, 0);
+  const perDay = total / f.points.length;
+  const first = f.points[0];
+  const group80 = rangeGroupFor(f.ranges, 80, perDay);
+  const group95 = rangeGroupFor(f.ranges, 95, perDay);
+  return (
+    <div className="rounded border border-sky-100 bg-sky-50 px-3 py-2 text-sm text-slate-700">
+      <p>
+        Expected: about <strong>{formatDecimal(total)} units</strong> over the next{' '}
+        {f.points.length} days ({formatDecimal(perDay)} per day). Tomorrow:{' '}
+        {formatDecimal(first.yhat)} units, with an 80% range of {formatDecimal(first.lower)}–
+        {formatDecimal(first.upper)}
+        {first.lower95 != null && first.upper95 != null && (
+          <>
+            {' '}
+            and a 95% range of {formatDecimal(first.lower95)}–{formatDecimal(first.upper95)}
+          </>
+        )}
+        .
+      </p>
+      <p className="mt-1 text-xs text-slate-600">
+        {group80?.testCoverage != null ? (
+          <>
+            How reliable: for forecasts of this size, the 80% range held on{' '}
+            <strong>{formatPercent(group80.testCoverage)}</strong> of days in the test period
+            {group95?.testCoverage != null && (
+              <> (95% range: {formatPercent(group95.testCoverage)})</>
+            )}
+            , measured on {group80.testPoints.toLocaleString()} days the model had not seen.
+          </>
+        ) : (
+          <>
+            The reliability of this range has not been measured (run made before ranges were
+            checked).
+          </>
+        )}{' '}
+        Ranges come from the model&apos;s real past errors; they are a guide, not a guarantee, and
+        the daily ranges cannot simply be added up for the total.
       </p>
     </div>
   );

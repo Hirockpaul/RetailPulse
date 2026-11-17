@@ -6,6 +6,7 @@ import { ForecastsRepository } from './forecasts.repository';
 import type {
   ForecastRun,
   ModelMetric,
+  RangeGroup,
   RunForecastBody,
   SeriesForecast,
   SeriesQuery,
@@ -33,9 +34,15 @@ export class ForecastsService {
     latest: ForecastRun | null;
     current: ForecastRun | null;
     metrics: ModelMetric[];
+    ranges: RangeGroup[];
   }> {
     const [latest, current] = await Promise.all([this.repo.latestRun(), this.repo.latestRun(true)]);
-    return { latest, current, metrics: current ? await this.repo.metrics(current.id) : [] };
+    if (!current) return { latest, current, metrics: [], ranges: [] };
+    const [metrics, ranges] = await Promise.all([
+      this.repo.metrics(current.id),
+      this.repo.ranges(current.id),
+    ]);
+    return { latest, current, metrics, ranges };
   }
 
   /** For other modules: the newest successful run, or null. */
@@ -63,6 +70,7 @@ export class ForecastsService {
         historyEnd: run.historyEnd,
       },
       ...series,
+      ranges: await this.repo.ranges(run.id),
     };
   }
 }

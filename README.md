@@ -298,10 +298,10 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | `GET /overview` (classifies all 1,000 product × store positions) | p50 19 ms, p95 **24 ms** |
 | 500 simulated POS sales, 8 at a time | **2.4 s** (≈ 200 sales/s), 0 unexpected errors |
 | Forecast run, 1,000 series (3 models + backtest) | 35–40 s |
-| Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`) — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
+| Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 736 MB |
-| Tests | 119 unit/HTTP + 202 integration (TypeScript), 66 Python, 1 end-to-end |
+| Tests | 119 unit/HTTP + 204 integration (TypeScript), 73 Python, 1 end-to-end |
 
 ## Known limitations
 

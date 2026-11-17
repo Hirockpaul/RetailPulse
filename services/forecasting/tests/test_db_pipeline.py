@@ -101,6 +101,28 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
             (run_id,),
         ).fetchall()
         assert quality == [("test", 3, 3), ("validation", 3, 0)]
+        # V2 step 1b: 95 % range next to the 80 % one, nested, and its calibration per level group.
+        ranges = conn.execute(
+            """SELECT count(*), count(*) FILTER (WHERE lower95 <= lower AND lower <= yhat
+                                                  AND yhat <= upper AND upper <= upper95)
+                 FROM forecast.points WHERE run_id = %s""",
+            (run_id,),
+        ).fetchone()
+        assert ranges[0] == ranges[1] > 0
+        calibration = conn.execute(
+            """SELECT level, count(*), sum(n_calibration) > 0, bool_and(q_low <= q_high)
+                 FROM forecast.interval_calibration WHERE run_id = %s GROUP BY level ORDER BY level""",
+            (run_id,),
+        ).fetchall()
+        assert calibration == [(80, 6, True, True), (95, 6, True, True)]
+        assert (
+            conn.execute(
+                """SELECT count(*) FROM forecast.model_metrics
+                WHERE run_id = %s AND split = 'test' AND interval95_coverage > interval_coverage""",
+                (run_id,),
+            ).fetchone()[0]
+            == 3
+        )
         per_horizon = conn.execute(
             """SELECT count(*), count(DISTINCT horizon_day), min(horizon_day), max(horizon_day)
                  FROM forecast.horizon_metrics WHERE run_id = %s""",

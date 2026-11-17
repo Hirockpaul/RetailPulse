@@ -2,18 +2,33 @@ import { formatDay } from '../lib/format';
 
 interface Props {
   history: { day: string; units: number }[];
-  points: { day: string; yhat: number; lower: number; upper: number }[];
+  points: {
+    day: string;
+    yhat: number;
+    lower: number;
+    upper: number;
+    lower95?: number | null;
+    upper95?: number | null;
+  }[];
 }
 
 const W = 720;
 const H = 230;
 const PAD = { left: 40, right: 12, top: 12, bottom: 28 };
 
-/** Plain-SVG chart: recent daily sales (grey) and the forecast with its 80% range (blue). */
+/**
+ * Plain-SVG chart: recent daily sales (grey) and the forecast (blue) with its 80% range, and the
+ * 95% range in a lighter shade when the run has one.
+ */
 export function ForecastChart({ history, points }: Props) {
   const days = [...history.map((h) => h.day), ...points.map((p) => p.day)];
   if (days.length < 2) return null;
-  const max = Math.max(1, ...history.map((h) => h.units), ...points.map((p) => p.upper));
+  const has95 = points.length > 0 && points.every((p) => p.lower95 != null && p.upper95 != null);
+  const max = Math.max(
+    1,
+    ...history.map((h) => h.units),
+    ...points.map((p) => (has95 ? (p.upper95 as number) : p.upper)),
+  );
   const top = Math.ceil(max / 5) * 5;
   const x = (i: number) => PAD.left + (i / (days.length - 1)) * (W - PAD.left - PAD.right);
   const y = (v: number) => PAD.top + (1 - v / top) * (H - PAD.top - PAD.bottom);
@@ -23,17 +38,25 @@ export function ForecastChart({ history, points }: Props) {
     values
       .map((v, i) => `${i === 0 ? 'M' : 'L'}${x(start + i).toFixed(1)},${y(v).toFixed(1)}`)
       .join(' ');
-  const band =
-    points.length > 0
-      ? `${points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(offset + i).toFixed(1)},${y(p.upper).toFixed(1)}`).join(' ')} ` +
-        [...points]
+  const bandPath = (upper: number[], lower: number[]) =>
+    upper.length > 0
+      ? `${upper.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(offset + i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')} ` +
+        [...lower]
           .reverse()
-          .map(
-            (p, i) => `L${x(offset + points.length - 1 - i).toFixed(1)},${y(p.lower).toFixed(1)}`,
-          )
+          .map((v, i) => `L${x(offset + lower.length - 1 - i).toFixed(1)},${y(v).toFixed(1)}`)
           .join(' ') +
         ' Z'
       : '';
+  const band = bandPath(
+    points.map((p) => p.upper),
+    points.map((p) => p.lower),
+  );
+  const band95 = has95
+    ? bandPath(
+        points.map((p) => p.upper95 as number),
+        points.map((p) => p.lower95 as number),
+      )
+    : '';
   const ticks = [0, Math.round(top / 2), top];
   const labelAt = [0, Math.floor((days.length - 1) / 2), days.length - 1];
 
@@ -63,7 +86,8 @@ export function ForecastChart({ history, points }: Props) {
             strokeDasharray="4 3"
           />
         )}
-        {band && <path d={band} fill="#bae6fd" opacity="0.6" />}
+        {band95 && <path d={band95} fill="#e0f2fe" opacity="0.9" />}
+        {band && <path d={band} fill="#bae6fd" opacity="0.8" />}
         <path
           d={line(
             history.map((h) => h.units),
@@ -108,8 +132,14 @@ export function ForecastChart({ history, points }: Props) {
         </span>
         <span>
           <span className="mr-1 inline-block h-2 w-4 bg-sky-200 align-middle" />
-          80% range (typical forecast error)
+          80% range
         </span>
+        {has95 && (
+          <span>
+            <span className="mr-1 inline-block h-2 w-4 bg-sky-100 align-middle" />
+            95% range
+          </span>
+        )}
       </figcaption>
     </figure>
   );

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../core/database/database.service';
-import type { ForecastRun, ModelMetric, SeriesForecast } from './forecasts.schemas';
+import type { ForecastRun, ModelMetric, RangeGroup, SeriesForecast } from './forecasts.schemas';
 
 const RUN_SELECT = `
   SELECT r.id, r.status, r.started_at AS "startedAt", r.finished_at AS "finishedAt",
@@ -29,10 +29,25 @@ export class ForecastsRepository {
 
   async metrics(runId: string): Promise<ModelMetric[]> {
     const { rows } = await this.db.query<ModelMetric>(
-      `SELECT model, split, mae::text, rmse::text, wape::text, n_points AS "nPoints",
-              n_series AS "nSeries"
+      `SELECT model, split, mae::text, rmse::text, wape::text, bias::text,
+              interval_coverage::text AS "intervalCoverage", interval_width::text AS "intervalWidth",
+              interval95_coverage::text AS "interval95Coverage",
+              interval95_width::text AS "interval95Width",
+              n_points AS "nPoints", n_series AS "nSeries"
          FROM forecast.model_metrics WHERE run_id = $1
         ORDER BY split DESC, wape NULLS LAST`,
+      [runId],
+    );
+    return rows;
+  }
+
+  async ranges(runId: string): Promise<RangeGroup[]> {
+    const { rows } = await this.db.query<RangeGroup>(
+      `SELECT level, forecast_from::float8 AS "forecastFrom", forecast_to::float8 AS "forecastTo",
+              q_low::float8 AS "qLow", q_high::float8 AS "qHigh",
+              test_coverage::float8 AS "testCoverage", test_points AS "testPoints"
+         FROM forecast.interval_calibration WHERE run_id = $1
+        ORDER BY level, group_index`,
       [runId],
     );
     return rows;
@@ -43,7 +58,7 @@ export class ForecastsRepository {
     productId: string,
     locationId: string,
     historyDays: number,
-  ): Promise<Omit<SeriesForecast, 'run'> | null> {
+  ): Promise<Omit<SeriesForecast, 'run' | 'ranges'> | null> {
     const head = await this.db.query<{
       model: string;
       isFallback: boolean;
@@ -64,7 +79,8 @@ export class ForecastsRepository {
     const [points, history] = await Promise.all([
       this.db.query<SeriesForecast['points'][number]>(
         `SELECT target_day::text AS day, horizon_day AS "horizonDay", yhat::float8 AS yhat,
-                lower::float8 AS lower, upper::float8 AS upper
+                lower::float8 AS lower, upper::float8 AS upper,
+                lower95::float8 AS lower95, upper95::float8 AS upper95
            FROM forecast.points WHERE run_id = $1 AND product_id = $2 AND location_id = $3
           ORDER BY target_day`,
         [runId, productId, locationId],

@@ -187,6 +187,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
 
 ### Key table shapes
 
@@ -283,8 +284,8 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `POST /ops/events/:id/replay`         | —                                              | `409 EVENT_ALREADY_PENDING` if still queued |
 
 | `POST /forecasts/run`                 | body `{ horizonDays? }`                        | starts a run in the Python service; `202`; `503 FORECAST_SERVICE_UNAVAILABLE` if it is not running |
-| `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics }`: progress of the newest run, and the newest successful one with accuracy |
-| `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + range for one product at one store |
+| `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics, ranges }`: progress of the newest run, and the newest successful one with accuracy (WAPE, bias, range coverage) and range calibration per sales level |
+| `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + 80 % and 95 % ranges + the run's range calibration, for one product at one store |
 | `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
 | `GET /replenishment/recommendations`  | `status, action, risk, locationId, productId, page, pageSize` | most urgent first; store managers: own stores |
 | `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
@@ -451,7 +452,7 @@ flowchart LR
 | Metrics | MAE, RMSE, WAPE (total error ÷ total units sold) and **bias** (Σ(forecast − actual) ÷ Σ actual), pooled over series with enough history, for every model on validation and test; the same per horizon day in `forecast.horizon_metrics`; and the 80 % range's **coverage and width** on the test window, built from validation errors only. All persisted per run. |
 | Selection | The best baseline is chosen on **validation**. The ML model is served only if its WAPE beats that baseline on **both** validation and the untouched test window; otherwise the baseline is served and the run says so. |
 | Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
-| Uncertainty | Each series carries a typical error (backtest RMSE); the API/UI show an 80 % range (± 1.28 σ). |
+| Uncertainty | **80 % and 95 % ranges from measured errors** (split conformal, V2 1b, `evaluation/intervals.py`): residuals (actual − forecast) of the served model are grouped by forecast level (0–0.5, 0.5–1, 1–2, 2–4, 4–8, 8+ units/day) and their 10/90 % (2.5/97.5 %) quantiles are added to the forecast, never below 0 and always containing the forecast. Coverage is checked honestly — calibrated on validation, scored on test — overall and per level group (`forecast.interval_calibration`); live ranges use both windows. Replaces the Day-6 ± 1.28 σ band, which held 91 % for slow sellers and 78 % for fast ones. The UI states the range in words with its measured reliability. |
 | Persistence | `forecast.runs` (windows, served model version, selection reason, data label), `model_versions`, `model_metrics`, `series`, `points`. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
 | API | `POST /forecast/run` (202, runs in the background), `GET /forecast/runs/latest`, `GET /forecast/runs/{id}`, `GET /forecast/{sku}/{store}`. **No authentication of its own: run it on localhost / a private network only.** |
 
@@ -490,13 +491,20 @@ in memory (real catalog: 200 products × 5 stores, 365 days, seed 42, with the p
 and 151 labelled anomaly days injected) and runs the full evaluation. 950 of 1,000 series had
 enough history; test window = the last 28 days, scored 1–7 days ahead.
 
-| Model | WAPE (validation) | WAPE (test) | Bias (test) | 80 % range: coverage (test) | Range width |
-| ----- | ----------------: | ----------: | ----------: | --------------------------: | ----------: |
-| Noise floor: knowing the true expected demand (only possible with synthetic data) | — | 51.0 % | — | — | — |
-| **Gradient boosting, V2 features (served)** | 50.9 % | **51.6 %** | +0.1 % | 83.4 % | 5.09 units |
-| Gradient boosting, Day 6 features (for comparison) | 51.4 % | 52.2 % | +0.3 % | 83.4 % | 5.14 units |
-| Moving average, 28 days | 53.7 % | 54.4 % | +2.7 % | 83.4 % | 5.37 units |
-| Same weekday last week | 70.4 % | 71.3 % | +1.1 % | 80.6 % | 6.19 units |
+| Model | WAPE (validation) | WAPE (test) | Bias (test) | 80 % range held (test) | 95 % range held (test) | 80 % width |
+| ----- | ----------------: | ----------: | ----------: | ---------------------: | ---------------------: | ---------: |
+| Noise floor: knowing the true expected demand (only possible with synthetic data) | — | 51.0 % | — | — | — | — |
+| **Gradient boosting, V2 features (served)** | 50.9 % | **51.6 %** | +0.1 % | **80.0 %** | **94.9 %** | 4.94 units |
+| Gradient boosting, Day 6 features (for comparison) | 51.4 % | 52.2 % | +0.3 % | — | — | — |
+| Moving average, 28 days | 53.7 % | 54.4 % | +2.7 % | 81.3 % | 95.7 % | 5.12 units |
+| Same weekday last week | 70.4 % | 71.3 % | +1.1 % | 87.7 % | 97.8 % | 6.02 units |
+
+Range coverage per forecast level (served model, test window, 80 % / 95 %): 0–0.5 units/day
+84.2 / 94.8 % · 0.5–1: 79.6 / 95.3 % · 1–2: 78.5 / 93.8 % · 2–4: 80.0 / 94.9 % · 4–8: 81.3 / 95.5 % ·
+8+: 80.9 / 95.7 %. The Day-6 band (± 1.28 σ) on the same forecasts held 83.4 % overall but 91.1 %
+for 0–0.5 and 78.4 % for 8+ (measured once with a diagnostic in step 1b; the reason is tested in
+`tests/test_intervals.py`). Slow sellers stay above 80 % because sales of 0 or 1 unit leave no
+narrower honest range.
 
 Gradient boosting test WAPE by days ahead (1 → 7): 53.5 · 52.3 · 52.6 · 50.2 · 47.2 · 53.3 · 54.8 %
 (it varies with the weekday mix of each horizon more than with distance).
@@ -506,8 +514,8 @@ floor is expected. The V2 model is **0.6 points** from that floor and **2.8 poin
 the best simple method; the Day 6 model was 1.2 points from the floor. The gain comes from the
 **promotion calendar**: re-encoding category/store as numeric codes alone changed nothing
 (52.2 → 52.3 % with one-hot, 51.6 % codes vs 51.6 % one-hot once promotions are added).
-Bias is close to zero. The 80 % range covers 83 % of actual values — slightly too wide overall;
-how well it fits slow vs fast movers is measured in step 1b. A run takes ~35–40 s for 1,000 series
+Bias is close to zero. Since step 1b the 80 % and 95 % ranges hold their level within ±2 points
+overall and in every sales-level group except the slowest (see above). A run takes ~35–40 s for 1,000 series
 on a laptop (Day 6 encoding: ~30 s). Re-measure whenever the models or the generator change.
 
 Two honest caveats about the promotion feature: (1) promotions are synthetic and their effect is a
@@ -585,9 +593,9 @@ RetailPulse/
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
 │       │   ├── models/ ✅           baselines.py, ml.py
-│       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), metrics.py, report.py (npm run forecast:measure)
+│       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), intervals.py (conformal ranges), metrics.py, report.py (npm run forecast:measure)
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                66 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                73 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
@@ -705,3 +713,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 48 | Category and store enter the model as numeric codes, not native categorical splits (V2 1a) | A spike showed SHAP's TreeExplainer returns non-additive (wrong) values for native categorical splits; codes keep it exact. Measured: same test WAPE as one-hot and as Day 6 | A tree needs several splits to isolate one store; harmless at this size |
 | 49 | The promotion calendar is a known input for the target day | Promotions are planned in advance, like the calendar; without it the model learns promotion spikes as noise | Synthetic promotions are easy to model (fixed ×1.6); none are planned for the live horizon |
 | 50 | Anomalies are injected with labels on a separate random stream | Detection can be measured (precision/recall) and every other day keeps the value it had before | The injected kinds (spike, 3-day drop) are simpler than real anomalies |
+| 51 | Forecast ranges by split conformal, grouped by forecast level (V2 1b) | Uses the model's real errors, no normal assumption; skewed counts get asymmetric ranges; coverage is checked on data the calibration never saw | Assumes the coming weeks resemble the calibration weeks; days 8–14 reuse the 1–7-day quantiles; the daily ranges cannot be summed into a range for a total |
+

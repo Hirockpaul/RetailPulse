@@ -12,7 +12,7 @@ EVAL_WINDOW_DAYS = 28  # length of the validation window and of the untouched te
 EVAL_HORIZON_DAYS = 7  # accuracy is measured 1-7 days ahead, from rolling origins
 MIN_HISTORY_DAYS = 56  # fewer observed days than this -> category-average fallback
 DEFAULT_HORIZON_DAYS = 14
-INTERVAL_Z = 1.2816  # 80% prediction interval from backtest errors
+INTERVAL_Z = 1.2816  # Day-6 normal 80% band; only used to compare (ranges: evaluation/intervals.py)
 
 
 def _load_dotenv() -> None:
