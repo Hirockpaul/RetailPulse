@@ -15,7 +15,7 @@ import psycopg
 
 from app.config import DEFAULT_HORIZON_DAYS, PIPELINE_VERSION
 from app.data import History
-from app.models.ml import FEATURES
+from app.models.ml import FEATURES  # descriptive list for the model version
 
 KEEP_RUNS = 5
 
@@ -92,10 +92,11 @@ def _model_params(horizon: int) -> list[tuple[str, str, str, str, dict[str, Any]
         ),
         (
             "hgb_direct",
-            "1",
+            "2",
             "ML",
             "Global gradient boosting (scikit-learn HistGradientBoostingRegressor, Poisson loss), "
-            "direct multi-horizon, trained on lag and calendar features.",
+            "direct multi-horizon, trained on lag, calendar and promotion-calendar features "
+            "(weekday, category and store as numeric codes).",
             {
                 "loss": "poisson",
                 "learning_rate": 0.08,
@@ -103,6 +104,7 @@ def _model_params(horizon: int) -> list[tuple[str, str, str, str, dict[str, Any]
                 "max_leaf_nodes": 31,
                 "min_samples_leaf": 200,
                 "features": FEATURES,
+                "categoricalEncoding": "numeric codes (no native categorical splits)",
                 "training_horizon": horizon,
             },
         ),
@@ -143,7 +145,7 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
         else (next(iter(hist.sources)) if hist.sources else "UNKNOWN")
     )
     params_digest = hashlib.sha256(
-        json.dumps([PIPELINE_VERSION, FEATURES, outcome.horizon]).encode()
+        json.dumps([PIPELINE_VERSION, outcome.feature_names, outcome.horizon]).encode()
     ).hexdigest()[:12]
     conn.execute(
         """UPDATE forecast.runs SET
@@ -167,7 +169,7 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
             versions[outcome.selection.model],
             outcome.selection.reason,
             outcome.selection.ml_beat_baseline,
-            FEATURES,
+            outcome.feature_names,
             json.dumps({"pipelineVersion": PIPELINE_VERSION, "digest": params_digest}),
             run_id,
         ),
@@ -181,8 +183,9 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
             for split, m in per_split.items():
                 cur.execute(
                     """INSERT INTO forecast.model_metrics
-                         (run_id, model, split, mae, rmse, wape, n_points, n_series)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                         (run_id, model, split, mae, rmse, wape, bias, interval_coverage,
+                          interval_width, n_points, n_series)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         run_id,
                         model,
@@ -190,10 +193,29 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                         num(m["mae"]),
                         num(m["rmse"]),
                         num(m["wape"]),
+                        num(m["bias"]),
+                        num(m["interval_coverage"]),
+                        num(m["interval_width"]),
                         m["n_points"],
                         m["n_series"],
                     ),
                 )
+        for h in outcome.horizon_metrics:
+            cur.execute(
+                """INSERT INTO forecast.horizon_metrics
+                     (run_id, model, split, horizon_day, mae, wape, bias, n_points)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    run_id,
+                    h["model"],
+                    h["split"],
+                    h["horizon_day"],
+                    num(h["mae"]),
+                    num(h["wape"]),
+                    num(h["bias"]),
+                    h["n_points"],
+                ),
+            )
         with cur.copy(
             "COPY forecast.series (run_id, product_id, location_id, history_days, model, "
             "is_fallback, avg_daily_28, std_daily_90, sigma, test_wape) FROM STDIN"

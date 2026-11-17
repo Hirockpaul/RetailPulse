@@ -17,6 +17,7 @@
     "measure": "node scripts/simulation/measure.mjs",
     "forecast:history": "cd services/forecasting && .venv/bin/python -m app.synthetic",
     "forecast:serve": "cd services/forecasting && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
+    "forecast:measure": "cd services/forecasting && .venv/bin/python -m app.evaluation.report",
     "forecast:test": "cd services/forecasting && .venv/bin/ruff check . && .venv/bin/pytest -q",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

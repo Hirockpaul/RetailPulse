@@ -25,12 +25,60 @@ def test_features_use_only_data_up_to_the_origin() -> None:
 
 def test_feature_matrix_has_the_documented_columns() -> None:
     hist = make_history()
-    x = ml.FeatureBuilder(hist).features(100, 5)
-    assert x.shape == (hist.n_series, len(ml.FEATURES))
+    builder = ml.FeatureBuilder(hist)
+    names = builder.feature_names
+    x = builder.features(100, 5)
+    assert x.shape == (hist.n_series, len(names))
     assert np.isfinite(x).all()
-    assert set(np.unique(x[:, ml.FEATURES.index("horizon")])) == {5}
-    weekdays = np.unique(x[:, ml.FEATURES.index("weekday")])
+    assert set(np.unique(x[:, names.index("horizon")])) == {5}
+    weekdays = np.unique(x[:, names.index("weekday")])
     assert len(weekdays) == 1 and 0 <= weekdays[0] <= 6
+
+
+def test_category_and_store_are_numeric_codes_so_tree_explanations_are_exact() -> None:
+    hist = make_history()
+    builder = ml.FeatureBuilder(hist)
+    names = builder.feature_names
+    x = builder.features(100, 3)
+    assert np.array_equal(x[:, names.index("category")], hist.category)
+    assert np.array_equal(x[:, names.index("store")], hist.store)
+    assert builder.categorical is None  # no native categorical splits (SHAP is wrong for those)
+
+
+def test_one_hot_encoding_is_available_for_comparison() -> None:
+    hist = make_history()
+    builder = ml.FeatureBuilder(hist, ml.FeatureConfig("onehot"))
+    names = builder.feature_names
+    x = builder.features(100, 3)
+    cat = [i for i, n in enumerate(names) if n.startswith("category=")]
+    store = [i for i, n in enumerate(names) if n.startswith("store=")]
+    assert len(cat) == hist.category.max() + 1 and len(store) == hist.store.max() + 1
+    assert (x[:, cat].sum(axis=1) == 1).all() and (x[:, store].sum(axis=1) == 1).all()
+
+
+def test_the_day6_encoding_stays_available_for_comparison() -> None:
+    builder = ml.FeatureBuilder(make_history(), ml.FeatureConfig(encoding="native", promo=False))
+    names = builder.feature_names
+    assert names[-2:] == ["category", "store"] and "promo_target" not in names
+    assert builder.categorical == [names.index(n) for n in ("weekday", "category", "store")]
+
+
+def test_promotion_features_use_the_plan_for_the_target_day_and_only_past_promotions() -> None:
+    hist = make_history()
+    origin, h = 100, 3
+    promo = np.ones_like(hist.y)
+    promo[0, origin + h] = 1.6  # planned for the target day: a known input
+    promo[1, origin - 2] = 1.6  # a promotion two days ago: counted
+    promo[2, origin + 1] = 1.6  # after the origin and not the target day: must be ignored
+    builder = ml.FeatureBuilder(History(**{**hist.__dict__, "promo": promo}))
+    names = builder.feature_names
+    x = builder.features(origin, h)
+    assert x[0, names.index("promo_target")] == 1.6
+    assert x[1, names.index("promo_target")] == 1.0
+    assert x[1, names.index("promo_days_7d")] == 1
+    assert x[2, names.index("promo_days_7d")] == 0 and x[2, names.index("promo_target")] == 1.0
+    # Beyond the end of the history no promotion is planned.
+    assert (builder.features(hist.n_days - 1, 5)[:, names.index("promo_target")] == 1.0).all()
 
 
 def test_weekday_feature_matches_the_calendar() -> None:
@@ -40,7 +88,7 @@ def test_weekday_feature_matches_the_calendar() -> None:
     expected = int(
         (hist.days[0] + np.timedelta64(origin + h, "D")).astype("datetime64[D]").item().weekday()
     )
-    assert builder.features(origin, h)[0, ml.FEATURES.index("weekday")] == expected
+    assert builder.features(origin, h)[0, builder.feature_names.index("weekday")] == expected
 
 
 def test_training_rows_never_include_anything_after_train_end() -> None:

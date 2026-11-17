@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.config import EVAL_HORIZON_DAYS, EVAL_WINDOW_DAYS, MIN_HISTORY_DAYS
-from app.evaluation.metrics import mae, rmse, wape
+from app.evaluation.metrics import bias, interval_coverage, interval_width, mae, rmse, wape
 
 BASELINES = ("moving_average_28", "seasonal_naive_7")
 ML_MODEL = "hgb_direct"
@@ -71,10 +71,57 @@ def score(actual: np.ndarray, predicted: np.ndarray, eligible: np.ndarray) -> di
         "mae": mae(a, p),
         "rmse": rmse(a, p),
         "wape": wape(a, p),
+        "bias": bias(a, p),
         "n_points": int(mask.sum()),
         "n_series": int(eligible.sum()),
         "series_wape": series_wape,
         "series_rmse": series_rmse,
+    }
+
+
+def horizon_days(start: int, end: int, horizon: int = EVAL_HORIZON_DAYS) -> np.ndarray:
+    """For each day in [start, end): how many days ahead rolling_forecast predicted it (1..horizon)."""
+    return (np.arange(end - start) % horizon) + 1
+
+
+def score_by_horizon(
+    actual: np.ndarray, predicted: np.ndarray, eligible: np.ndarray, start: int, end: int
+) -> list[dict]:
+    """MAE, WAPE and bias per forecast horizon (1 day ahead, 2 days ahead, …)."""
+    h_of_day = horizon_days(start, end)
+    rows = []
+    for h in np.unique(h_of_day):
+        cols = h_of_day == h
+        mask = eligible[:, None] & np.isfinite(actual[:, cols])
+        a, p = actual[:, cols][mask], predicted[:, cols][mask]
+        rows.append(
+            {
+                "horizon_day": int(h),
+                "mae": mae(a, p),
+                "wape": wape(a, p),
+                "bias": bias(a, p),
+                "n_points": int(mask.sum()),
+            }
+        )
+    return rows
+
+
+def score_interval(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    sigma: np.ndarray,
+    eligible: np.ndarray,
+    z: float,
+) -> dict:
+    """Coverage and mean width of the range predicted ± z·sigma (clipped at 0), pooled over
+    eligible series. `sigma` (one per series) must come from data BEFORE `actual` — e.g. the
+    validation window when scoring the test window — or the coverage would be flattering."""
+    lower = np.clip(predicted - z * sigma[:, None], 0.0, None)
+    upper = predicted + z * sigma[:, None]
+    mask = eligible[:, None] & np.isfinite(actual) & np.isfinite(sigma)[:, None]
+    return {
+        "interval_coverage": interval_coverage(actual[mask], lower[mask], upper[mask]),
+        "interval_width": interval_width(lower[mask], upper[mask]),
     }
 
 

@@ -186,6 +186,7 @@ erDiagram
 | 4 ✅ | `users`, `user_store_access`, `sessions`, `stock_transfers`, `stock_transfer_lines` (+ ledger `actor_id` FK) |
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
+| V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
 
 ### Key table shapes
 
@@ -444,10 +445,10 @@ flowchart LR
 
 | Step | What happens |
 | ---- | ------------ |
-| History | `forecast.demand_daily`: units per product × store × day. `SYNTHETIC` rows come from a seeded generator (`python -m app.synthetic`: category base × product popularity × store size × weekday pattern × yearly season × trend × promotions, negative-binomial noise, a few slow movers and new products). `LEDGER` rows are rolled up from real SALE movements of complete (UTC) days and win over synthetic rows for the same day. |
+| History | `forecast.demand_daily`: units per product × store × day. `SYNTHETIC` rows come from a seeded generator (`python -m app.synthetic`: category base × product popularity × store size × weekday pattern × yearly season × trend × promotions, negative-binomial noise, a few slow movers and new products). The generator also stores its promotion calendar (`forecast.promotions`) and, by default, injects **labelled** anomalies — one-day spikes and 3-day drops to zero in 12 % of series, never on promotion days — into `forecast.injected_anomalies` as ground truth for anomaly detection (`--anomaly-share 0` turns them off). `LEDGER` rows are rolled up from real SALE movements of complete (UTC) days and win over synthetic rows for the same day. |
 | Windows | The last 28 days are the **test** window, the 28 before it the **validation** window, everything earlier is training. Models are scored 1–7 days ahead from rolling origins every 7 days, so each window day is predicted once from earlier data only. |
-| Models | `moving_average_28` (mean of the last 28 days), `seasonal_naive_7` (same weekday of the latest known week), `hgb_direct` (one global scikit-learn `HistGradientBoostingRegressor`, Poisson loss, direct multi-horizon; features are lags/means/std/same-weekday values at the origin, horizon, calendar and category/store — all computed from data up to the origin). The ML model is retrained for each split on data *before* that split. |
-| Metrics | MAE, RMSE and WAPE (total error ÷ total units sold), pooled over series with enough history, for every model on validation and test, persisted per run. |
+| Models | `moving_average_28` (mean of the last 28 days), `seasonal_naive_7` (same weekday of the latest known week), `hgb_direct` (one global scikit-learn `HistGradientBoostingRegressor`, Poisson loss, direct multi-horizon; features are lags/means/std/same-weekday values at the origin, horizon, calendar, category/store as numeric codes, and the promotion calendar: uplift planned for the target day plus promotion days in the last 7 — all other values computed from data up to the origin). No native categorical splits, so tree explanations are exact (decision #48). The ML model is retrained for each split on data *before* that split. |
+| Metrics | MAE, RMSE, WAPE (total error ÷ total units sold) and **bias** (Σ(forecast − actual) ÷ Σ actual), pooled over series with enough history, for every model on validation and test; the same per horizon day in `forecast.horizon_metrics`; and the 80 % range's **coverage and width** on the test window, built from validation errors only. All persisted per run. |
 | Selection | The best baseline is chosen on **validation**. The ML model is served only if its WAPE beats that baseline on **both** validation and the untouched test window; otherwise the baseline is served and the run says so. |
 | Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
 | Uncertainty | Each series carries a typical error (backtest RMSE); the API/UI show an 80 % range (± 1.28 σ). |
@@ -484,21 +485,35 @@ rounded UP to whole packs (purchase orders: at least the supplier minimum, in wh
 
 ### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
 
-Measured on the seeded dev data (200 products × 5 stores, 365 days, seed 42; 950 of 1,000 series
-had enough history; test window = the last 28 days):
+Re-measured in V2 step 1a with `npm run forecast:measure`, which rebuilds exactly the dev history
+in memory (real catalog: 200 products × 5 stores, 365 days, seed 42, with the promotion calendar
+and 151 labelled anomaly days injected) and runs the full evaluation. 950 of 1,000 series had
+enough history; test window = the last 28 days, scored 1–7 days ahead.
 
-| Model | WAPE (test) | Average miss per day |
-| ----- | ----------: | -------------------: |
-| Knowing the true average demand (noise floor, only possible because the data is synthetic) | 50.9 % | 1.57 units |
-| Gradient boosting (served) | 52.2 % | 1.60 units |
-| Moving average, 28 days | 54.3 % | 1.67 units |
-| Same weekday last week | 71.1 % | 2.19 units |
+| Model | WAPE (validation) | WAPE (test) | Bias (test) | 80 % range: coverage (test) | Range width |
+| ----- | ----------------: | ----------: | ----------: | --------------------------: | ----------: |
+| Noise floor: knowing the true expected demand (only possible with synthetic data) | — | 51.0 % | — | — | — |
+| **Gradient boosting, V2 features (served)** | 50.9 % | **51.6 %** | +0.1 % | 83.4 % | 5.09 units |
+| Gradient boosting, Day 6 features (for comparison) | 51.4 % | 52.2 % | +0.3 % | 83.4 % | 5.14 units |
+| Moving average, 28 days | 53.7 % | 54.4 % | +2.7 % | 83.4 % | 5.37 units |
+| Same weekday last week | 70.4 % | 71.3 % | +1.1 % | 80.6 % | 6.19 units |
 
-Reading it: with daily sales of 1–5 units most of the error is unavoidable randomness, so a
-~51 % floor is expected. The ML model is within ~1.3 points of that floor and ~2 points better
-than the best simple method — a real but modest gain. A run takes ~25–30 s for 1,000 series on a
-laptop. Re-measure (and update this table) whenever the models or the data generator change; the
-numbers on the Replenishment page always come from the latest run.
+Gradient boosting test WAPE by days ahead (1 → 7): 53.5 · 52.3 · 52.6 · 50.2 · 47.2 · 53.3 · 54.8 %
+(it varies with the weekday mix of each horizon more than with distance).
+
+Reading it: with daily sales of 1–5 units most of the error is unavoidable randomness, so a ~51 %
+floor is expected. The V2 model is **0.6 points** from that floor and **2.8 points** better than
+the best simple method; the Day 6 model was 1.2 points from the floor. The gain comes from the
+**promotion calendar**: re-encoding category/store as numeric codes alone changed nothing
+(52.2 → 52.3 % with one-hot, 51.6 % codes vs 51.6 % one-hot once promotions are added).
+Bias is close to zero. The 80 % range covers 83 % of actual values — slightly too wide overall;
+how well it fits slow vs fast movers is measured in step 1b. A run takes ~35–40 s for 1,000 series
+on a laptop (Day 6 encoding: ~30 s). Re-measure whenever the models or the generator change.
+
+Two honest caveats about the promotion feature: (1) promotions are synthetic and their effect is a
+known ×1.6, so the gain is easier here than with real promotions; (2) no promotions are planned for
+the forecast horizon, so live forecasts never use it — it mainly keeps promotion spikes from
+distorting what the model learns.
 
 **Limitations:** accuracy is measured 1–7 days ahead (days 8–14 of the forecast are not scored);
 demand is not censored by stock-outs; one global model, no per-series tuning; the service has no
@@ -570,9 +585,9 @@ RetailPulse/
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
 │       │   ├── models/ ✅           baselines.py, ml.py
-│       │   ├── evaluation/ ✅       backtest.py (windows, selection rule), metrics.py
+│       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), metrics.py, report.py (npm run forecast:measure)
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                56 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                66 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
@@ -687,3 +702,6 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 45 | Housekeeping in the API (hourly timer), 7-day retention for processed events and idempotency keys | Tables stopped growing without another service or cron container | A retry with the same key after 7 days is treated as new (tested and documented) |
 | 46 | Compose profiles `full` and `observability`; ports bound to 127.0.0.1; forecasting not published | One command for a full local demo; Prometheus/Grafana stay optional | Not a deployment: no TLS, shared demo password, anonymous Grafana viewer |
 | 47 | No generated OpenAPI page | It would need either decorators on every route or a hand-kept route list; the endpoint table here is reviewed with each change | API consumers read this document instead of an interactive spec |
+| 48 | Category and store enter the model as numeric codes, not native categorical splits (V2 1a) | A spike showed SHAP's TreeExplainer returns non-additive (wrong) values for native categorical splits; codes keep it exact. Measured: same test WAPE as one-hot and as Day 6 | A tree needs several splits to isolate one store; harmless at this size |
+| 49 | The promotion calendar is a known input for the target day | Promotions are planned in advance, like the calendar; without it the model learns promotion spikes as noise | Synthetic promotions are easy to model (fixed ×1.6); none are planned for the live horizon |
+| 50 | Anomalies are injected with labels on a separate random stream | Detection can be measured (precision/recall) and every other day keeps the value it had before | The injected kinds (spike, 3-day drop) are simpler than real anomalies |

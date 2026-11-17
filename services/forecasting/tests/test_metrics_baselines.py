@@ -43,3 +43,48 @@ def test_baselines_never_look_past_the_origin() -> None:
     corrupted[:, 41:] = 9999.0  # the future, relative to origin 40
     for fn in (moving_average, seasonal_naive):
         assert np.array_equal(fn(y, 40, 7), fn(corrupted, 40, 7))
+
+
+# ---------------------------------------------------------------- V2 step 1a
+
+
+def test_bias_sign_and_size() -> None:
+    from app.evaluation.metrics import bias
+
+    actual = np.array([10.0, 10.0])
+    assert bias(actual, np.array([11.0, 11.0])) == pytest.approx(0.1)  # 10 % over
+    assert bias(actual, np.array([9.0, 9.0])) == pytest.approx(-0.1)  # 10 % under
+    assert np.isnan(bias(np.zeros(2), np.ones(2)))
+
+
+def test_interval_coverage_and_width() -> None:
+    from app.evaluation.metrics import interval_coverage, interval_width
+
+    actual = np.array([1.0, 5.0, 9.0, 3.0])
+    lower, upper = np.full(4, 2.0), np.full(4, 8.0)
+    assert interval_coverage(actual, lower, upper) == 0.25 * 2  # 5 and 3 are inside
+    assert interval_width(lower, upper) == 6.0
+
+
+def test_score_by_horizon_reports_each_day_ahead() -> None:
+    from app.evaluation.backtest import horizon_days, score_by_horizon
+
+    assert horizon_days(10, 24).tolist() == [1, 2, 3, 4, 5, 6, 7] * 2
+    actual = np.ones((3, 14))
+    predicted = actual + np.tile(np.arange(1, 8), 2)  # error grows with the horizon
+    rows = score_by_horizon(actual, predicted, np.array([True, True, False]), 10, 24)
+    assert [r["horizon_day"] for r in rows] == list(range(1, 8))
+    assert [r["mae"] for r in rows] == pytest.approx(list(range(1, 8)))
+    assert all(r["n_points"] == 2 * 2 for r in rows)  # 2 eligible series x 2 days each
+
+
+def test_interval_scoring_matches_the_nominal_level_when_errors_really_are_normal() -> None:
+    from app.evaluation.backtest import score_interval
+
+    rng = np.random.default_rng(0)
+    sigma = rng.uniform(1, 3, 400)
+    predicted = np.full((400, 50), 100.0)
+    actual = predicted + rng.normal(0, 1, (400, 50)) * sigma[:, None]
+    out = score_interval(actual, predicted, sigma, np.ones(400, bool), 1.2816)
+    assert out["interval_coverage"] == pytest.approx(0.80, abs=0.01)
+    assert out["interval_width"] == pytest.approx(2 * 1.2816 * sigma.mean(), rel=1e-6)

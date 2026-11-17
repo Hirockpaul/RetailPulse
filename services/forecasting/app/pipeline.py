@@ -28,6 +28,8 @@ from app.evaluation.backtest import (
     make_windows,
     rolling_forecast,
     score,
+    score_by_horizon,
+    score_interval,
     select_model,
 )
 from app.models import baselines, ml
@@ -45,7 +47,10 @@ FALLBACK_MODEL = "category_average"
 class Outcome:
     windows: Windows
     horizon: int
-    metrics: dict[str, dict[str, dict]]  # model -> split -> {mae, rmse, wape, n_points, n_series}
+    # model -> split -> {mae, rmse, wape, bias, interval_coverage, interval_width, n_points, n_series}
+    metrics: dict[str, dict[str, dict]]
+    horizon_metrics: list[dict]  # {model, split, horizon_day, mae, wape, bias, n_points}
+    feature_names: list[str]
     selection: Selection
     model_names: list[str]  # per series
     is_fallback: np.ndarray
@@ -86,11 +91,13 @@ def _fallback_values(
     return f_avg, f_std
 
 
-def compute(hist: History, horizon: int, seed: int = 42) -> Outcome:
+def compute(
+    hist: History, horizon: int, seed: int = 42, config: ml.FeatureConfig | None = None
+) -> Outcome:
     n = hist.n_days
     w = make_windows(n)
     y = hist.y
-    builder = ml.FeatureBuilder(hist)
+    builder = ml.FeatureBuilder(hist, config)
     # Series with enough history before the first evaluation origin take part in the accuracy numbers.
     eligible = hist.start_idx <= (w.val_start - 1) - (ml.MIN_HISTORY_FOR_FEATURES - 1)
     spans = {"validation": (w.val_start, w.val_end), "test": (w.test_start, w.test_end)}
@@ -119,6 +126,23 @@ def compute(hist: History, horizon: int, seed: int = 42) -> Outcome:
     }
     selection = select_model(scores)
     served_model = selection.model
+
+    # Range quality, measured honestly: the 80 % range for the TEST window uses each series'
+    # error from the VALIDATION window only. (The served forecast's range uses both windows.)
+    for model, preds in predictions.items():
+        sigma_val = scores[model]["validation"]["series_rmse"]
+        scores[model]["test"].update(
+            score_interval(actual["test"], preds["test"], sigma_val, eligible, INTERVAL_Z)
+        )
+        scores[model]["validation"].update(
+            {"interval_coverage": float("nan"), "interval_width": float("nan")}
+        )
+    horizon_metrics = [
+        {"model": model, "split": split, **row}
+        for model, preds in predictions.items()
+        for split, (s, e) in spans.items()
+        for row in score_by_horizon(actual[split], preds[split], eligible, s, e)
+    ]
 
     if served_model == ML_MODEL:
         final = ml.train(builder, n - 1, horizon, seed)
@@ -158,6 +182,8 @@ def compute(hist: History, horizon: int, seed: int = 42) -> Outcome:
         windows=w,
         horizon=horizon,
         metrics=flat_metrics,
+        horizon_metrics=horizon_metrics,
+        feature_names=builder.feature_names,
         selection=selection,
         model_names=names,
         is_fallback=~served,

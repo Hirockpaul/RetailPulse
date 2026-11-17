@@ -89,3 +89,44 @@ def test_simulate_exposes_the_true_expected_demand_behind_the_draws() -> None:
     assert sim["units"].sum() == df["units"].sum()  # same draws
     # Observed demand averages out to the expected demand (law of large numbers)
     assert abs(sim["units"].mean() / sim["lam"].mean() - 1) < 0.03
+
+
+# ---------------------------------------------------------------- V2 step 1a
+
+
+def test_promotion_calendar_matches_the_boosted_days() -> None:
+    from app.synthetic.generator import PROMO_UPLIFT, generate, simulate
+
+    products, stores = catalog(20)
+    sim = simulate(products, stores, END, days=120, seed=4, new_share=0.0)
+    data = generate(products, stores, END, days=120, seed=4, new_share=0.0)
+    assert len(data.promotions) == int((sim["promo"] > 1).sum()) > 0
+    assert (data.promotions["uplift"] >= PROMO_UPLIFT - 1e-9).all()
+    assert data.anomalies.empty  # nothing is injected unless asked
+
+
+def test_injected_anomalies_are_labelled_and_leave_every_other_day_unchanged() -> None:
+    from app.synthetic.generator import DROP_DAYS, generate
+
+    products, stores = catalog(40)
+    clean = generate(products, stores, END, days=150, seed=6, new_share=0.0)
+    dirty = generate(products, stores, END, days=150, seed=6, new_share=0.0, anomaly_share=0.5)
+    labels = dirty.anomalies
+    assert {"SPIKE", "DROP"} <= set(labels["kind"])
+
+    key = ["product_id", "location_id", "day"]
+    merged = clean.demand.merge(dirty.demand, on=key, suffixes=("_clean", "_dirty"))
+    changed = merged[merged.units_clean != merged.units_dirty]
+    labelled = changed.merge(labels, on=key, how="left")
+    assert labelled["kind"].notna().all()  # every changed day is labelled
+    assert len(merged) == len(clean.demand)
+
+    with_units = labels.merge(dirty.demand, on=key)
+    assert (with_units.actual_units == with_units.units).all()  # labels match the written history
+    spikes = labels[labels.kind == "SPIKE"]
+    assert (spikes.actual_units >= spikes.expected_units + 5 - 1e-9).all()
+    drops = labels[labels.kind == "DROP"]
+    assert (drops.actual_units == 0).all() and len(drops) % DROP_DAYS == 0
+    assert (drops.expected_units >= 2).all()
+    promo_days = labels.merge(dirty.promotions, on=key)
+    assert promo_days.empty  # never on a promotion day (a promotion is not an anomaly)

@@ -21,6 +21,13 @@ class History:
     y: np.ndarray  # (series, days)
     start_idx: np.ndarray  # first observed day index per series (n_days if never observed)
     sources: set[str]
+    # Promotion uplift per series and day (1.0 = no promotion). Promotions are planned in advance,
+    # so the model may know them for the day it predicts.
+    promo: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if self.promo is None:
+            self.promo = np.ones_like(self.y)
 
     @property
     def n_days(self) -> int:
@@ -36,11 +43,14 @@ class History:
 
 
 def build_history(
-    pairs: pd.DataFrame, demand: pd.DataFrame, sources: set[str] | None = None
+    pairs: pd.DataFrame,
+    demand: pd.DataFrame,
+    sources: set[str] | None = None,
+    promotions: pd.DataFrame | None = None,
 ) -> History:
     """pairs: product_id, location_id, category_id for every product x store.
     demand: product_id, location_id, day, units. Days between a series' first row and the end
-    that have no row are zero sales."""
+    that have no row are zero sales. promotions (optional): product_id, location_id, day, uplift."""
     if demand.empty:
         raise ValueError("There is no demand history yet. Run `npm run forecast:history`.")
     pairs = pairs.reset_index(drop=True)
@@ -71,6 +81,18 @@ def build_history(
     after_start = np.arange(n_days)[None, :] >= start_idx[:, None]
     y[after_start & np.isnan(y)] = 0.0  # a day with no sales row after launch means 0 units
 
+    promo = np.ones_like(y)
+    if promotions is not None and not promotions.empty:
+        series = np.array(
+            [
+                index.get((p, loc), -1)
+                for p, loc in zip(promotions.product_id, promotions.location_id, strict=True)
+            ]
+        )
+        offset = (pd.to_datetime(promotions["day"]) - first_day).dt.days.to_numpy()
+        ok = (series >= 0) & (offset >= 0) & (offset < n_days)
+        promo[series[ok], offset[ok]] = promotions["uplift"].to_numpy(dtype=float)[ok]
+
     return History(
         days=(first_day.to_datetime64() + np.arange(n_days).astype("timedelta64[D]")).astype(
             "datetime64[D]"
@@ -82,6 +104,7 @@ def build_history(
         y=y,
         start_idx=start_idx,
         sources=sources or set(),
+        promo=promo,
     )
 
 
@@ -99,4 +122,12 @@ def load_history(conn: psycopg.Connection) -> History:
     ).fetchall()
     demand = pd.DataFrame(rows, columns=["product_id", "location_id", "day", "units", "source"])
     sources = set(demand["source"].unique()) if not demand.empty else set()
-    return build_history(pairs, demand[["product_id", "location_id", "day", "units"]], sources)
+    promotions = pd.DataFrame(
+        conn.execute(
+            "SELECT product_id::text, location_id::text, day, uplift FROM forecast.promotions"
+        ).fetchall(),
+        columns=["product_id", "location_id", "day", "uplift"],
+    )
+    return build_history(
+        pairs, demand[["product_id", "location_id", "day", "units"]], sources, promotions
+    )

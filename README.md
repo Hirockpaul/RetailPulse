@@ -213,6 +213,13 @@ received. A forecast never orders anything by itself.
 npm run forecast:test
 ```
 
+Re-measure forecast accuracy (rebuilds the dev history in memory, compares feature sets,
+prints WAPE, bias, range coverage and the noise floor; writes nothing, ~2 minutes):
+
+```bash
+npm run forecast:measure
+```
+
 ### Useful endpoints
 
 | URL                                   | What                                  |
@@ -290,11 +297,11 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Read latency, 200 sequential requests each (products search, stock, ledger, alerts, recommendations) | p95 **6–10 ms** |
 | `GET /overview` (classifies all 1,000 product × store positions) | p50 19 ms, p95 **24 ms** |
 | 500 simulated POS sales, 8 at a time | **2.4 s** (≈ 200 sales/s), 0 unexpected errors |
-| Forecast run, 1,000 series (3 models + backtest) | 25–30 s |
-| Forecast accuracy (test window, WAPE) | gradient boosting 52.2 %, best baseline 54.3 %, noise floor 50.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
+| Forecast run, 1,000 series (3 models + backtest) | 35–40 s |
+| Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`) — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 736 MB |
-| Tests | 119 unit/HTTP + 202 integration (TypeScript), 56 Python, 1 end-to-end |
+| Tests | 119 unit/HTTP + 202 integration (TypeScript), 66 Python, 1 end-to-end |
 
 ## Known limitations
 

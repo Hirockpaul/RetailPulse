@@ -10,7 +10,7 @@ import pytest
 
 from app import pipeline, repository
 from app.db import connect
-from app.synthetic.generator import generate_history
+from app.synthetic.generator import generate
 from app.synthetic.load import read_catalog, replace_synthetic
 
 TABLES_THAT_MUST_NOT_CHANGE = [
@@ -40,10 +40,10 @@ def load_history(url: str, days: int = 190, new_share: float = 0.1) -> int:
     yesterday = (datetime.now(UTC) - timedelta(days=1)).date()
     with connect() as conn:
         products, stores = read_catalog(conn)
-        history = generate_history(
-            products, stores, yesterday, days=days, seed=4, new_share=new_share
+        data = generate(
+            products, stores, yesterday, days=days, seed=4, new_share=new_share, anomaly_share=0.3
         )
-        return replace_synthetic(conn, history)
+        return replace_synthetic(conn, data.demand, data.promotions, data.anomalies)
 
 
 def new_run(horizon: int = 7) -> str:
@@ -92,6 +92,31 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
             "seasonal_naive_7",
             "hgb_direct",
         }
+        # V2 step 1a: bias for every split, range quality on the test window only.
+        quality = conn.execute(
+            """SELECT split, count(*) FILTER (WHERE bias IS NOT NULL),
+                      count(*) FILTER (WHERE interval_coverage BETWEEN 0 AND 1
+                                         AND interval_width > 0)
+                 FROM forecast.model_metrics WHERE run_id = %s GROUP BY split ORDER BY split""",
+            (run_id,),
+        ).fetchall()
+        assert quality == [("test", 3, 3), ("validation", 3, 0)]
+        per_horizon = conn.execute(
+            """SELECT count(*), count(DISTINCT horizon_day), min(horizon_day), max(horizon_day)
+                 FROM forecast.horizon_metrics WHERE run_id = %s""",
+            (run_id,),
+        ).fetchone()
+        assert per_horizon == (3 * 2 * 7, 7, 1, 7)  # 3 models x 2 splits x 7 days ahead
+        labels = conn.execute(
+            """SELECT (SELECT count(*) FROM forecast.promotions),
+                      (SELECT count(*) FROM forecast.injected_anomalies),
+                      (SELECT count(*) FROM forecast.injected_anomalies a
+                         JOIN forecast.demand_daily d USING (product_id, location_id, day)
+                        WHERE d.units = a.actual_units)"""
+        ).fetchone()
+        assert labels[0] > 0 and labels[1] > 0 and labels[2] == labels[1]
+        assert "promo_target" in run[6] and "store" in run[6]
+
         kinds = dict(conn.execute("SELECT name, kind FROM forecast.model_versions").fetchall())
         assert kinds["hgb_direct"] == "ML" and kinds["category_average"] == "FALLBACK"
 
