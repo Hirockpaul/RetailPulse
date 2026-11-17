@@ -21,7 +21,10 @@ export interface Location {
   name: string;
   type: LocationType;
   city: string;
-  /** Number of products with a balance row at this location. */
-  skuCount: number;
-  totalOnHand: number;
+  /**
+   * Stock aggregates. null when the caller may not see this location's stock
+   * (a store manager looking at another store).
+   */
+  skuCount: number | null;
+  totalOnHand: number | null;
 }

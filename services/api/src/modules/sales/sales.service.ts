@@ -4,6 +4,9 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { assertLocationAccess } from '../../core/auth/access';
+import type { AuthUser } from '../../core/auth/auth.types';
+import type { RequestContext } from '../../core/http/request-context';
 import {
   IdempotencyService,
   type IdempotentResult,
@@ -29,8 +32,9 @@ export class SalesService {
   async createSale(
     dto: CreateSaleBody,
     key: string,
-    correlationId?: string,
+    ctx: RequestContext,
   ): Promise<IdempotentResult<SalesOrder>> {
+    assertLocationAccess(ctx.user, dto.locationId); // 403 outside a store manager's stores
     const location = await this.locations.get(dto.locationId); // 404 if missing
     if (location.type !== 'STORE') {
       throw new UnprocessableEntityException({
@@ -61,7 +65,7 @@ export class SalesService {
           });
         }
 
-        const order = await this.repo.createOrder(client, dto, correlationId);
+        const order = await this.repo.createOrder(client, dto, ctx.correlationId);
 
         // Fixed lock order (by product) so concurrent multi-line sales cannot deadlock.
         for (const line of sortByProduct(dto.lines)) {
@@ -73,7 +77,8 @@ export class SalesService {
             reason: 'POS sale (simulated)',
             referenceType: 'SALES_ORDER',
             referenceId: order.id,
-            correlationId,
+            correlationId: ctx.correlationId,
+            actorId: ctx.user.id,
           });
         }
         return { status: 201, body: order };
@@ -81,10 +86,11 @@ export class SalesService {
     );
   }
 
-  async getSale(id: string): Promise<SalesOrder> {
+  async getSale(id: string, user: AuthUser): Promise<SalesOrder> {
     const order = await this.repo.findOrder(id);
     if (!order)
       throw new NotFoundException({ code: 'NOT_FOUND', message: 'Sales order not found.' });
+    assertLocationAccess(user, order.locationId);
     return order;
   }
 }

@@ -30,7 +30,7 @@ flowchart LR
 
 | Component       | Owns                                             | Never does                                |
 | --------------- | ------------------------------------------------ | ----------------------------------------- |
-| Web             | UI, form validation for UX                       | Business rules, authorization decisions   |
+| Web             | UI, form validation for UX, hiding buttons a role cannot use | Business rules, authorization decisions (the API re-checks everything) |
 | Core API        | All business rules, all writes to operational data | Long-running ML work                    |
 | PostgreSQL      | Truth for stock, orders, ledger, recommendations | —                                         |
 | Forecasting     | Demand models, backtests, `forecast.*` tables    | Writing inventory, orders or recommendations |
@@ -72,11 +72,12 @@ flowchart TB
     config & database & http & auth
   end
   health --> database
+  auth --> database
   catalog --> database
   locations --> database
   inventory --> catalog & locations
   sales --> inventory
-  transfers --> inventory
+  transfers --> inventory & locations
   purchasing --> inventory
   replenishment --> inventory & purchasing & transfers
   events --> database
@@ -174,7 +175,7 @@ erDiagram
 | 1   | `schema_migrations` (runner)                                                               |
 | 2   | `categories`, `suppliers`, `products`, `supplier_products`, `locations`, `inventory_balances`, `inventory_ledger` |
 | 3 ✅ | `sales_orders`, `sales_order_lines`, `reservations`, `idempotency_keys`                   |
-| 4   | `stock_transfers`, `stock_transfer_lines`, `users`, `user_store_access`, `sessions`        |
+| 4 ✅ | `users`, `user_store_access`, `sessions`, `stock_transfers`, `stock_transfer_lines` (+ ledger `actor_id` FK) |
 | 5   | `outbox_events`, `processed_events`, `alerts`                                              |
 | 6   | `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations`, `forecast.forecast_runs`, `forecast.forecast_points` |
 
@@ -229,7 +230,7 @@ Transitions are checked in the service and guarded in SQL
 | Errors         | `{ error: { code, message, details? }, correlationId }`                      |
 | Business errors| `409 INSUFFICIENT_STOCK`, `409 INVALID_STATE_TRANSITION`, `404 NOT_FOUND`   |
 | Idempotency    | `Idempotency-Key` header (8–100 chars) required on every stock-changing `POST`: `/sales`, `/receipts`, `/returns`, `/adjustments`, `/reservations` (Day 4+: `/transfers`, `/purchase-orders`). A retry returns the stored response with `Idempotent-Replayed: true`; same key + different body → `422 IDEMPOTENCY_KEY_REUSED`. |
-| Auth (Day 4)   | HttpOnly SameSite cookie session; role + store-access guard on every route. **Until Day 4 the write endpoints below are unauthenticated — local development only.** |
+| Auth           | Server-side session in an `HttpOnly; SameSite=Strict` cookie (`Secure` in production), 8 h. A **global guard** requires a session and an allowed role on every route; a route without `@Roles()` is ADMIN-only and a test fails if any route declares neither `@Roles` nor `@Public`. Store managers are further limited to their stores in the service layer. Details: *Roles and access* below. |
 | Docs           | Endpoint table below; generated OpenAPI at `/api/v1/docs` planned for Day 7  |
 
 ### Endpoints so far
@@ -253,6 +254,40 @@ Transitions are checked in the service and guarded in SQL
 | `POST /reservations`                  | body `{ locationId, productId, quantity, reference? }` | lowers available, not on hand |
 | `POST /reservations/:id/release`      | — (no key needed; guarded by status)           | `409 INVALID_STATE_TRANSITION` if not ACTIVE |
 | `GET /reservations`, `GET /reservations/:id` | `productId, locationId, status, page, pageSize` | |
+
+| `POST /auth/login` · `POST /auth/logout` · `GET /auth/me` | body `{ email, password }` | login is public and rate-limited; `me` needs a session |
+| `POST /transfers`                     | body `{ sourceLocationId, destinationLocationId, notes?, lines }` | Idempotency-Key; status `REQUESTED`; nothing moves |
+| `GET /transfers`, `GET /transfers/:id` | `status, locationId, productId, page, pageSize` | detail includes lines and who/when per step |
+| `POST /transfers/:id/approve`         | —                                              | admin / inventory manager only |
+| `POST /transfers/:id/dispatch`        | —                                              | writes `TRANSFER_OUT` at the source |
+| `POST /transfers/:id/receive`         | —                                              | writes `TRANSFER_IN` at the destination |
+| `POST /transfers/:id/cancel`          | —                                              | only from `REQUESTED` / `APPROVED` |
+
+Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound` per row: units on
+`APPROVED` / `DISPATCHED` transfers heading to that location (derived, never stored).
+
+### Roles and access
+
+| Capability                                   | Admin | Inventory mgr | Store mgr (own stores) | Analyst |
+| -------------------------------------------- | :---: | :-----------: | :--------------------: | :-----: |
+| Read catalog, location directory, network totals | ✅ | ✅ | ✅ | ✅ |
+| Read per-location stock, ledger, sales, reservations, transfers | all | all | **own stores** | all |
+| Sell, receive, return, adjust, reserve, release | ✅ | ✅ | **own stores** | — |
+| Request a transfer                           | ✅    | ✅            | **into own store**     | —       |
+| Approve a transfer                           | ✅    | ✅            | —                      | —       |
+| Dispatch a transfer                          | ✅    | ✅            | **from own store**     | —       |
+| Receive a transfer                           | ✅    | ✅            | **at own store**       | —       |
+| Cancel a transfer                            | ✅    | ✅            | **touching own store** | —       |
+
+- Role is checked by the global guard (`@Roles(...)`, 403 `FORBIDDEN`); store scope is checked in
+  services with `core/auth/access.ts` (403 for a store manager's other stores, filtered rows for lists).
+- Network aggregates (product `totalOnHand`/`totalAvailable`) are visible to every role so store
+  managers can see where stock exists before requesting a transfer; per-location rows, the
+  ledger, sales, reservations and transfers are scoped. Other stores' location totals are `null`.
+- Services receive a `RequestContext { correlationId, user }` (the `@Ctx()` decorator) and stamp
+  `actor_id` on every ledger row they write.
+- Demo accounts (`npm run db:seed`, one shared password from `DEMO_PASSWORD`): `admin@`,
+  `inventory@`, `store1@` (STR-01), `store2@` (STR-02), `analyst@` — all `@retailpulse.test`.
 
 Business errors: `409 INSUFFICIENT_STOCK` (with `details`), `409 PRODUCT_INACTIVE`,
 `422 INVALID_LOCATION_TYPE`, `422 IDEMPOTENCY_KEY_REUSED`, `404 NOT_FOUND`.
@@ -348,8 +383,8 @@ RetailPulse/
 │   │   │       ├── inventory/ ✅    stock + ledger reads; (D3) applyMovement()
 │   │   │       ├── sales/ ✅
 │   │   │       ├── reservations/ ✅
-│   │   │       ├── transfers/ (D4)
-│   │   │       ├── users/ (D4)
+│   │   │       ├── transfers/ ✅    request → approve → dispatch → receive / cancel
+│   │   │       ├── auth/ ✅         login, logout, me, login throttle
 │   │   │       ├── events/ (D5)     outbox writer, publisher, consumers
 │   │   │       ├── alerts/ (D5)
 │   │   │       ├── purchasing/ (D6)
@@ -441,4 +476,12 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 14 | Idempotency key row lives in the same transaction as the work (Day 3) | A failed request leaves no key, so it can be retried; concurrent duplicates wait, then replay | Keys accumulate; a cleanup job is planned (Day 7) |
 | 15 | Multi-line writes lock balance rows in `product_id` order | Prevents deadlocks between concurrent multi-line sales (tested) | Callers must use `sortByProduct()` |
 | 16 | Damaged returns write a ledger row with `on_hand_delta = 0` and the quantity in the reason text | Keeps the ledger complete without making damaged goods sellable | Damaged quantity is not queryable as a number yet |
-| 17 | Write endpoints unauthenticated until Day 4 | Avoids a throwaway login; documented as local-only | Do not expose the API beyond localhost before Day 4 |
+| 17 | ~~Write endpoints unauthenticated until Day 4~~ | Superseded by #19 — every route now needs a session and a role | — |
+| 18 | scrypt (built into Node) for password hashing | Memory-hard, no native dependency to compile; params stored per hash so they can be raised | Not argon2; revisit if a prebuilt argon2 is wanted |
+| 19 | Server-side sessions; only a SHA-256 of the token is stored; `SameSite=Strict` cookie | Instant logout/disable, a DB leak yields no usable sessions, CSRF mitigated without tokens | One DB lookup per request |
+| 20 | Deny-by-default global guard + route-coverage test | A forgotten decorator can never expose a route | Every new route must declare `@Roles` or `@Public` |
+| 21 | Store scope enforced in services via `core/auth/access.ts` | Same helper for reads (filter) and writes (403); testable with real data | Services take a `RequestContext` |
+| 22 | In-memory login throttle (5 failures / 15 min per email + IP) | Simple and enough for one instance | Resets on restart, not shared across instances — move to PostgreSQL/Redis before scaling out |
+| 23 | Approval does not reserve stock; dispatch fails with `INSUFFICIENT_STOCK` if the source ran short | Keeps transfers simple; stock stays sellable until it physically leaves | A sale can consume stock between approval and dispatch |
+| 24 | Transfers send and receive the full requested quantity | No partial-delivery workflow in the MVP; shortages are fixed with an adjustment | No per-line discrepancy tracking |
+| 25 | Transfer status order is enforced by a DB trigger + CHECK, not only by the service | No code path or manual SQL can skip a step | Logic partly in SQL; covered by tests |

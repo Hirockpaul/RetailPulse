@@ -9,11 +9,14 @@ import { AsOf, Empty, ErrorMessage, Loading } from '../components/Status';
 import { table } from '../components/table';
 import { formatDateTime, formatDelta, formatInt, formatMoney, humanize } from '../lib/format';
 import { href } from '../lib/router';
+import { useUser } from '../lib/auth';
+import { canWrite, isStoreScoped } from '../lib/permissions';
 import { useAsync } from '../lib/useAsync';
 
 const LEDGER_PAGE_SIZE = 20;
 
 export function ProductDetailPage({ id }: { id: string }) {
+  const user = useUser();
   const product = useAsync(useCallback(() => getProduct(id), [id]));
   // Bumped after every stock movement; sections keyed on it remount and re-fetch.
   const [version, setVersion] = useState(0);
@@ -67,7 +70,7 @@ export function ProductDetailPage({ id }: { id: string }) {
             </div>
           </header>
 
-          <MovementForm productId={id} onDone={refresh} />
+          {canWrite(user) && <MovementForm productId={id} onDone={refresh} />}
           <StockByLocation
             key={`stock-${version}`}
             productId={id}
@@ -91,6 +94,7 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 function StockByLocation({ productId, packSize }: { productId: string; packSize: number }) {
+  const user = useUser();
   const stock = useAsync(useCallback(() => getProductStock(productId), [productId]));
 
   return (
@@ -103,7 +107,8 @@ function StockByLocation({ productId, packSize }: { productId: string; packSize:
       </div>
       {stock.status === 'success' && stock.data.data.length > 0 && (
         <p className="text-sm text-slate-600">
-          Network total: {formatInt(stock.data.data.reduce((n, r) => n + r.onHand, 0))} on hand,{' '}
+          {isStoreScoped(user) ? 'Your stores' : 'Network total'}:{' '}
+          {formatInt(stock.data.data.reduce((n, r) => n + r.onHand, 0))} on hand,{' '}
           {formatInt(stock.data.data.reduce((n, r) => n + r.available, 0))} available
         </p>
       )}
@@ -122,6 +127,7 @@ function StockByLocation({ productId, packSize }: { productId: string; packSize:
                 <th className={table.thNum}>On hand</th>
                 <th className={table.thNum}>Reserved</th>
                 <th className={table.thNum}>Available</th>
+                <th className={table.thNum}>Inbound</th>
                 <th className={table.th}>
                   <span className="sr-only">Status</span>
                 </th>
@@ -143,6 +149,7 @@ function StockByLocation({ productId, packSize }: { productId: string; packSize:
                   <td className={table.tdNum}>{formatInt(r.onHand)}</td>
                   <td className={table.tdNum}>{formatInt(r.reserved)}</td>
                   <td className={table.tdNum}>{formatInt(r.available)}</td>
+                  <td className={table.tdNum}>{r.inbound > 0 ? formatInt(r.inbound) : '—'}</td>
                   <td className={table.td}>
                     <StockBadge available={r.available} packSize={packSize} />
                   </td>

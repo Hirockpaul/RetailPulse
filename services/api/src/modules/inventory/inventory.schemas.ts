@@ -47,6 +47,8 @@ export interface LocationStockRow {
   onHand: number;
   reserved: number;
   available: number;
+  /** Units on APPROVED / DISPATCHED transfers heading here (derived, never stored). */
+  inbound: number;
   updatedAt: string;
 }
 
@@ -58,6 +60,8 @@ export interface ProductStockRow {
   onHand: number;
   reserved: number;
   available: number;
+  /** Units on APPROVED / DISPATCHED transfers heading here (derived, never stored). */
+  inbound: number;
   updatedAt: string;
 }
 
@@ -138,6 +142,8 @@ export interface Movement {
   referenceType?: string;
   referenceId?: string;
   correlationId?: string;
+  /** The signed-in user who caused the movement. */
+  actorId?: string;
 }
 
 /** The ledger row that was written, including the resulting balance. */

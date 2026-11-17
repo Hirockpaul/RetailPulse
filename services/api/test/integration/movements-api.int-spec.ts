@@ -10,6 +10,7 @@ import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
 import { loadEnv } from '../../src/core/config/env';
+import { DEMO, login } from './auth-helpers';
 import { prepareTestDatabase } from './test-db';
 
 let app: INestApplication;
@@ -18,10 +19,11 @@ let storeId: string;
 let dcId: string;
 const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 
+let cookie: string;
 const api = () => request(app.getHttpServer());
-const get = (url: string) => api().get(`/api/v1${url}`);
+const get = (url: string) => api().get(`/api/v1${url}`).set('Cookie', cookie);
 const post = (url: string, body: object, key: string | null = randomUUID()) => {
-  const req = api().post(`/api/v1${url}`);
+  const req = api().post(`/api/v1${url}`).set('Cookie', cookie);
   if (key !== null) req.set('Idempotency-Key', key);
   return req.send(body);
 };
@@ -32,6 +34,7 @@ beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.forRoot(env)] }).compile();
   app = configureApp(moduleRef.createNestApplication({ logger: false }));
   await app.init();
+  cookie = await login(app, DEMO.admin);
   db = new pg.Client({ connectionString: url });
   await db.connect();
 
@@ -134,6 +137,7 @@ describe('POST /sales', () => {
     await setOnHand(p, storeId, 5);
     await api()
       .post('/api/v1/sales')
+      .set('Cookie', cookie)
       .set('Idempotency-Key', randomUUID())
       .set('x-correlation-id', 'corr-test-12345')
       .send({ locationId: storeId, lines: [{ productId: p, quantity: 1 }] })

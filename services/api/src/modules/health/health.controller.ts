@@ -1,5 +1,6 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Public } from '../../core/auth/roles';
 import { DatabaseService } from '../../core/database/database.service';
 
 export interface HealthReport {
@@ -10,6 +11,8 @@ export interface HealthReport {
   checks: { database: { status: 'up' | 'down'; latencyMs?: number } };
 }
 
+/** Public on purpose: load balancers and the login screen need it without a session. */
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(private readonly db: DatabaseService) {}

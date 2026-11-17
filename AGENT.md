@@ -130,7 +130,8 @@ Transfer lifecycle: `REQUESTED → APPROVED → DISPATCHED → RECEIVED` (or `CA
 ### Security
 
 - Secrets only in `.env` (git-ignored). Commit `.env.example` with placeholders.
-- Passwords hashed with argon2/bcrypt. HttpOnly, SameSite cookies.
+- Passwords hashed with scrypt (Node built-in; argon2/bcrypt also acceptable). Sessions are
+  server-side; the cookie is HttpOnly + SameSite=Strict (+ Secure in production).
 - Roles: `ADMIN`, `INVENTORY_MANAGER`, `STORE_MANAGER`, `ANALYST`.
 - Don't log credentials, tokens or full request bodies. Rate-limit login.
 
@@ -189,14 +190,14 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
 - **Checklist:** every stock change has a ledger row · no oversell under concurrency.
 - **Done notes:** `POST /sales|receipts|returns|adjustments|reservations` (+ release), all with
   `Idempotency-Key`; `npm run sim:pos` simulates POS traffic; product page has a movement form.
-  Writes are **unauthenticated until Day 4** (local only). Use `InventoryService.applyMovement()`
+  Use `InventoryService.applyMovement()`
   for any new stock change and lock multi-line writes with `sortByProduct()`.
 
-### Day 4 — Transfers, users & roles
+### Day 4 — Transfers, users & roles ✅
 
 - **A — Build:** transfer lifecycle (request → approve → dispatch = `TRANSFER_OUT` →
   receive = `TRANSFER_IN`; cancel before dispatch); inbound quantity derived from open
-  transfers/POs. Users + roles + store access, argon2 passwords, session cookie login, seeded
+  transfers/POs. Users + roles + store access, scrypt passwords, session cookie login, seeded
   demo accounts (one per role).
 - **B — Verify:** status-transition tests (illegal transitions rejected), role/store guard tests
   (store manager can't touch another store), login rate limit. Web: login + transfers page.

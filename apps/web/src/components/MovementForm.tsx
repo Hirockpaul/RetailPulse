@@ -8,6 +8,8 @@ import {
   recordReturn,
   recordSale,
 } from '../api/movements';
+import { useUser } from '../lib/auth';
+import { canAccessLocation } from '../lib/permissions';
 import { useAsync } from '../lib/useAsync';
 import { field } from './table';
 
@@ -47,8 +49,12 @@ export function MovementForm({ productId, onDone }: { productId: string; onDone:
     setResult({ kind: 'idle' });
   };
 
-  const allLocations = locations.status === 'success' ? locations.data.data : [];
-  const options = action === 'SELL' ? allLocations.filter((l) => l.type === 'STORE') : allLocations;
+  const user = useUser();
+  // Store managers may only act in their own stores (the API enforces this too).
+  const allowed = (locations.status === 'success' ? locations.data.data : []).filter((l) =>
+    canAccessLocation(user, l.id),
+  );
+  const options = action === 'SELL' ? allowed.filter((l) => l.type === 'STORE') : allowed;
   const selected = options.find((l) => l.id === locationId) ?? options[0];
   const meta = ACTIONS.find((a) => a.value === action)!;
   const isAdjust = action === 'ADJUST';
@@ -215,9 +221,7 @@ export function MovementForm({ productId, onDone }: { productId: string; onDone:
           </button>
         </div>
 
-        <p className="text-xs text-slate-500">
-          {meta.hint} Synthetic demo data — no login yet, so this is open on the local API only.
-        </p>
+        <p className="text-xs text-slate-500">{meta.hint} Synthetic demo data.</p>
         {result.kind === 'ok' && (
           <p role="status" className="text-sm text-emerald-700">
             {result.text}

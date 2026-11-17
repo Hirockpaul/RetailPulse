@@ -8,8 +8,9 @@ export interface Location {
   name: string;
   type: LocationType;
   city: string;
-  skuCount: number;
-  totalOnHand: number;
+  /** null when the signed-in user may not see this location's stock. */
+  skuCount: number | null;
+  totalOnHand: number | null;
 }
 
 /** The demo network is small (≤ 13 locations), so one page of 100 covers it. */

@@ -13,6 +13,13 @@ export class ApiError extends Error {
 
 const BASE = '/api/v1';
 
+let unauthorizedHandler: (() => void) | null = null;
+
+/** Called when any API call (except login) answers 401, so the app can show the login screen. */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
 /** Paginated list response, matching the API's Page<T>. */
 export interface Page<T> {
   data: T[];
@@ -45,6 +52,8 @@ async function request<T>(
 
   const body = await res.json().catch(() => undefined);
   if (res.ok || acceptStatuses.includes(res.status)) return body as T;
+
+  if (res.status === 401 && !path.startsWith('/auth/login')) unauthorizedHandler?.();
 
   throw new ApiError(
     res.status,

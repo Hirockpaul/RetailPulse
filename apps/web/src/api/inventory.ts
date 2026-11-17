@@ -9,6 +9,8 @@ export interface LocationStockRow {
   onHand: number;
   reserved: number;
   available: number;
+  /** Units on approved / dispatched transfers heading here. */
+  inbound: number;
   updatedAt: string;
 }
 
@@ -20,6 +22,8 @@ export interface ProductStockRow {
   onHand: number;
   reserved: number;
   available: number;
+  /** Units on approved / dispatched transfers heading here. */
+  inbound: number;
   updatedAt: string;
 }
 

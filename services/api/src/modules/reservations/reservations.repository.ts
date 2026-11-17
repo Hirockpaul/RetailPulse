@@ -16,7 +16,8 @@ const SELECT = `
 const FILTER = `
   WHERE ($1::uuid IS NULL OR r.product_id = $1)
     AND ($2::uuid IS NULL OR r.location_id = $2)
-    AND ($3::reservation_status IS NULL OR r.status = $3)`;
+    AND ($3::reservation_status IS NULL OR r.status = $3)
+    AND ($4::uuid[] IS NULL OR r.location_id = ANY($4))`;
 
 /** SQL for the reservations table only. Reserved quantity itself lives in the inventory ledger. */
 @Injectable()
@@ -67,11 +68,14 @@ export class ReservationsRepository {
     return res.rows[0] ?? null;
   }
 
-  async list(q: ListReservationsQuery): Promise<{ rows: Reservation[]; total: number }> {
-    const filter = [q.productId ?? null, q.locationId ?? null, q.status ?? null];
+  async list(
+    q: ListReservationsQuery,
+    scope: string[] | null,
+  ): Promise<{ rows: Reservation[]; total: number }> {
+    const filter = [q.productId ?? null, q.locationId ?? null, q.status ?? null, scope];
     const [rows, count] = await Promise.all([
       this.db.query<Reservation>(
-        `${SELECT} ${FILTER} ORDER BY r.created_at DESC, r.id LIMIT $4 OFFSET $5`,
+        `${SELECT} ${FILTER} ORDER BY r.created_at DESC, r.id LIMIT $5 OFFSET $6`,
         [...filter, q.pageSize, offsetOf(q)],
       ),
       this.db.query<{ total: number }>(

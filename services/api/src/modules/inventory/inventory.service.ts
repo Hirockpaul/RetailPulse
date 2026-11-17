@@ -1,5 +1,8 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
+import { accessibleLocationIds, assertLocationAccess } from '../../core/auth/access';
+import type { AuthUser } from '../../core/auth/auth.types';
+import type { RequestContext } from '../../core/http/request-context';
 import {
   IdempotencyService,
   type IdempotentResult,
@@ -49,22 +52,40 @@ export class InventoryService {
   async stockAtLocation(
     locationId: string,
     query: LocationStockQuery,
+    user: AuthUser,
   ): Promise<Page<LocationStockRow> & WithAsOf & { location: Location }> {
+    assertLocationAccess(user, locationId); // 403 for a store manager's other stores
     const location = await this.locations.get(locationId); // 404 if missing
     const asOf = new Date().toISOString();
     const { rows, total } = await this.repo.stockAtLocation(locationId, query);
     return { location, data: rows, page: query.page, pageSize: query.pageSize, total, asOf };
   }
 
-  async stockForProduct(productId: string): Promise<{ data: ProductStockRow[] } & WithAsOf> {
+  /** One row per location; a store manager only receives their own stores' rows. */
+  async stockForProduct(
+    productId: string,
+    user: AuthUser,
+  ): Promise<{ data: ProductStockRow[] } & WithAsOf> {
     await this.catalog.assertProductExists(productId);
     const asOf = new Date().toISOString();
-    return { data: await this.repo.stockForProduct(productId), asOf };
+    return {
+      data: await this.repo.stockForProduct(productId, accessibleLocationIds(user)),
+      asOf,
+    };
   }
 
-  async ledgerForProduct(productId: string, query: LedgerQuery): Promise<Page<LedgerEntry>> {
+  async ledgerForProduct(
+    productId: string,
+    query: LedgerQuery,
+    user: AuthUser,
+  ): Promise<Page<LedgerEntry>> {
+    if (query.locationId) assertLocationAccess(user, query.locationId);
     await this.catalog.assertProductExists(productId);
-    const { rows, total } = await this.repo.ledgerForProduct(productId, query);
+    const { rows, total } = await this.repo.ledgerForProduct(
+      productId,
+      query,
+      accessibleLocationIds(user),
+    );
     return { data: rows, page: query.page, pageSize: query.pageSize, total };
   }
 
@@ -90,8 +111,9 @@ export class InventoryService {
   receive(
     dto: ReceiptBody,
     key: string,
-    correlationId?: string,
+    ctx: RequestContext,
   ): Promise<IdempotentResult<{ data: MovementResult[] }>> {
+    assertLocationAccess(ctx.user, dto.locationId); // 403 outside a store manager's stores
     return this.idempotency.execute(
       { key, endpoint: 'POST /receipts', request: dto },
       async (client) => {
@@ -107,7 +129,8 @@ export class InventoryService {
               reason: 'Stock received',
               referenceType: dto.reference ? 'RECEIPT_REF' : undefined,
               referenceId: dto.reference,
-              correlationId,
+              correlationId: ctx.correlationId,
+              actorId: ctx.user.id,
             }),
           );
         }
@@ -119,8 +142,9 @@ export class InventoryService {
   recordReturn(
     dto: ReturnBody,
     key: string,
-    correlationId?: string,
+    ctx: RequestContext,
   ): Promise<IdempotentResult<{ data: MovementResult[] }>> {
+    assertLocationAccess(ctx.user, dto.locationId); // 403 outside a store manager's stores
     return this.idempotency.execute(
       { key, endpoint: 'POST /returns', request: dto },
       async (client) => {
@@ -135,7 +159,8 @@ export class InventoryService {
           reason: sellable
             ? `Customer return (sellable)${note}`
             : `Damaged return: ${dto.quantity} unit(s) not restocked${note}`,
-          correlationId,
+          correlationId: ctx.correlationId,
+          actorId: ctx.user.id,
         });
         return { status: 201, body: { data: [entry] } };
       },
@@ -145,8 +170,9 @@ export class InventoryService {
   adjust(
     dto: AdjustmentBody,
     key: string,
-    correlationId?: string,
+    ctx: RequestContext,
   ): Promise<IdempotentResult<{ data: MovementResult[] }>> {
+    assertLocationAccess(ctx.user, dto.locationId); // 403 outside a store manager's stores
     return this.idempotency.execute(
       { key, endpoint: 'POST /adjustments', request: dto },
       async (client) => {
@@ -156,7 +182,8 @@ export class InventoryService {
           type: 'ADJUSTMENT',
           onHandDelta: dto.delta,
           reason: dto.reason,
-          correlationId,
+          correlationId: ctx.correlationId,
+          actorId: ctx.user.id,
         });
         return { status: 201, body: { data: [entry] } };
       },

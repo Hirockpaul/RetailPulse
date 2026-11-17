@@ -13,9 +13,22 @@ import type {
   ProductStockRow,
 } from './inventory.schemas';
 
+/** Units on open transfers heading to this balance's location. Derived, never stored. */
+const INBOUND_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(tl.quantity), 0)::int AS inbound
+      FROM stock_transfer_lines tl
+      JOIN stock_transfers t ON t.id = tl.transfer_id
+     WHERE tl.product_id = b.product_id
+       AND t.destination_location_id = b.location_id
+       AND t.status IN ('APPROVED', 'DISPATCHED')
+  ) i ON true`;
+
 /**
- * Read side of inventory. Writes (Day 3) go through InventoryService.applyMovement(), which
- * inserts ledger rows; the database trigger updates balances (see migration 0002).
+ * Inventory SQL. Reads accept an optional `scope` (allowed location ids, or null for all) so
+ * store managers only ever receive rows for their own stores. Writes go through
+ * InventoryService.applyMovement(), which inserts ledger rows; the database trigger updates
+ * balances (see migration 0002).
  */
 @Injectable()
 export class InventoryRepository {
@@ -28,6 +41,7 @@ export class InventoryRepository {
     const where = `
       FROM inventory_balances b
       JOIN products p ON p.id = b.product_id
+      ${INBOUND_JOIN}
      WHERE b.location_id = $1
        AND ($2::text IS NULL OR p.sku ILIKE $2 OR p.name ILIKE $2)`;
     const filter = [locationId, containsPattern(q.q)];
@@ -37,6 +51,7 @@ export class InventoryRepository {
         `SELECT p.id AS "productId", p.sku, p.name, p.pack_size AS "packSize",
                 b.on_hand AS "onHand", b.reserved,
                 (b.on_hand - b.reserved) AS available,
+                i.inbound,
                 b.updated_at AS "updatedAt"
            ${where}
           ORDER BY ${q.sort}, p.id
@@ -49,18 +64,21 @@ export class InventoryRepository {
   }
 
   /** Bounded by the number of locations (a handful), so not paginated. */
-  async stockForProduct(productId: string): Promise<ProductStockRow[]> {
+  async stockForProduct(productId: string, scope: string[] | null): Promise<ProductStockRow[]> {
     const { rows } = await this.db.query<ProductStockRow>(
       `SELECT l.id AS "locationId", l.code AS "locationCode", l.name AS "locationName",
               l.type AS "locationType",
               b.on_hand AS "onHand", b.reserved,
               (b.on_hand - b.reserved) AS available,
+              i.inbound,
               b.updated_at AS "updatedAt"
          FROM inventory_balances b
          JOIN locations l ON l.id = b.location_id
+         ${INBOUND_JOIN}
         WHERE b.product_id = $1
+          AND ($2::uuid[] IS NULL OR b.location_id = ANY($2))
         ORDER BY l.type DESC, l.code`,
-      [productId],
+      [productId, scope],
     );
     return rows;
   }
@@ -68,14 +86,16 @@ export class InventoryRepository {
   async ledgerForProduct(
     productId: string,
     q: LedgerQuery,
+    scope: string[] | null,
   ): Promise<{ rows: LedgerEntry[]; total: number }> {
     const where = `
       FROM inventory_ledger e
       JOIN locations l ON l.id = e.location_id
      WHERE e.product_id = $1
        AND ($2::uuid IS NULL OR e.location_id = $2)
-       AND ($3::movement_type IS NULL OR e.movement_type = $3)`;
-    const filter = [productId, q.locationId ?? null, q.movementType ?? null];
+       AND ($3::movement_type IS NULL OR e.movement_type = $3)
+       AND ($4::uuid[] IS NULL OR e.location_id = ANY($4))`;
+    const filter = [productId, q.locationId ?? null, q.movementType ?? null, scope];
 
     const [rows, count] = await Promise.all([
       this.db.query<LedgerEntry>(
@@ -87,13 +107,14 @@ export class InventoryRepository {
                 e.occurred_at AS "occurredAt"
            ${where}
           ORDER BY e.id DESC
-          LIMIT $4 OFFSET $5`,
+          LIMIT $5 OFFSET $6`,
         [...filter, q.pageSize, offsetOf(q)],
       ),
       this.db.query<{ total: number }>(`SELECT COUNT(*)::int AS total ${where}`, filter),
     ]);
     return { rows: rows.rows, total: count.rows[0].total };
   }
+
   /**
    * Insert one ledger row inside the caller's transaction. The database trigger applies it to
    * the balance (row-locked) and fills in the after-values; CHECK constraints reject oversell.
@@ -102,8 +123,8 @@ export class InventoryRepository {
     const { rows } = await client.query<MovementResult>(
       `INSERT INTO inventory_ledger
          (product_id, location_id, movement_type, on_hand_delta, reserved_delta,
-          reason, reference_type, reference_id, correlation_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          reason, reference_type, reference_id, correlation_id, actor_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id::text AS "ledgerId", product_id AS "productId", location_id AS "locationId",
                  movement_type AS "movementType", on_hand_delta AS "onHandDelta",
                  reserved_delta AS "reservedDelta", on_hand_after AS "onHandAfter",
@@ -118,6 +139,7 @@ export class InventoryRepository {
         m.referenceType ?? null,
         m.referenceId ?? null,
         m.correlationId ?? null,
+        m.actorId ?? null,
       ],
     );
     return rows[0];

@@ -8,6 +8,10 @@
 //        npm run db:seed -- --reset --products=500
 //
 // Opening stock is written as RECEIPT ledger rows, so balances are traceable from day one.
+//
+// Demo accounts (one per role, fictional @retailpulse.test addresses) are created or refreshed
+// on every run. Their shared password comes from DEMO_PASSWORD in .env, never from this file.
+import { randomBytes, scryptSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +36,75 @@ if (!Number.isInteger(productCount) || productCount < 1 || productCount > 5000) 
 if (reset && process.env.NODE_ENV === 'production') {
   console.error('Refusing to --reset when NODE_ENV=production.');
   process.exit(1);
+}
+const demoPassword = process.env.DEMO_PASSWORD;
+if (!demoPassword || demoPassword.length < 12) {
+  console.error('DEMO_PASSWORD must be set to at least 12 characters (see .env.example).');
+  process.exit(1);
+}
+
+// ------------------------------------------------------------ demo accounts
+// Hash format must match services/api/src/core/auth/password.ts (verified by the login tests).
+function hashPassword(plain) {
+  const N = 32768;
+  const r = 8;
+  const p = 3;
+  const salt = randomBytes(16);
+  const key = scryptSync(plain, salt, 32, { N, r, p, maxmem: 64 * 1024 * 1024 });
+  return `scrypt$${N}$${r}$${p}$${salt.toString('base64')}$${key.toString('base64')}`;
+}
+
+const DEMO_USERS = [
+  { email: 'admin@retailpulse.test', name: 'Avery Admin', role: 'ADMIN', stores: [] },
+  {
+    email: 'inventory@retailpulse.test',
+    name: 'Imani Inventory',
+    role: 'INVENTORY_MANAGER',
+    stores: [],
+  },
+  {
+    email: 'store1@retailpulse.test',
+    name: 'Sam Store-One',
+    role: 'STORE_MANAGER',
+    stores: ['STR-01'],
+  },
+  {
+    email: 'store2@retailpulse.test',
+    name: 'Sky Store-Two',
+    role: 'STORE_MANAGER',
+    stores: ['STR-02'],
+  },
+  { email: 'analyst@retailpulse.test', name: 'Ana Analyst', role: 'ANALYST', stores: [] },
+];
+
+/** Create or refresh the demo accounts. Safe to run repeatedly (updates password and role). */
+async function ensureDemoUsers(db) {
+  const locs = new Map(
+    (await db.query('SELECT id, code::text AS code FROM locations')).rows.map((r) => [
+      r.code,
+      r.id,
+    ]),
+  );
+  for (const u of DEMO_USERS) {
+    const { rows } = await db.query(
+      `INSERT INTO users (email, display_name, password_hash, role)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO UPDATE
+         SET display_name = EXCLUDED.display_name, password_hash = EXCLUDED.password_hash,
+             role = EXCLUDED.role, is_active = true
+       RETURNING id`,
+      [u.email, u.name, hashPassword(demoPassword), u.role],
+    );
+    await db.query('DELETE FROM user_store_access WHERE user_id = $1', [rows[0].id]);
+    for (const code of u.stores) {
+      if (!locs.has(code)) throw new Error(`Location ${code} not found for ${u.email}`);
+      await db.query('INSERT INTO user_store_access (user_id, location_id) VALUES ($1, $2)', [
+        rows[0].id,
+        locs.get(code),
+      ]);
+    }
+  }
+  return DEMO_USERS.length;
 }
 
 // ------------------------------------------------------------ deterministic RNG (mulberry32)
@@ -189,14 +262,20 @@ try {
 
   if (reset) {
     // TRUNCATE bypasses the row-level append-only trigger by design: dev reset only.
-    await client.query(`TRUNCATE idempotency_keys, reservations, sales_order_lines, sales_orders,
+    await client.query(`TRUNCATE idempotency_keys, sessions, user_store_access, users,
+                        stock_transfer_lines, stock_transfers, reservations,
+                        sales_order_lines, sales_orders,
                         inventory_ledger, inventory_balances, supplier_products,
                         products, categories, suppliers, locations RESTART IDENTITY CASCADE`);
   } else {
     const { rows } = await client.query('SELECT COUNT(*)::int AS n FROM products');
     if (rows[0].n > 0) {
-      console.log(`Already seeded (${rows[0].n} products). Use --reset to recreate.`);
-      await client.query('ROLLBACK');
+      const users = await ensureDemoUsers(client);
+      await client.query('COMMIT');
+      console.log(
+        `Catalog already seeded (${rows[0].n} products); refreshed ${users} demo accounts. ` +
+          'Use --reset to recreate everything.',
+      );
       process.exit(0);
     }
   }
@@ -285,11 +364,13 @@ try {
     [receipts.productId, receipts.locationId, receipts.qty],
   );
 
+  const demoUsers = await ensureDemoUsers(client);
+
   await client.query('COMMIT');
   console.log(
     `Seeded synthetic data: ${CATEGORIES.length} categories, ${SUPPLIERS.length} suppliers, ` +
       `${LOCATIONS.length} locations, ${products.length} products, ${sp.length} supplier terms, ` +
-      `${receipts.qty.length} opening-stock receipts.`,
+      `${receipts.qty.length} opening-stock receipts, ${demoUsers} demo accounts.`,
   );
 } catch (err) {
   await client.query('ROLLBACK').catch(() => {});

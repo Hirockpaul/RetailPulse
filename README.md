@@ -109,8 +109,20 @@ In a second terminal:
 npm run dev:web
 ```
 
-Open http://localhost:5173 — Products, Stock (per location), product detail (record sales,
-receipts, returns, adjustments and reservations, and watch the ledger update), and Health.
+Open http://localhost:5173 and sign in with one of the **synthetic demo accounts** (created by
+`npm run db:seed`; the shared password is `DEMO_PASSWORD` in your `.env`):
+
+| Account (all `@retailpulse.test`) | Role | What it can do |
+| --- | --- | --- |
+| `admin@` | Admin | Everything |
+| `inventory@` | Inventory manager | Everything on stock; approves transfers |
+| `store1@` | Store manager, STR-01 | Own store only; requests transfers into it |
+| `store2@` | Store manager, STR-02 | Own store only |
+| `analyst@` | Analyst | Read-only |
+
+Then use Products, Stock (per location), product detail (record sales, receipts, returns,
+adjustments and reservations, and watch the ledger update), Transfers (request, approve,
+dispatch, receive) and Health.
 
 Generate synthetic POS traffic against the running API (stock falls, some sales are rejected
 for no stock — that is expected):
@@ -119,8 +131,9 @@ for no stock — that is expected):
 npm run sim:pos -- --sales=100 --concurrency=4
 ```
 
-> **Security note:** until Day 4 adds login and roles, the write endpoints are unauthenticated.
-> Run the API on localhost only.
+> **Security note:** every API route needs a session and an allowed role (see
+> [Roles and access](docs/ARCHITECTURE.md#roles-and-access)). The demo accounts and their shared
+> password are for local use only. Failed logins are rate-limited per email and IP.
 
 Forecasting service:
 

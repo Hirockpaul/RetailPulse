@@ -5,11 +5,14 @@ import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
 import { loadEnv } from '../../src/core/config/env';
+import { DEMO, login } from './auth-helpers';
 import { prepareTestDatabase } from './test-db';
 
 const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 let app: INestApplication;
-const get = (url: string) => request(app.getHttpServer()).get(`/api/v1${url}`);
+let cookie: string;
+const get = (url: string) =>
+  request(app.getHttpServer()).get(`/api/v1${url}`).set('Cookie', cookie);
 
 beforeAll(async () => {
   const url = await prepareTestDatabase();
@@ -17,6 +20,7 @@ beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.forRoot(env)] }).compile();
   app = configureApp(moduleRef.createNestApplication({ logger: false }));
   await app.init();
+  cookie = await login(app, DEMO.admin);
 }, 60_000);
 
 afterAll(async () => app?.close());

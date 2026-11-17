@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { accessibleLocationIds, assertLocationAccess } from '../../core/auth/access';
+import type { AuthUser } from '../../core/auth/auth.types';
 import { DatabaseService } from '../../core/database/database.service';
+import type { RequestContext } from '../../core/http/request-context';
 import {
   IdempotencyService,
   type IdempotentResult,
@@ -30,8 +33,9 @@ export class ReservationsService {
   create(
     dto: CreateReservationBody,
     key: string,
-    correlationId?: string,
+    ctx: RequestContext,
   ): Promise<IdempotentResult<Reservation>> {
+    assertLocationAccess(ctx.user, dto.locationId); // 403 outside a store manager's stores
     return this.idempotency.execute(
       { key, endpoint: 'POST /reservations', request: dto },
       async (client) => {
@@ -46,7 +50,8 @@ export class ReservationsService {
           reason: dto.reference ?? 'Stock reserved',
           referenceType: 'RESERVATION',
           referenceId: id,
-          correlationId,
+          correlationId: ctx.correlationId,
+          actorId: ctx.user.id,
         });
         await this.repo.insert(client, { id, ...dto });
         const reservation = await this.repo.find(id, client);
@@ -57,10 +62,11 @@ export class ReservationsService {
   }
 
   /** ACTIVE → RELEASED. Restores availability. A second release is 409 INVALID_STATE_TRANSITION. */
-  release(id: string, correlationId?: string): Promise<Reservation> {
+  release(id: string, ctx: RequestContext): Promise<Reservation> {
     return this.db.transaction(async (client) => {
       const current = await this.repo.lockForUpdate(client, id);
       if (!current) throw notFound();
+      assertLocationAccess(ctx.user, current.locationId);
       if (current.status !== 'ACTIVE') {
         throw new ConflictException({
           code: 'INVALID_STATE_TRANSITION',
@@ -76,7 +82,8 @@ export class ReservationsService {
         reason: 'Reservation released',
         referenceType: 'RESERVATION',
         referenceId: id,
-        correlationId,
+        correlationId: ctx.correlationId,
+        actorId: ctx.user.id,
       });
       await this.repo.markReleased(client, id);
       const released = await this.repo.find(id, client);
@@ -85,14 +92,16 @@ export class ReservationsService {
     });
   }
 
-  async get(id: string): Promise<Reservation> {
+  async get(id: string, user: AuthUser): Promise<Reservation> {
     const reservation = await this.repo.find(id);
     if (!reservation) throw notFound();
+    assertLocationAccess(user, reservation.locationId);
     return reservation;
   }
 
-  async list(query: ListReservationsQuery): Promise<Page<Reservation>> {
-    const { rows, total } = await this.repo.list(query);
+  async list(query: ListReservationsQuery, user: AuthUser): Promise<Page<Reservation>> {
+    if (query.locationId) assertLocationAccess(user, query.locationId);
+    const { rows, total } = await this.repo.list(query, accessibleLocationIds(user));
     return { data: rows, page: query.page, pageSize: query.pageSize, total };
   }
 }

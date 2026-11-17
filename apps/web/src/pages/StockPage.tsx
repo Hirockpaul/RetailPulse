@@ -7,6 +7,8 @@ import { AsOf, Empty, ErrorMessage, Loading } from '../components/Status';
 import { field, table } from '../components/table';
 import { formatDateTime, formatInt } from '../lib/format';
 import { href, navigate } from '../lib/router';
+import { useUser } from '../lib/auth';
+import { canAccessLocation } from '../lib/permissions';
 import { useAsync } from '../lib/useAsync';
 
 const PAGE_SIZE = 25;
@@ -19,6 +21,7 @@ const SORTS: { value: StockSort; label: string }[] = [
 ];
 
 export function StockPage({ locationId }: { locationId?: string }) {
+  const user = useUser();
   const locations = useAsync(listLocations);
 
   if (locations.status === 'loading') return <Loading />;
@@ -26,7 +29,8 @@ export function StockPage({ locationId }: { locationId?: string }) {
     return <ErrorMessage message={locations.error} onRetry={locations.reload} />;
   }
 
-  const all = locations.data.data;
+  // Store managers only see (and can open) their own stores; the API enforces it as well.
+  const all = locations.data.data.filter((l) => canAccessLocation(user, l.id));
   const selected = all.find((l) => l.id === locationId) ?? all[0];
 
   return (
@@ -136,6 +140,7 @@ function LocationStock({ locationId }: { locationId: string }) {
                   <th className={table.thNum}>On hand</th>
                   <th className={table.thNum}>Reserved</th>
                   <th className={table.thNum}>Available</th>
+                  <th className={table.thNum}>Inbound</th>
                   <th className={table.th}>
                     <span className="sr-only">Status</span>
                   </th>
@@ -154,6 +159,7 @@ function LocationStock({ locationId }: { locationId: string }) {
                     <td className={table.tdNum}>{formatInt(r.onHand)}</td>
                     <td className={table.tdNum}>{formatInt(r.reserved)}</td>
                     <td className={table.tdNum}>{formatInt(r.available)}</td>
+                    <td className={table.tdNum}>{r.inbound > 0 ? formatInt(r.inbound) : '—'}</td>
                     <td className={table.td}>
                       <StockBadge available={r.available} packSize={r.packSize} />
                     </td>

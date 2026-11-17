@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import { listReservations, releaseReservation } from '../api/movements';
 import { ApiError } from '../api/client';
 import { formatDateTime, formatInt } from '../lib/format';
+import { useUser } from '../lib/auth';
+import { canAccessLocation, canWrite } from '../lib/permissions';
 import { useAsync } from '../lib/useAsync';
 import { Empty, ErrorMessage, Loading } from './Status';
 import { table } from './table';
@@ -17,6 +19,7 @@ export function ReservationsPanel({
   productId: string;
   onChanged: () => void;
 }) {
+  const user = useUser();
   const reservations = useAsync(
     useCallback(() => listReservations({ productId, status: 'ACTIVE', pageSize: 50 }), [productId]),
   );
@@ -71,14 +74,16 @@ export function ReservationsPanel({
                   <td className={table.td}>{r.reference ?? '—'}</td>
                   <td className={table.td}>{formatDateTime(r.createdAt)}</td>
                   <td className={table.td}>
-                    <button
-                      type="button"
-                      disabled={busyId === r.id}
-                      onClick={() => release(r.id)}
-                      className="rounded border px-2 py-1 text-xs enabled:hover:bg-slate-100 disabled:opacity-50 focus:outline-2 focus:outline-sky-500"
-                    >
-                      {busyId === r.id ? 'Releasing…' : 'Release'}
-                    </button>
+                    {canWrite(user) && canAccessLocation(user, r.locationId) && (
+                      <button
+                        type="button"
+                        disabled={busyId === r.id}
+                        onClick={() => release(r.id)}
+                        className="rounded border px-2 py-1 text-xs enabled:hover:bg-slate-100 disabled:opacity-50 focus:outline-2 focus:outline-sky-500"
+                      >
+                        {busyId === r.id ? 'Releasing…' : 'Release'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -26,6 +26,8 @@ export async function prepareTestDatabase(): Promise<string> {
     await admin.end();
   }
 
+  // Demo accounts are seeded with this password (from .env locally, a fixed value in CI).
+  process.env.DEMO_PASSWORD ??= 'ci-demo-password-1';
   const env = { ...process.env, DATABASE_URL: testUrl, NODE_ENV: 'test' };
   execFileSync(process.execPath, [resolve(scripts, 'migrate.mjs')], { env, stdio: 'pipe' });
   execFileSync(process.execPath, [resolve(scripts, 'seed.mjs'), '--reset'], { env, stdio: 'pipe' });
