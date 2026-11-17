@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../core/database/database.service';
+import type { StoredContribution } from './forecasts.explain';
 import type { ForecastRun, ModelMetric, RangeGroup, SeriesForecast } from './forecasts.schemas';
 
 const RUN_SELECT = `
@@ -10,7 +11,8 @@ const RUN_SELECT = `
          r.test_start::text AS "testStart", r.test_end::text AS "testEnd",
          r.series_count AS "seriesCount", r.fallback_count AS "fallbackCount",
          m.name AS "servedModel", m.kind AS "servedModelKind",
-         r.selection_reason AS "selectionReason", r.ml_beat_baseline AS "mlBeatBaseline", r.error
+         r.selection_reason AS "selectionReason", r.ml_beat_baseline AS "mlBeatBaseline", r.error,
+         r.explanation_status AS "explanationStatus"
     FROM forecast.runs r
     LEFT JOIN forecast.model_versions m ON m.id = r.served_model_version_id`;
 
@@ -48,6 +50,86 @@ export class ForecastsRepository {
               test_coverage::float8 AS "testCoverage", test_points AS "testPoints"
          FROM forecast.interval_calibration WHERE run_id = $1
         ORDER BY level, group_index`,
+      [runId],
+    );
+    return rows;
+  }
+
+  /** The stored explanation of the first forecast day for one series, with what is needed to describe it. */
+  async explanation(
+    runId: string,
+    productId: string,
+    locationId: string,
+  ): Promise<{
+    isFallback: boolean | null;
+    categoryName: string;
+    locationCode: string;
+    row: {
+      horizonDay: number;
+      targetDay: string;
+      baseLog: number;
+      forecast: number;
+      contributions: StoredContribution[];
+    } | null;
+  } | null> {
+    const { rows } = await this.db.query<{
+      isFallback: boolean | null;
+      categoryName: string;
+      locationCode: string;
+      horizonDay: number | null;
+      targetDay: string | null;
+      baseLog: number | null;
+      forecast: number | null;
+      contributions: StoredContribution[] | null;
+    }>(
+      `SELECT s.is_fallback AS "isFallback", c.name AS "categoryName", l.code::text AS "locationCode",
+              e.horizon_day AS "horizonDay",
+              (r.history_end + e.horizon_day)::text AS "targetDay",
+              e.base_log::float8 AS "baseLog", e.forecast::float8 AS forecast, e.contributions
+         FROM products p
+         JOIN categories c ON c.id = p.category_id
+         JOIN locations l ON l.id = $3
+         JOIN forecast.runs r ON r.id = $1
+         LEFT JOIN forecast.series s
+                ON s.run_id = $1 AND s.product_id = p.id AND s.location_id = l.id
+         LEFT JOIN forecast.explanations e
+                ON e.run_id = $1 AND e.product_id = p.id AND e.location_id = l.id AND e.horizon_day = 1
+        WHERE p.id = $2`,
+      [runId, productId, locationId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      isFallback: r.isFallback,
+      categoryName: r.categoryName,
+      locationCode: r.locationCode,
+      row:
+        r.contributions &&
+        r.horizonDay !== null &&
+        r.targetDay &&
+        r.baseLog !== null &&
+        r.forecast !== null
+          ? {
+              horizonDay: r.horizonDay,
+              targetDay: r.targetDay,
+              baseLog: r.baseLog,
+              forecast: r.forecast,
+              contributions: r.contributions,
+            }
+          : null,
+    };
+  }
+
+  async featureImportance(
+    runId: string,
+  ): Promise<{ feature: string; meanAbsContribution: number; rank: number }[]> {
+    const { rows } = await this.db.query<{
+      feature: string;
+      meanAbsContribution: number;
+      rank: number;
+    }>(
+      `SELECT feature, mean_abs_contribution::float8 AS "meanAbsContribution", rank
+         FROM forecast.feature_importance WHERE run_id = $1 ORDER BY rank`,
       [runId],
     );
     return rows;

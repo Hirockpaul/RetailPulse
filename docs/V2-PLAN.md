@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a, 1b built** (see §9);
-waiting for approval of step 1c.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1c built** (see §9);
+waiting for approval of step 1d.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -332,7 +332,7 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
   baseline 54.4 %, noise floor 51.0 %); bias +0.1 %; 80 % range covers 83.4 %.
 - Tests: Python 56 → 66; TypeScript unchanged and green (119 + 202), e2e green.
 
-### Step 1b — probabilistic forecast ✅ (2026-11-17, not committed yet)
+### Step 1b — probabilistic forecast ✅ (2026-11-17, commit 43582e0)
 
 - Diagnosis: the Day-6 "80 %" band (± 1.28 σ) held 83.4 % overall but 91 % for slow sellers and
   78 % for fast ones.
@@ -347,4 +347,23 @@ Phase 6 ≈ 1. Each phase ends in a commit with its report (brief Part 12).
 - Measured (dev data, served model, test window): 80 % range held **80.0 %**, 95 % held **94.9 %**;
   every level group 78.5–84.2 % / 93.8–95.7 %; 80 % range narrower than before (4.94 vs 5.09 units).
 - Tests: Python 66 → 73, API integration 202 → 204; all checks and e2e green.
+
+### Step 1c — explanations (SHAP) ✅ (2026-11-17, not committed yet)
+
+- `shap==0.54.1` (adds shap, slicer, tqdm; ~5 MB). `app/models/explain.py`: TreeExplainer on the
+  served model; additivity checked per run (measured error ~1e-15); a non-additive result stores
+  nothing (`explanation_status = FAILED_CHECK`) — proven by a test with the Day-6 encoding.
+- Migration `0009_forecast_explanations.sql`: `forecast.explanations` (first forecast day per
+  series, contributions as JSON), `forecast.feature_importance`, `runs.explanation_status`.
+- API: `GET /forecasts/explanation` (store-scoped; factors with labels and readable values, or the
+  reason there is none) and `importance` in `/forecasts/runs/latest`. Labels are a tested pure
+  function (`forecasts.explain.ts`).
+- UI: "Why this forecast?" on the product page (starting point × top 5 factors × the rest, with
+  bars; works at phone width) and "What does the model rely on most?" on the accuracy card.
+- Measured on the dev data: 950 series explained; most relied-on inputs: 56-day average (0.585),
+  weekday (0.124), 28-day average (0.047), time of year, promotion planned. Run time unchanged
+  (34-39 s).
+- Fixed on the way: the product page said "Tomorrow" for the first forecast day, which is the day
+  after the history ends (today, when the history ends yesterday); it now shows the date.
+- Tests: Python 73 → 77, API unit 119 → 124, API integration 204 → 206; all checks and e2e green.
 

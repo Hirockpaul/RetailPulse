@@ -37,4 +37,14 @@ export class ForecastsController {
   ) {
     return this.forecasts.series(query, ctx.user);
   }
+
+  /** Why the first forecast day's forecast is what it is: the model's inputs as multiplying factors (SHAP). */
+  @Roles(...READ_ROLES)
+  @Get('explanation')
+  explanation(
+    @Query(new ZodValidationPipe(seriesQuerySchema)) query: SeriesQuery,
+    @Ctx() ctx: RequestContext,
+  ) {
+    return this.forecasts.explanation(query, ctx.user);
+  }
 }

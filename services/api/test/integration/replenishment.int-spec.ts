@@ -236,7 +236,13 @@ it('cannot generate recommendations before any forecast exists', async () => {
   const res = await inv().post('/replenishment/generate').expect(409);
   expect(res.body.error.code).toBe('NO_FORECAST');
   const overview = (await admin().get('/forecasts/runs/latest').expect(200)).body;
-  expect(overview).toEqual({ latest: null, current: null, metrics: [], ranges: [] });
+  expect(overview).toEqual({
+    latest: null,
+    current: null,
+    metrics: [],
+    ranges: [],
+    importance: [],
+  });
 });
 
 // ------------------------------------------------------------------ with a forecast
@@ -793,6 +799,83 @@ describe('forecasts API', () => {
     await expect(
       db.query(`UPDATE forecast.points SET lower95 = lower + 0.5 WHERE run_id = $1`, [runId]),
     ).rejects.toThrow(/points_ranges_nested/);
+  });
+
+  it('V2 1c: explains the forecast as factors that multiply back to it, or says why it cannot', async () => {
+    const url = `/forecasts/explanation?productId=${P.id}&locationId=${loc.str2}`;
+    // A run made before explanations existed.
+    let res = (await as('store2').get(url).expect(200)).body;
+    expect(res).toMatchObject({ status: 'NOT_AVAILABLE', explanation: null, globalImportance: [] });
+
+    await db.query(`UPDATE forecast.runs SET explanation_status = 'NOT_ML' WHERE id = $1`, [runId]);
+    res = (await as('analyst').get(url).expect(200)).body;
+    expect(res).toMatchObject({
+      status: 'NOT_ML',
+      servedModel: 'moving_average_28',
+      explanation: null,
+    });
+
+    const contributions = [
+      { feature: 'mean_56d', value: 6.2, contribution: Math.log(1.5) },
+      { feature: 'weekday', value: 5, contribution: Math.log(1.2) },
+      { feature: 'store', value: 1, contribution: Math.log(0.9) },
+      { feature: 'season', value: 322, contribution: 0 },
+    ];
+    const baseLog = Math.log(3);
+    const forecast = 3 * 1.5 * 1.2 * 0.9;
+    await db.query(`UPDATE forecast.runs SET explanation_status = 'OK' WHERE id = $1`, [runId]);
+    await db.query(
+      `INSERT INTO forecast.explanations (run_id, product_id, location_id, horizon_day, base_log,
+          forecast, contributions) VALUES ($1, $2, $3, 1, $4, $5, $6)`,
+      [runId, P.id, loc.str2, baseLog, forecast, JSON.stringify(contributions)],
+    );
+    await db.query(
+      `INSERT INTO forecast.feature_importance (run_id, feature, mean_abs_contribution, rank)
+       VALUES ($1, 'mean_56d', 0.58, 1), ($1, 'weekday', 0.12, 2)`,
+      [runId],
+    );
+    res = (await as('store2').get(url).expect(200)).body;
+    expect(res.status).toBe('OK');
+    const e = res.explanation;
+    expect(e.startingPoint).toBeCloseTo(3, 5); // base_log is stored with 6 decimals
+    expect(e.forecast).toBeCloseTo(4.86, 4);
+    const product = e.factors.reduce((p: number, f: { factor: number }) => p * f.factor, 1);
+    expect(e.startingPoint * product).toBeCloseTo(e.forecast, 4); // factors multiply back exactly
+    expect(e.factors.map((f: { label: string; display: string }) => [f.label, f.display])).toEqual([
+      ['Average sales, last 56 days', '6.2 per day'],
+      ['Day of the week', 'Saturday'],
+      ['Store', 'STR-02'],
+      ['Time of year', 'November'],
+    ]);
+    const historyEnd = (await admin().get('/forecasts/runs/latest').expect(200)).body.current
+      .historyEnd as string;
+    const next = new Date(`${historyEnd}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    expect(e.targetDay).toBe(next.toISOString().slice(0, 10)); // explains the first forecast day
+    const latestRun = (await as('analyst').get('/forecasts/runs/latest').expect(200)).body;
+    expect(latestRun.importance.map((i: { label: string }) => i.label)).toEqual([
+      'Average sales, last 56 days',
+      'Day of the week',
+    ]);
+    expect(res.globalImportance).toEqual([
+      {
+        feature: 'mean_56d',
+        label: 'Average sales, last 56 days',
+        meanAbsContribution: 0.58,
+        rank: 1,
+      },
+      { feature: 'weekday', label: 'Day of the week', meanAbsContribution: 0.12, rank: 2 },
+    ]);
+  });
+
+  it('V2 1c: explanations respect store scope and need an existing forecast', async () => {
+    await as('store1')
+      .get(`/forecasts/explanation?productId=${P.id}&locationId=${loc.str2}`)
+      .expect(403);
+    await admin()
+      .get(`/forecasts/explanation?productId=${P.id}&locationId=${loc.str1}`)
+      .expect(404);
+    await admin().get('/forecasts/explanation?productId=nope').expect(400);
   });
 
   it('respects store scope and reports missing forecasts', async () => {

@@ -33,6 +33,7 @@ from app.evaluation.backtest import (
     select_model,
 )
 from app.models import baselines, ml
+from app.models.explain import Explanations, NotAdditive, explain
 
 BASELINE_FUNCS: dict[str, Callable[[np.ndarray, int, int], np.ndarray]] = {
     "moving_average_28": lambda y, o, h: baselines.moving_average(y, o, h, 28),
@@ -61,6 +62,8 @@ class Outcome:
     upper95: np.ndarray
     # Per range level and forecast-level group: live quantiles + honest test coverage
     interval_groups: list[dict]
+    explanations: Explanations | None  # only when the ML model is served and SHAP adds up
+    explanation_status: str  # OK | NOT_ML | FAILED_CHECK
     avg_daily_28: np.ndarray
     std_daily_90: np.ndarray
     sigma: np.ndarray
@@ -152,9 +155,15 @@ def compute(
         for row in score_by_horizon(actual[split], preds[split], eligible, s, e)
     ]
 
+    explanations: Explanations | None = None
+    explanation_status = "NOT_ML"
     if served_model == ML_MODEL:
         final = ml.train(builder, n - 1, horizon, seed)
         base_forecast = ml.predict(final, builder, n - 1, horizon)
+        try:
+            explanations, explanation_status = explain(final, builder, n - 1), "OK"
+        except NotAdditive:
+            explanation_status = "FAILED_CHECK"  # store nothing rather than a wrong explanation
     else:
         base_forecast = BASELINE_FUNCS[served_model](y, n - 1, horizon)
 
@@ -232,6 +241,8 @@ def compute(
         lower95=lower95,
         upper95=upper95,
         interval_groups=interval_groups,
+        explanations=explanations,
+        explanation_status=explanation_status,
         avg_daily_28=avg28,
         std_daily_90=std90,
         sigma=sigma,

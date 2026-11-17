@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Factor } from './forecasts.explain';
 import { uuidSchema } from '../../core/http/query';
 
 export const runForecastBodySchema = z.object({
@@ -34,6 +35,8 @@ export interface ForecastRun {
   selectionReason: string | null;
   mlBeatBaseline: boolean | null;
   error: string | null;
+  /** V2 1c: OK, NOT_ML, FAILED_CHECK; null for runs made before explanations existed. */
+  explanationStatus: 'OK' | 'NOT_ML' | 'FAILED_CHECK' | null;
 }
 
 export interface ModelMetric {
@@ -93,4 +96,27 @@ export interface SeriesForecast {
   }[];
   /** Range calibration of the run, to say how reliable this forecast's range has been. */
   ranges: RangeGroup[];
+}
+
+/** Why one forecast is what it is (SHAP contributions of the ML model), or why it cannot be explained. */
+export interface ForecastExplanation {
+  run: { id: string; dataLabel: string | null; finishedAt: Date | null; historyEnd: string | null };
+  servedModel: string | null;
+  /**
+   * OK: explained. NOT_ML: a simple method made the forecast (its rule is the explanation).
+   * FALLBACK: too little history, a category average was used. FAILED_CHECK: the explanation did
+   * not add up and was not stored. NOT_AVAILABLE: the run predates explanations.
+   */
+  status: 'OK' | 'NOT_ML' | 'FALLBACK' | 'FAILED_CHECK' | 'NOT_AVAILABLE';
+  explanation: {
+    horizonDay: number;
+    targetDay: string;
+    /** The model's typical forecast before looking at this product's inputs (units/day). */
+    startingPoint: number;
+    /** = startingPoint × every factor (units). */
+    forecast: number;
+    factors: Factor[];
+  } | null;
+  /** What the model relies on most across all products (mean |contribution|, days 1-7). */
+  globalImportance: { feature: string; label: string; meanAbsContribution: number; rank: number }[];
 }

@@ -79,8 +79,41 @@ export function ForecastAccuracyCard({ overview }: { overview: ForecastOverview 
         little history and use a category average instead. Bias: + means forecasts were too high on
         average, − too low.
       </p>
+      <ModelInputs overview={overview} />
       <RangeReliability overview={overview} />
     </section>
+  );
+}
+
+/** Which inputs the machine-learning model leans on most, across all products (SHAP). */
+function ModelInputs({ overview }: { overview: ForecastOverview }) {
+  const top = overview.importance.slice(0, 5);
+  if (top.length === 0) return null;
+  const max = top[0].meanAbsContribution || 1;
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer font-medium">What does the model rely on most?</summary>
+      <ul className="mt-2 space-y-1">
+        {top.map((i) => (
+          <li key={i.feature} className="flex items-center gap-3">
+            <span className="w-72 shrink-0">
+              {i.rank}. {i.label}
+            </span>
+            <span className="h-2 flex-1 rounded bg-slate-100" aria-hidden="true">
+              <span
+                className="block h-2 rounded bg-sky-600"
+                style={{ width: `${(i.meanAbsContribution / max) * 100}%` }}
+              />
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-xs text-slate-500">
+        Average size of each input&apos;s effect on the forecasts for 1–7 days ahead, over all
+        products (SHAP). It shows what the model uses, not what drives real demand. Each product
+        page explains its own forecast under “Why this forecast?”.
+      </p>
+    </details>
   );
 }
 

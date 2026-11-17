@@ -187,6 +187,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
 
 ### Key table shapes
@@ -284,8 +285,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `POST /ops/events/:id/replay`         | —                                              | `409 EVENT_ALREADY_PENDING` if still queued |
 
 | `POST /forecasts/run`                 | body `{ horizonDays? }`                        | starts a run in the Python service; `202`; `503 FORECAST_SERVICE_UNAVAILABLE` if it is not running |
-| `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics, ranges }`: progress of the newest run, and the newest successful one with accuracy (WAPE, bias, range coverage) and range calibration per sales level |
+| `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics, ranges, importance }`: progress of the newest run, and the newest successful one with accuracy (WAPE, bias, range coverage) and range calibration per sales level |
 | `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + 80 % and 95 % ranges + the run's range calibration, for one product at one store |
+| `GET /forecasts/explanation`          | `productId, locationId`                        | why the first forecast day is what it is: starting point × factors (SHAP), or the reason there is none (`NOT_ML`, `FALLBACK`, `FAILED_CHECK`, `NOT_AVAILABLE`); plus the run's global importance. Store-scoped |
 | `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
 | `GET /replenishment/recommendations`  | `status, action, risk, locationId, productId, page, pageSize` | most urgent first; store managers: own stores |
 | `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
@@ -451,6 +453,7 @@ flowchart LR
 | Models | `moving_average_28` (mean of the last 28 days), `seasonal_naive_7` (same weekday of the latest known week), `hgb_direct` (one global scikit-learn `HistGradientBoostingRegressor`, Poisson loss, direct multi-horizon; features are lags/means/std/same-weekday values at the origin, horizon, calendar, category/store as numeric codes, and the promotion calendar: uplift planned for the target day plus promotion days in the last 7 — all other values computed from data up to the origin). No native categorical splits, so tree explanations are exact (decision #48). The ML model is retrained for each split on data *before* that split. |
 | Metrics | MAE, RMSE, WAPE (total error ÷ total units sold) and **bias** (Σ(forecast − actual) ÷ Σ actual), pooled over series with enough history, for every model on validation and test; the same per horizon day in `forecast.horizon_metrics`; and the 80 % range's **coverage and width** on the test window, built from validation errors only. All persisted per run. |
 | Selection | The best baseline is chosen on **validation**. The ML model is served only if its WAPE beats that baseline on **both** validation and the untouched test window; otherwise the baseline is served and the run says so. |
+| Explanations | When the ML model is served, every run explains the **first forecast day** of each product × store with SHAP (`TreeExplainer`, `app/models/explain.py`): the model's log forecast = starting point + one contribution per input, so `forecast = exp(start) × Π exp(contribution)` — each input is a multiplying factor. The run checks that the parts add up (≤ 1e-6) and stores nothing otherwise (`runs.explanation_status` = OK / NOT_ML / FAILED_CHECK). Global importance = mean \|contribution\| over days 1–7 (`forecast.feature_importance`). Season's sine and cosine columns are shown as one "time of year" factor. Worded as contributions to the model's forecast, never as causes of demand. |
 | Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
 | Uncertainty | **80 % and 95 % ranges from measured errors** (split conformal, V2 1b, `evaluation/intervals.py`): residuals (actual − forecast) of the served model are grouped by forecast level (0–0.5, 0.5–1, 1–2, 2–4, 4–8, 8+ units/day) and their 10/90 % (2.5/97.5 %) quantiles are added to the forecast, never below 0 and always containing the forecast. Coverage is checked honestly — calibrated on validation, scored on test — overall and per level group (`forecast.interval_calibration`); live ranges use both windows. Replaces the Day-6 ± 1.28 σ band, which held 91 % for slow sellers and 78 % for fast ones. The UI states the range in words with its measured reliability. |
 | Persistence | `forecast.runs` (windows, served model version, selection reason, data label), `model_versions`, `model_metrics`, `series`, `points`. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
@@ -592,10 +595,10 @@ RetailPulse/
 │       │   ├── repository.py ✅     every SQL statement; writes only to `forecast.*`
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
-│       │   ├── models/ ✅           baselines.py, ml.py
+│       │   ├── models/ ✅           baselines.py, ml.py, explain.py (SHAP)
 │       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), intervals.py (conformal ranges), metrics.py, report.py (npm run forecast:measure)
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                73 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                77 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
@@ -714,4 +717,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 49 | The promotion calendar is a known input for the target day | Promotions are planned in advance, like the calendar; without it the model learns promotion spikes as noise | Synthetic promotions are easy to model (fixed ×1.6); none are planned for the live horizon |
 | 50 | Anomalies are injected with labels on a separate random stream | Detection can be measured (precision/recall) and every other day keeps the value it had before | The injected kinds (spike, 3-day drop) are simpler than real anomalies |
 | 51 | Forecast ranges by split conformal, grouped by forecast level (V2 1b) | Uses the model's real errors, no normal assumption; skewed counts get asymmetric ranges; coverage is checked on data the calibration never saw | Assumes the coming weeks resemble the calibration weeks; days 8–14 reuse the 1–7-day quantiles; the daily ranges cannot be summed into a range for a total |
+| 52 | SHAP explanations only for the served ML model, only if they add up, shown as multiplying factors (V2 1c) | Exact for our tree model (verified per run, 1e-6); factors match how a Poisson model works (log scale) and are easy to read; refusing non-additive output prevents silently wrong explanations (tested with the Day-6 encoding) | Explains the first forecast day only; `tree_path_dependent` SHAP describes the model, not cause and effect; adds `shap` (~5 MB) to the service |
 

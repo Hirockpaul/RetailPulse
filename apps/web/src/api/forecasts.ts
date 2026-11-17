@@ -57,6 +57,8 @@ export interface ForecastOverview {
   current: ForecastRun | null;
   metrics: ModelMetric[];
   ranges: RangeGroup[];
+  /** What the model relies on most (mean |SHAP contribution|), when the ML model is in use. */
+  importance: { feature: string; label: string; meanAbsContribution: number; rank: number }[];
 }
 
 /** The range group a forecast of `perDay` units/day belongs to. */
@@ -101,3 +103,34 @@ export const startForecastRun = () =>
   postJson<{ runId: string; status: string }>('/forecasts/run', {});
 export const fetchSeriesForecast = (productId: string, locationId: string) =>
   getJson<SeriesForecast>(`/forecasts/series${qs({ productId, locationId })}`);
+
+export interface ExplanationFactor {
+  feature: string;
+  label: string;
+  display: string;
+  contribution: number;
+  /** 1.25 = raised the forecast by 25%; 0.8 = lowered it by 20%. */
+  factor: number;
+}
+
+export interface ForecastExplanation {
+  run: {
+    id: string;
+    dataLabel: string | null;
+    finishedAt: string | null;
+    historyEnd: string | null;
+  };
+  servedModel: string | null;
+  status: 'OK' | 'NOT_ML' | 'FALLBACK' | 'FAILED_CHECK' | 'NOT_AVAILABLE';
+  explanation: {
+    horizonDay: number;
+    targetDay: string;
+    startingPoint: number;
+    forecast: number;
+    factors: ExplanationFactor[];
+  } | null;
+  globalImportance: { feature: string; label: string; meanAbsContribution: number; rank: number }[];
+}
+
+export const fetchForecastExplanation = (productId: string, locationId: string) =>
+  getJson<ForecastExplanation>(`/forecasts/explanation${qs({ productId, locationId })}`);

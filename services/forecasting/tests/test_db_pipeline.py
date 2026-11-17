@@ -139,6 +139,27 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
         assert labels[0] > 0 and labels[1] > 0 and labels[2] == labels[1]
         assert "promo_target" in run[6] and "store" in run[6]
 
+        # V2 step 1c: explanations exist exactly when the ML model is served; never for fallbacks.
+        status, served = conn.execute(
+            """SELECT r.explanation_status, m.name FROM forecast.runs r
+                 JOIN forecast.model_versions m ON m.id = r.served_model_version_id
+                WHERE r.id = %s""",
+            (run_id,),
+        ).fetchone()
+        explained, on_fallback, importance = conn.execute(
+            """SELECT (SELECT count(*) FROM forecast.explanations WHERE run_id = %s),
+                      (SELECT count(*) FROM forecast.explanations e JOIN forecast.series s
+                          USING (run_id, product_id, location_id) WHERE e.run_id = %s AND s.is_fallback),
+                      (SELECT count(*) FROM forecast.feature_importance WHERE run_id = %s)""",
+            (run_id, run_id, run_id),
+        ).fetchone()
+        if served == "hgb_direct":
+            # one fewer than the model columns: season_sin + season_cos are shown as "season"
+            assert status == "OK" and explained == run[2] - run[3] and importance == len(run[6]) - 1
+        else:
+            assert status == "NOT_ML" and explained == 0 and importance == 0
+        assert on_fallback == 0
+
         kinds = dict(conn.execute("SELECT name, kind FROM forecast.model_versions").fetchall())
         assert kinds["hgb_direct"] == "ML" and kinds["category_average"] == "FALLBACK"
 

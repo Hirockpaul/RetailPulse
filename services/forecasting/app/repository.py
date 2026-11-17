@@ -11,6 +11,7 @@ import json
 from datetime import timedelta
 from typing import Any
 
+import numpy as np
 import psycopg
 
 from app.config import DEFAULT_HORIZON_DAYS, PIPELINE_VERSION
@@ -153,7 +154,8 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
               history_start = %s, history_end = %s, train_end = %s,
               validation_start = %s, validation_end = %s, test_start = %s, test_end = %s,
               series_count = %s, fallback_count = %s, served_model_version_id = %s,
-              selection_reason = %s, ml_beat_baseline = %s, feature_set = %s, params = %s
+              selection_reason = %s, ml_beat_baseline = %s, feature_set = %s, params = %s,
+              explanation_status = %s
             WHERE id = %s""",
         (
             label,
@@ -171,6 +173,7 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
             outcome.selection.ml_beat_baseline,
             outcome.feature_names,
             json.dumps({"pipelineVersion": PIPELINE_VERSION, "digest": params_digest}),
+            outcome.explanation_status,
             run_id,
         ),
     )
@@ -223,6 +226,8 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                     g["test_points"],
                 ),
             )
+        if outcome.explanations is not None:
+            _save_explanations(cur, run_id, hist, outcome)
         for h in outcome.horizon_metrics:
             cur.execute(
                 """INSERT INTO forecast.horizon_metrics
@@ -280,6 +285,47 @@ def save_results(conn: psycopg.Connection, run_id: str, hist: History, outcome: 
                         )
                     )
     prune_runs(conn)
+
+
+def _save_explanations(cur: psycopg.Cursor, run_id: str, hist: History, outcome: Any) -> None:
+    """The first forecast day per series split into contributions (fallback series are not the
+    model's forecast, so they get none), and the run's overall feature importance."""
+    ex = outcome.explanations
+    names = ex.feature_names
+    with cur.copy(
+        "COPY forecast.explanations (run_id, product_id, location_id, horizon_day, base_log, "
+        "forecast, contributions) FROM STDIN"
+    ) as copy:
+        for i in range(hist.n_series):
+            if outcome.is_fallback[i]:
+                continue
+            order = np.argsort(-np.abs(ex.contributions[i]))
+            items = [
+                {
+                    "feature": names[j],
+                    "value": round(float(ex.values[i, j]), 4),
+                    "contribution": round(float(ex.contributions[i, j]), 6),
+                }
+                for j in order
+            ]
+            copy.write_row(
+                (
+                    run_id,
+                    hist.product_ids[i],
+                    hist.location_ids[i],
+                    1,
+                    round(ex.base_log, 6),
+                    round(float(ex.forecast[i]), 4),
+                    json.dumps(items),
+                )
+            )
+    ranked = np.argsort(-ex.global_importance)
+    for rank, j in enumerate(ranked, start=1):
+        cur.execute(
+            """INSERT INTO forecast.feature_importance (run_id, feature, mean_abs_contribution, rank)
+               VALUES (%s, %s, %s, %s)""",
+            (run_id, names[j], round(float(ex.global_importance[j]), 6), rank),
+        )
 
 
 def prune_runs(conn: psycopg.Connection, keep: int = KEEP_RUNS) -> None:

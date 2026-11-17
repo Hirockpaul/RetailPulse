@@ -2,11 +2,12 @@ import { type ReactNode, useCallback, useState } from 'react';
 import { fetchSeriesForecast, rangeGroupFor, type SeriesForecast } from '../api/forecasts';
 import { listLocations } from '../api/locations';
 import { useUser } from '../lib/auth';
-import { formatDateTime, formatDecimal, formatPercent } from '../lib/format';
+import { formatDateTime, formatDay, formatDecimal, formatPercent } from '../lib/format';
 import { canAccessLocation } from '../lib/permissions';
 import { useAsync } from '../lib/useAsync';
 import { Badge } from './Badge';
 import { ForecastChart } from './ForecastChart';
+import { ForecastExplanation } from './ForecastExplanation';
 import { Empty, ErrorMessage, Loading } from './Status';
 import { field } from './table';
 
@@ -75,6 +76,7 @@ function StoreForecast({ productId, locationId }: { productId: string; locationI
     <div className="space-y-3 rounded-lg border bg-white p-4">
       <ForecastChart history={f.history} points={f.points} />
       <RangeExplanation f={f} />
+      <ForecastExplanation productId={productId} locationId={locationId} />
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
         <Fact label="Model">
           {f.model} {f.isFallback && <Badge tone="warn" label="fallback" />}
@@ -109,7 +111,7 @@ function RangeExplanation({ f }: { f: SeriesForecast }) {
     <div className="rounded border border-sky-100 bg-sky-50 px-3 py-2 text-sm text-slate-700">
       <p>
         Expected: about <strong>{formatDecimal(total)} units</strong> over the next{' '}
-        {f.points.length} days ({formatDecimal(perDay)} per day). Tomorrow:{' '}
+        {f.points.length} days ({formatDecimal(perDay)} per day). First day, {formatDay(first.day)}:{' '}
         {formatDecimal(first.yhat)} units, with an 80% range of {formatDecimal(first.lower)}–
         {formatDecimal(first.upper)}
         {first.lower95 != null && first.upper95 != null && (
