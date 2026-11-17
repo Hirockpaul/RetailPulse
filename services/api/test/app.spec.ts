@@ -63,6 +63,34 @@ describe('API foundation', () => {
   });
 });
 
+// Validation runs before any service/database call, so a mocked DB is enough here.
+describe('request validation (400 VALIDATION_FAILED)', () => {
+  let app: INestApplication;
+  beforeAll(async () => {
+    app = await buildApp(async () => 1);
+  });
+  afterAll(async () => app.close());
+
+  it.each([
+    ['/api/v1/products?pageSize=500', 'pageSize'],
+    ['/api/v1/products?page=0', 'page'],
+    ['/api/v1/products?sort=price:sideways', 'sort'],
+    ['/api/v1/products?categoryId=abc', 'categoryId'],
+    ['/api/v1/products/not-a-uuid', 'id'],
+    ['/api/v1/products/not-a-uuid/stock', 'id'],
+    ['/api/v1/products/not-a-uuid/ledger', 'id'],
+    ['/api/v1/locations?type=WAREHOUSE', 'type'],
+    ['/api/v1/locations/123/stock', 'id'],
+  ])('GET %s → 400 on %s', async (url, field) => {
+    const res = await request(app.getHttpServer()).get(url).expect(400);
+    expect(res.body.error.code).toBe('VALIDATION_FAILED');
+    expect(res.body.error.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: field })]),
+    );
+    expect(res.body.correlationId).toEqual(expect.any(String));
+  });
+});
+
 describe('loadEnv', () => {
   it('rejects a missing DATABASE_URL without echoing values', () => {
     expect(() => loadEnv({ API_PORT: '3000' })).toThrow(/DATABASE_URL/);

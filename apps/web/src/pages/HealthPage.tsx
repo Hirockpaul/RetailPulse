@@ -1,33 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ApiError } from '../api/client';
-import { fetchHealth, type HealthReport } from '../api/health';
+import { fetchHealth } from '../api/health';
 import { Badge } from '../components/Badge';
-
-type State =
-  | { kind: 'loading' }
-  | { kind: 'error'; message: string }
-  | { kind: 'ready'; report: HealthReport };
+import { ErrorMessage, Loading } from '../components/Status';
+import { useAsync } from '../lib/useAsync';
 
 export function HealthPage() {
-  const [state, setState] = useState<State>({ kind: 'loading' });
-
-  const load = useCallback(() => {
-    fetchHealth()
-      .then((report) => setState({ kind: 'ready', report }))
-      .catch((err: unknown) =>
-        setState({
-          kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Unexpected error.',
-        }),
-      );
-  }, []);
-
-  useEffect(load, [load]);
-
-  const refresh = () => {
-    setState({ kind: 'loading' });
-    load();
-  };
+  const health = useAsync(fetchHealth);
 
   return (
     <section aria-labelledby="health-heading" className="rounded-lg border bg-white p-5">
@@ -37,22 +14,18 @@ export function HealthPage() {
         </h2>
         <button
           type="button"
-          onClick={refresh}
+          onClick={health.reload}
           className="rounded border px-3 py-1 text-sm hover:bg-slate-100 focus:outline-2 focus:outline-sky-500"
         >
           Refresh
         </button>
       </div>
 
-      {state.kind === 'loading' && <p className="text-slate-500">Checking…</p>}
-
-      {state.kind === 'error' && (
-        <p role="alert" className="text-red-700">
-          {state.message} Is <code>npm run dev:api</code> running?
-        </p>
+      {health.status === 'loading' && <Loading label="Checking…" />}
+      {health.status === 'error' && (
+        <ErrorMessage message={`${health.error} Is \`npm run dev:api\` running?`} />
       )}
-
-      {state.kind === 'ready' && (
+      {health.status === 'success' && (
         <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
           <dt className="text-slate-500">API</dt>
           <dd>
@@ -61,17 +34,17 @@ export function HealthPage() {
           <dt className="text-slate-500">Database</dt>
           <dd className="flex items-center gap-2">
             <Badge
-              ok={state.report.checks.database.status === 'up'}
-              label={state.report.checks.database.status}
+              ok={health.data.checks.database.status === 'up'}
+              label={health.data.checks.database.status}
             />
-            {state.report.checks.database.latencyMs !== undefined && (
-              <span className="text-slate-500">{state.report.checks.database.latencyMs} ms</span>
+            {health.data.checks.database.latencyMs !== undefined && (
+              <span className="text-slate-500">{health.data.checks.database.latencyMs} ms</span>
             )}
           </dd>
           <dt className="text-slate-500">Checked at</dt>
-          <dd>{new Date(state.report.checkedAt).toLocaleString()}</dd>
+          <dd>{new Date(health.data.checkedAt).toLocaleString()}</dd>
           <dt className="text-slate-500">API uptime</dt>
-          <dd>{state.report.uptimeSeconds}s</dd>
+          <dd>{health.data.uptimeSeconds}s</dd>
         </dl>
       )}
     </section>

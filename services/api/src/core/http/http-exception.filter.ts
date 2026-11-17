@@ -18,7 +18,7 @@ const CODES: Record<number, string> = {
   429: 'TOO_MANY_REQUESTS',
 };
 
-/** Every error leaves the API as { error: { code, message }, correlationId }. */
+/** Every error leaves the API as { error: { code, message, details? }, correlationId }. */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger('HttpExceptionFilter');
@@ -30,6 +30,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = 'INTERNAL_ERROR';
     let message = 'An unexpected error occurred.';
+    let details: unknown;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -38,10 +39,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
         typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
       code = typeof custom.code === 'string' ? custom.code : (CODES[status] ?? 'HTTP_ERROR');
       message = typeof body === 'string' ? body : String(custom.message ?? exception.message);
+      details = custom.details;
     } else {
       this.logger.error(`Unhandled error [${correlationId}]`, (exception as Error)?.stack);
     }
 
-    res.status(status).json({ error: { code, message }, correlationId });
+    res.status(status).json({
+      error: details === undefined ? { code, message } : { code, message, details },
+      correlationId,
+    });
   }
 }

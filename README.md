@@ -92,6 +92,13 @@ npm run db:up
 npm run db:migrate
 ```
 
+Load the synthetic demo data (5 stores, 2 DCs, 200 products, 3 suppliers). Safe to re-run;
+add `-- --reset` to wipe and recreate it:
+
+```bash
+npm run db:seed
+```
+
 ```bash
 npm run dev:api
 ```
@@ -102,7 +109,8 @@ In a second terminal:
 npm run dev:web
 ```
 
-Open http://localhost:5173 — the page shows live API and database health.
+Open http://localhost:5173 — Products, Stock (per location), product detail with the
+inventory ledger, and Health.
 
 Forecasting service:
 
@@ -119,7 +127,12 @@ cd services/forecasting && .venv/bin/uvicorn app.main:app --reload --port 8000
 | URL                                   | What                                  |
 | ------------------------------------- | ------------------------------------- |
 | `GET http://localhost:3000/api/v1/health` | API + database status (503 if DB down) |
+| `GET http://localhost:3000/api/v1/products?q=milk&sort=price:desc` | Search/sort/paginate products |
+| `GET http://localhost:3000/api/v1/locations/{id}/stock` | Stock at one location |
+| `GET http://localhost:3000/api/v1/products/{id}/ledger` | Every stock movement for a product |
 | `GET http://localhost:8000/health`    | Forecasting service status            |
+
+All endpoints: [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-api-conventions).
 
 ## Quality checks
 
@@ -127,7 +140,15 @@ cd services/forecasting && .venv/bin/uvicorn app.main:app --reload --port 8000
 npm run check
 ```
 
-Runs format check, lint, typecheck, tests and build for the TypeScript apps. Python:
+Runs format check, lint, typecheck, unit tests and build for the TypeScript apps.
+
+Integration tests (real PostgreSQL; uses a separate `retailpulse_test` database, never your dev data):
+
+```bash
+npm run test:int
+```
+
+Python:
 
 ```bash
 cd services/forecasting && .venv/bin/ruff check . && .venv/bin/pytest

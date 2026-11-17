@@ -164,7 +164,7 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
 - **Checklist:** fresh clone → README steps → health page green · health returns 503 when DB
   is down · no secrets committed · `npm run check` passes.
 
-### Day 2 — Catalog, locations, ledger
+### Day 2 — Catalog, locations, ledger ✅
 
 - **A — Build:** migrations for `categories, suppliers, products, supplier_products,
   locations, inventory_balances, inventory_ledger` (+ CHECK `on_hand >= 0`, `reserved >= 0`,
@@ -173,6 +173,8 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
 - **B — Verify:** tests for constraints (duplicate SKU, negative stock rejected), pagination
   limits, 404/400 error shape. Web: Products and Stock tables (loading/empty/error states).
 - **Checklist:** balances equal the sum of their ledger entries (test query) · seed is labelled synthetic.
+- **Done notes:** balances are maintained by a ledger trigger and can't be edited directly
+  (see ARCHITECTURE decision #11). Integration tests: `npm run test:int` (needs `npm run db:up`).
 
 ### Day 3 — Stock movements (the core)
 

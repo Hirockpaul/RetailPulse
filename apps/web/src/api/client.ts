@@ -13,6 +13,24 @@ export class ApiError extends Error {
 
 const BASE = '/api/v1';
 
+/** Paginated list response, matching the API's Page<T>. */
+export interface Page<T> {
+  data: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+/** Build a query string, skipping empty values. */
+export function qs(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') search.set(key, String(value));
+  }
+  const s = search.toString();
+  return s ? `?${s}` : '';
+}
+
 /**
  * GET a JSON resource. Statuses listed in `acceptStatuses` are returned as data
  * (e.g. health's 503 still carries a valid report); anything else non-2xx throws ApiError.

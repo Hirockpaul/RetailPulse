@@ -60,8 +60,9 @@ Rules:
 2. **Services own transactions** via `DatabaseService.transaction(client => …)` and pass the
    `client` down to repositories so every query runs in the same transaction.
 3. **Modules talk through exported services**, never another module's repository.
-4. **Request/response shapes are Zod schemas** in `<module>.schemas.ts`; DB rows are never
-   returned directly.
+4. **Request schemas are Zod; response shapes are TypeScript interfaces**, both in
+   `<module>.schemas.ts`. Repositories alias columns to the response shape (`on_hand AS "onHand"`);
+   raw table rows are never returned.
 
 ### 2.2 Module map and allowed dependencies
 
@@ -115,10 +116,9 @@ sequenceDiagram
   S->>DB: idempotency key seen? → return stored response
   S->>DB: INSERT sales_order + lines
   S->>I: applyMovement(client, SALE, product, location, -qty, ref=order)
-  I->>DB: SELECT … FROM inventory_balances … FOR UPDATE   (row lock)
-  I->>I: check available ≥ qty, else 409 INSUFFICIENT_STOCK
-  I->>DB: INSERT inventory_ledger (deltas, after-values, reason, ref)
-  I->>DB: UPDATE inventory_balances
+  I->>DB: INSERT inventory_ledger (deltas, reason, ref)
+  Note over DB: BEFORE INSERT trigger: UPDATE inventory_balances (row lock),<br/>CHECKs reject oversell, after-values copied onto the ledger row
+  I->>I: CHECK violation → 409 INSUFFICIENT_STOCK
   I->>DB: INSERT outbox_events (Day 5)
   S->>DB: store idempotency response
   S->>DB: COMMIT  (all or nothing)
@@ -128,10 +128,11 @@ Guarantees and how they are enforced:
 
 | Guarantee                         | Enforced by                                                      |
 | --------------------------------- | ---------------------------------------------------------------- |
-| No oversell under concurrency     | `SELECT … FOR UPDATE` on the balance row + CHECK constraints     |
+| No oversell under concurrency     | Trigger's `UPDATE` row-locks the balance; CHECKs run on the locked row (tested with two racing sessions) |
 | No negative stock                 | `CHECK (on_hand >= 0 AND reserved >= 0 AND reserved <= on_hand)` |
-| Every change is traceable         | Only `applyMovement()` updates balances; it always writes a ledger row |
+| Every change is traceable         | Balances change **only** via the ledger trigger; a guard trigger rejects direct `UPDATE`/non-zero `INSERT` on `inventory_balances` — enforced by the database, not just by code |
 | Ledger can't be rewritten         | DB trigger rejects `UPDATE`/`DELETE` on `inventory_ledger`       |
+| Movements go the right direction  | `ledger_delta_matches_type` CHECK (e.g. `SALE` must be negative, `RESERVATION` only touches reserved) |
 | Retries don't double-apply        | `idempotency_keys` table, unique per (key, endpoint)             |
 | Event published iff tx committed  | Outbox row in the same transaction (Day 5)                       |
 
@@ -229,7 +230,21 @@ Transitions are checked in the service and guarded in SQL
 | Business errors| `409 INSUFFICIENT_STOCK`, `409 INVALID_STATE_TRANSITION`, `404 NOT_FOUND`   |
 | Idempotency    | `Idempotency-Key` header required on `POST /sales`, `POST /transfers`, `POST /purchase-orders` |
 | Auth (Day 4)   | HttpOnly SameSite cookie session; role + store-access guard on every route   |
-| Docs           | OpenAPI generated at `/api/v1/docs` (Day 2 onward)                           |
+| Docs           | Endpoint table below; generated OpenAPI at `/api/v1/docs` planned for Day 7  |
+
+### Endpoints so far
+
+| Method & path                         | Query params                                   | Notes |
+| ------------------------------------- | ---------------------------------------------- | ----- |
+| `GET /health`                         | —                                              | 503 when DB is down |
+| `GET /products`                       | `q, categoryId, sort (sku·name·price·available), page, pageSize` | network totals per product |
+| `GET /products/:id`                   | —                                              | includes primary supplier terms |
+| `GET /products/:id/stock`             | —                                              | one row per location, `asOf` |
+| `GET /products/:id/ledger`            | `locationId, movementType, page, pageSize`     | newest first |
+| `GET /categories`                     | —                                              | with product counts |
+| `GET /locations`                      | `q, type, sort (code·name·type), page, pageSize` | |
+| `GET /locations/:id`                  | —                                              | |
+| `GET /locations/:id/stock`            | `q, sort (sku·name·onHand·available), page, pageSize` | `asOf` + location |
 
 ---
 
@@ -305,21 +320,21 @@ RetailPulse/
 │   │   ├── migrations/ ✅           0001_init.sql, 0002_….sql (never edit applied files)
 │   │   ├── scripts/
 │   │   │   ├── migrate.mjs ✅       migration runner
-│   │   │   └── seed.mjs (D2)        synthetic demo data
+│   │   │   └── seed.mjs ✅          deterministic synthetic demo data (--reset)
 │   │   ├── src/
 │   │   │   ├── main.ts ✅           entry point: load env → create app → listen
 │   │   │   ├── bootstrap.ts ✅      shared wiring (prefix, middleware, filters)
 │   │   │   ├── app.module.ts ✅     imports core + feature modules
 │   │   │   ├── core/                cross-cutting, no business logic
 │   │   │   │   ├── config/ ✅       env.ts
-│   │   │   │   ├── database/ ✅     database.module.ts, database.service.ts
-│   │   │   │   ├── http/ ✅         correlation-id, exception filter, (D2) zod pipe, pagination
+│   │   │   │   ├── database/ ✅     database.module.ts, database.service.ts, sql.ts
+│   │   │   │   ├── http/ ✅         correlation-id, exception filter, zod pipe, query.ts (page/sort)
 │   │   │   │   └── auth/ (D4)       session guard, roles decorator, store-access guard
 │   │   │   └── modules/             one folder per business domain
 │   │   │       ├── health/ ✅
-│   │   │       ├── catalog/ (D2)    products, categories, suppliers
-│   │   │       ├── locations/ (D2)
-│   │   │       ├── inventory/ (D2–3) balances, ledger, applyMovement()
+│   │   │       ├── catalog/ ✅      products, categories, supplier terms
+│   │   │       ├── locations/ ✅
+│   │   │       ├── inventory/ ✅    stock + ledger reads; (D3) applyMovement()
 │   │   │       ├── sales/ (D3)
 │   │   │       ├── transfers/ (D4)
 │   │   │       ├── users/ (D4)
@@ -329,7 +344,7 @@ RetailPulse/
 │   │   │       └── replenishment/ (D6)
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
-│   │       └── integration/ (D2)    *.int-spec.ts against real Postgres
+│   │       └── integration/ ✅      *.int-spec.ts against a real <db>_test database
 │   │
 │   └── forecasting/                 FastAPI + ML
 │       ├── app/
@@ -348,8 +363,9 @@ RetailPulse/
 │           ├── main.tsx ✅          entry
 │           ├── App.tsx ✅           layout shell (header, nav, page outlet)
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
-│           ├── components/ ✅       shared UI: Badge, StatusMessage, DataTable (D2)…
-│           └── pages/ ✅            one file/folder per screen: HealthPage, ProductsPage (D2)…
+│           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
+│           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
+│           └── pages/ ✅            Products, ProductDetail, Stock, Health
 │
 └── scripts/simulation/ (D3)         POS traffic simulator
 ```
@@ -362,7 +378,7 @@ modules/inventory/
 ├── inventory.controller.ts   HTTP only
 ├── inventory.service.ts      rules + transactions
 ├── inventory.repository.ts   SQL only
-├── inventory.schemas.ts      Zod request/response schemas + inferred types
+├── inventory.schemas.ts      Zod request schemas + response interfaces
 └── inventory.service.spec.ts unit tests next to the code
 ```
 
@@ -407,3 +423,6 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 8 | Forecasting writes only `forecast.*` | ML can't mutate operational data | API must read forecast tables |
 | 9 | npm workspaces, one lockfile | Simple, built in | No task caching |
 | 10 | NestJS 12 with `module: nodenext` | Nest 12 is ESM-only; matches official template | Jest needs `--experimental-vm-modules` |
+| 11 | Balances maintained by a ledger trigger (Day 2) | The DB itself guarantees balance = Σ ledger, even for scripts/SQL that bypass the API | Logic lives partly in SQL; covered by integration tests |
+| 12 | Hash router + `useAsync` hook in the web app | Five screens don't justify a router/data library | Revisit if the UI grows a lot |
+| 13 | Integration tests use a separate `<db>_test` database | Tests never touch dev data; reseeded per test file | Needs Postgres running (`npm run db:up`) |

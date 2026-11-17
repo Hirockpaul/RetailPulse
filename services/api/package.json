@@ -8,7 +8,9 @@
     "start:dev": "nest start --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js",
-    "migrate": "node scripts/migrate.mjs"
+    "test:int": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --testRegex \".*\\.int-spec\\.ts$\" --runInBand",
+    "migrate": "node scripts/migrate.mjs",
+    "seed": "node scripts/seed.mjs"
   },
   "jest": {
     "testEnvironment": "node",
