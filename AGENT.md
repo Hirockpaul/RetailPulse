@@ -124,15 +124,20 @@ Transfer lifecycle: `REQUESTED → APPROVED → DISPATCHED → RECEIVED` (or `CA
 
 ### Forecasting & replenishment
 
-- Baselines first: moving average, seasonal naive (7-day).
-- Time-based train/test split only. No future data in features (no leakage).
+- Baselines first: moving average, seasonal naive (7-day). The ML model is one global scikit-learn
+  gradient-boosting model and is served only if it beats the best baseline on validation AND test.
+- Time-based train/validation/test split only. No future data in features (no leakage) — keep the
+  leakage tests (`tests/test_ml.py`, `tests/test_pipeline.py`) green when changing features.
+- The forecasting service writes only the `forecast` schema (`tests/test_write_guard.py`).
 - Report MAE, RMSE, WAPE per SKU/location and overall, vs. baseline.
 - Persist model name/version, training window, metrics, generated-at time.
 - `reorderPoint = avgDailyDemand × leadTimeDays + safetyStock`,
   `safetyStock = z × σ(daily demand) × √leadTimeDays`. Document assumptions.
 - Suggested qty: raise position to cover lead time + review period, then round **up** to pack
   size and at least MOQ. Every recommendation stores its inputs for explanation.
-- ML never mutates inventory or creates orders. A manager approves.
+- ML never mutates inventory or creates orders. A manager approves; approving creates the
+  transfer / purchase order. Report measured accuracy honestly, including how far it is from the
+  noise floor, and label synthetic data everywhere it is shown.
 
 ### Security
 
@@ -226,7 +231,7 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   `EVENT_WORKER_ENABLED=false` runs the API without the worker; tests use that and call
   `dispatcher.runOnce()` themselves. Old events are not purged yet (Day 7).
 
-### Day 6 — Forecasting & replenishment
+### Day 6 — Forecasting & replenishment ✅
 
 - **A — Build (Python):** synthetic 12-month daily sales generator (trend + weekly
   seasonality + noise, seeded RNG); `demand_daily` aggregation; models: moving average (28d),
@@ -239,6 +244,12 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   stores inputs + formula; approve/reject endpoints — approve creates the PO/transfer.
 - **Checklist:** ML model only used if it beats baseline on WAPE (otherwise baseline is
   served, and that's reported) · nothing is ordered without approval.
+- **Done notes:** run it with `npm run forecast:history` (synthetic history), `npm run forecast:serve`
+  (the Python service, port 8000), then **Replenishment → Refresh forecasts** in the app.
+  `npm run forecast:test` runs the Python checks. Accuracy is measured on time-ordered windows
+  and reported in ARCHITECTURE §7.3 (synthetic data; includes the noise floor). Purchase orders
+  exist only via approved recommendations. The forecasting service needs `DATABASE_URL`
+  (read from `.env`) and has no login: keep it on localhost.
 
 ### Day 7 — Dashboard, observability, demo
 

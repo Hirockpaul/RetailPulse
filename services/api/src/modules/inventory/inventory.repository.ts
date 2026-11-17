@@ -14,15 +14,26 @@ import type {
   StockPosition,
 } from './inventory.schemas';
 
-/** Units on open transfers heading to this balance's location. Derived, never stored. */
+/**
+ * Units expected at this balance's location: approved / dispatched transfers plus approved
+ * (not yet received) purchase orders. Derived on every read, never stored.
+ */
 const INBOUND_JOIN = `
   LEFT JOIN LATERAL (
-    SELECT COALESCE(SUM(tl.quantity), 0)::int AS inbound
-      FROM stock_transfer_lines tl
-      JOIN stock_transfers t ON t.id = tl.transfer_id
-     WHERE tl.product_id = b.product_id
-       AND t.destination_location_id = b.location_id
-       AND t.status IN ('APPROVED', 'DISPATCHED')
+    SELECT (
+      COALESCE((SELECT SUM(tl.quantity)
+                  FROM stock_transfer_lines tl
+                  JOIN stock_transfers t ON t.id = tl.transfer_id
+                 WHERE tl.product_id = b.product_id
+                   AND t.destination_location_id = b.location_id
+                   AND t.status IN ('APPROVED', 'DISPATCHED')), 0)
+      + COALESCE((SELECT SUM(pl.quantity)
+                    FROM purchase_order_lines pl
+                    JOIN purchase_orders po ON po.id = pl.purchase_order_id
+                   WHERE pl.product_id = b.product_id
+                     AND po.destination_location_id = b.location_id
+                     AND po.status = 'APPROVED'), 0)
+    )::int AS inbound
   ) i ON true`;
 
 /**

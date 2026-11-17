@@ -189,6 +189,27 @@ export class TransfersService {
     );
   }
 
+  /**
+   * Create a transfer that starts APPROVED, inside the caller's transaction. Used when a manager
+   * approves a replenishment recommendation (that approval IS the transfer's approval).
+   * Stock still only moves later, at dispatch and receipt.
+   */
+  async createApproved(
+    client: PoolClient,
+    input: {
+      sourceLocationId: string;
+      destinationLocationId: string;
+      notes?: string;
+      lines: { productId: string; quantity: number }[];
+    },
+    userId: string,
+  ): Promise<string> {
+    const id = await this.repo.insert(client, input, userId);
+    await this.repo.insertLines(client, id, input.lines);
+    await this.repo.transition(client, id, 'APPROVED', userId);
+    return id;
+  }
+
   // ------------------------------------------------------------------ reads
 
   async get(id: string, user: AuthUser): Promise<TransferDetail> {

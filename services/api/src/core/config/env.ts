@@ -10,6 +10,8 @@ const EnvSchema = z
     DATABASE_URL: z.string().url().startsWith('postgres'),
     /** Run the event worker inside this process. Default: on, except when NODE_ENV=test. */
     EVENT_WORKER_ENABLED: z.enum(['true', 'false']).optional(),
+    /** Where the internal forecasting service listens (it has no login: keep it private). */
+    FORECAST_URL: z.string().url().default('http://127.0.0.1:8000'),
     /** How often the event worker looks for new events. */
     EVENT_POLL_MS: z.coerce.number().int().min(50).max(60_000).default(1000),
   })

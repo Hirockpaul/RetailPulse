@@ -79,7 +79,8 @@ flowchart TB
   sales --> inventory
   transfers --> inventory & locations
   purchasing --> inventory
-  replenishment --> inventory & purchasing & transfers
+  forecasts --> database
+  replenishment --> forecasts & purchasing & transfers
   events --> database
   alerts --> events & inventory
 ```
@@ -178,7 +179,7 @@ erDiagram
 | 3 ✅ | `sales_orders`, `sales_order_lines`, `reservations`, `idempotency_keys`                   |
 | 4 ✅ | `users`, `user_store_access`, `sessions`, `stock_transfers`, `stock_transfer_lines` (+ ledger `actor_id` FK) |
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
-| 6   | `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations`, `forecast.forecast_runs`, `forecast.forecast_points` |
+| 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 
 ### Key table shapes
 
@@ -211,8 +212,9 @@ dispatched-not-received transfer lines for that product and destination.
 ```text
 Transfer:        REQUESTED → APPROVED → DISPATCHED → RECEIVED
                  REQUESTED|APPROVED → CANCELLED
-Purchase order:  DRAFT → APPROVED → RECEIVED   (DRAFT|APPROVED → CANCELLED)
-Recommendation:  PENDING → APPROVED (creates PO or transfer) | REJECTED | EXPIRED
+Purchase order:  APPROVED → RECEIVED | CANCELLED      (created already APPROVED by a recommendation)
+Recommendation:  PENDING → APPROVED (creates transfer or PO) | REJECTED | EXPIRED   (decisions are final)
+Forecast run:    RUNNING → SUCCEEDED | FAILED         (one RUNNING at a time)
 ```
 
 Transitions are checked in the service and guarded in SQL
@@ -273,6 +275,16 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /ops/events/dead`                | `page, pageSize`                               | admin / inventory manager |
 | `POST /ops/events/:id/replay`         | —                                              | `409 EVENT_ALREADY_PENDING` if still queued |
 
+| `POST /forecasts/run`                 | body `{ horizonDays? }`                        | starts a run in the Python service; `202`; `503 FORECAST_SERVICE_UNAVAILABLE` if it is not running |
+| `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics }`: progress of the newest run, and the newest successful one with accuracy |
+| `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + range for one product at one store |
+| `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
+| `GET /replenishment/recommendations`  | `status, action, risk, locationId, productId, page, pageSize` | most urgent first; store managers: own stores |
+| `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
+| `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note? }`            | approve creates the approved transfer / purchase order |
+| `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
+| `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
+
 ### Roles and access
 
 | Capability                                   | Admin | Inventory mgr | Store mgr (own stores) | Analyst |
@@ -285,6 +297,10 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | Dispatch a transfer                          | ✅    | ✅            | **from own store**     | —       |
 | Receive a transfer                           | ✅    | ✅            | **at own store**       | —       |
 | Cancel a transfer                            | ✅    | ✅            | **touching own store** | —       |
+| Run forecasts, generate / approve / reject recommendations | ✅ | ✅ | — | — |
+| Read forecasts, recommendations, purchase orders | all | all | **own stores** | all |
+| Receive a purchase order                     | ✅    | ✅            | **at own store**       | —       |
+| Cancel a purchase order                      | ✅    | ✅            | —                      | —       |
 
 - Role is checked by the global guard (`@Roles(...)`, 403 `FORBIDDEN`); store scope is checked in
   services with `core/auth/access.ts` (403 for a store manager's other stores, filtered rows for lists).
@@ -297,7 +313,8 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
   `inventory@`, `store1@` (STR-01), `store2@` (STR-02), `analyst@` — all `@retailpulse.test`.
 
 Business errors: `409 INSUFFICIENT_STOCK` (with `details`), `409 PRODUCT_INACTIVE`,
-`422 INVALID_LOCATION_TYPE`, `422 IDEMPOTENCY_KEY_REUSED`, `404 NOT_FOUND`.
+`422 INVALID_LOCATION_TYPE`, `422 IDEMPOTENCY_KEY_REUSED`, `409 NO_FORECAST`,
+`409 FORECAST_RUN_IN_PROGRESS`, `503 FORECAST_SERVICE_UNAVAILABLE`, `404 NOT_FOUND`.
 
 ---
 
@@ -378,24 +395,94 @@ through events, such as the seed). Day 6 replaces "one pack" with a forecast-bas
 
 ---
 
-## 7. Forecasting & replenishment (Day 6)
+## 7. Forecasting & replenishment
 
 ```mermaid
 flowchart LR
-  ledger[(SALE ledger rows)] --> agg[Daily demand<br/>per SKU × location]
-  agg --> base[Baselines:<br/>moving avg 28d, seasonal naive 7d]
-  agg --> ml[scikit-learn model<br/>lags + day-of-week]
-  base & ml --> bt[Rolling time-based backtest<br/>MAE · RMSE · WAPE]
-  bt --> pick[Serve ML only if it beats baseline WAPE]
-  pick --> fp[(forecast.forecast_points)]
-  fp --> rp[API: reorder point, safety stock,<br/>days of cover]
-  rp --> rec[(replenishment_recommendations<br/>PENDING + all inputs)]
-  rec -->|manager approves| act[PO or transfer created]
+  ledger[(SALE ledger rows<br/>complete days)] --> dd[(forecast.demand_daily<br/>per product × store × day)]
+  syn[Synthetic history generator<br/>npm run forecast:history] --> dd
+  dd --> models[Models scored on time-ordered windows<br/>moving average · same weekday last week · gradient boosting]
+  models --> pick[Serve the ML model only if it beats the best<br/>baseline on validation AND test]
+  pick --> fp[(forecast.series / points / metrics)]
+  fp --> calc[API: reorder point, safety stock,<br/>days of cover, pack & minimum rounding]
+  stock[(stock, inbound, DC stock)] --> calc
+  calc --> rec[(replenishment_recommendations<br/>PENDING + every input + explanation)]
+  rec -->|a manager approves| doc[Transfer or purchase order<br/>created, already approved]
+  doc --> led[Stock moves later,<br/>through the ledger]
 ```
 
-- The forecasting service reads sales history and writes **only** `forecast.*` tables.
-- The API computes recommendations and stores every input used, so the UI can show "why".
-- Nothing is ordered or moved without an approval.
+**Rules that hold everywhere** (each one is tested):
+
+- The Python service reads sales history and writes **only** the `forecast` schema. A test scans
+  its source for every `INSERT/UPDATE/DELETE/COPY` and fails if one targets another schema, and a
+  database test proves a full run changes no stock, order, transfer or event.
+- A forecast is advice. **Nothing is ordered or moved until a person approves a recommendation**;
+  *generating* recommendations creates no document and no stock movement (tested).
+- Every recommendation stores every input and the calculation in words, so the UI can show why.
+
+### 7.1 Forecasting service (`services/forecasting`, Python)
+
+| Step | What happens |
+| ---- | ------------ |
+| History | `forecast.demand_daily`: units per product × store × day. `SYNTHETIC` rows come from a seeded generator (`python -m app.synthetic`: category base × product popularity × store size × weekday pattern × yearly season × trend × promotions, negative-binomial noise, a few slow movers and new products). `LEDGER` rows are rolled up from real SALE movements of complete (UTC) days and win over synthetic rows for the same day. |
+| Windows | The last 28 days are the **test** window, the 28 before it the **validation** window, everything earlier is training. Models are scored 1–7 days ahead from rolling origins every 7 days, so each window day is predicted once from earlier data only. |
+| Models | `moving_average_28` (mean of the last 28 days), `seasonal_naive_7` (same weekday of the latest known week), `hgb_direct` (one global scikit-learn `HistGradientBoostingRegressor`, Poisson loss, direct multi-horizon; features are lags/means/std/same-weekday values at the origin, horizon, calendar and category/store — all computed from data up to the origin). The ML model is retrained for each split on data *before* that split. |
+| Metrics | MAE, RMSE and WAPE (total error ÷ total units sold), pooled over series with enough history, for every model on validation and test, persisted per run. |
+| Selection | The best baseline is chosen on **validation**. The ML model is served only if its WAPE beats that baseline on **both** validation and the untouched test window; otherwise the baseline is served and the run says so. |
+| Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
+| Uncertainty | Each series carries a typical error (backtest RMSE); the API/UI show an 80 % range (± 1.28 σ). |
+| Persistence | `forecast.runs` (windows, served model version, selection reason, data label), `model_versions`, `model_metrics`, `series`, `points`. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
+| API | `POST /forecast/run` (202, runs in the background), `GET /forecast/runs/latest`, `GET /forecast/runs/{id}`, `GET /forecast/{sku}/{store}`. **No authentication of its own: run it on localhost / a private network only.** |
+
+### 7.2 Replenishment (`modules/replenishment`, TypeScript, pure arithmetic)
+
+```text
+demandDuringLead = forecast units over the next L days   (beyond the horizon: the horizon's average)
+safetyStock      = z × σ_daily × √L            z = 1.645 (≈ 95 % service level)
+reorderPoint     = demandDuringLead + safetyStock
+orderUpTo        = forecast units over L + R days + safetyStock                R = review period, 7 days
+position         = available + inbound         available = on hand − reserved;
+                                               inbound = approved/dispatched transfers + approved orders
+needed when position < reorderPoint;  quantity = orderUpTo − position
+rounded UP to whole packs (purchase orders: at least the supplier minimum, in whole packs)
+```
+
+- **Source:** a distribution centre with unallocated stock (lead time 2 days) when it can cover the
+  whole quantity — otherwise the primary supplier (its lead time and minimum). A centre that has
+  some stock but not enough is reported in the explanation ("DC-NORTH has 4, 84 needed").
+- **Scarce DC stock is never promised twice:** recommendations are produced most-urgent-first
+  (lowest days of cover) and each transfer takes its quantity out of what later stores may use;
+  stock already promised to open (requested/approved) transfers is excluded.
+- **Risk:** `CRITICAL` if nothing is available or the position will not last the lead time,
+  otherwise `HIGH` (below the reorder point but lasting the lead time).
+- **Approval** (admin / inventory manager): creates the **transfer already APPROVED** or the
+  **purchase order (APPROVED)** in the same transaction and links it. Stock moves later — dispatch
+  and receipt of the transfer, receipt of the order, each through `applyMovement()`. Approving twice
+  is a `409`; five simultaneous approvals create exactly one document (tested).
+- **Regenerating** expires the previous pending recommendations (one pending per product × store,
+  enforced by a partial unique index) and counts approved-but-unreceived stock as inbound.
+
+### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
+
+Measured on the seeded dev data (200 products × 5 stores, 365 days, seed 42; 950 of 1,000 series
+had enough history; test window = the last 28 days):
+
+| Model | WAPE (test) | Average miss per day |
+| ----- | ----------: | -------------------: |
+| Knowing the true average demand (noise floor, only possible because the data is synthetic) | 50.9 % | 1.57 units |
+| Gradient boosting (served) | 52.2 % | 1.60 units |
+| Moving average, 28 days | 54.3 % | 1.67 units |
+| Same weekday last week | 71.1 % | 2.19 units |
+
+Reading it: with daily sales of 1–5 units most of the error is unavoidable randomness, so a
+~51 % floor is expected. The ML model is within ~1.3 points of that floor and ~2 points better
+than the best simple method — a real but modest gain. A run takes ~25–30 s for 1,000 series on a
+laptop. Re-measure (and update this table) whenever the models or the data generator change; the
+numbers on the Replenishment page always come from the latest run.
+
+**Limitations:** accuracy is measured 1–7 days ahead (days 8–14 of the forecast are not scored);
+demand is not censored by stock-outs; one global model, no per-series tuning; the service has no
+authentication; recommendations assume the primary supplier and one lead time per product.
 
 ---
 
@@ -441,20 +528,24 @@ RetailPulse/
 │   │   │       ├── auth/ ✅         login, logout, me, login throttle
 │   │   │       ├── events/ ✅       outbox writer, worker (dispatcher), retries, dead letters, ops endpoints
 │   │   │       ├── alerts/ ✅
-│   │   │       ├── purchasing/ (D6)
-│   │   │       └── replenishment/ (D6)
+│   │   │       ├── forecasts/ ✅    reads forecast.*, starts runs in the Python service
+│   │   │       ├── purchasing/ ✅   purchase orders (created by approving a recommendation)
+│   │   │       └── replenishment/ ✅ calc (pure), recommendations, approve / reject
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
 │   │       └── integration/ ✅      *.int-spec.ts, each in its own throw-away database
 │   │
 │   └── forecasting/                 FastAPI + ML
 │       ├── app/
-│       │   ├── main.py ✅           FastAPI app + routes
-│       │   ├── db.py (D6)           psycopg connection (read sales, write forecast.*)
-│       │   ├── models/ (D6)         baselines.py, ml.py
-│       │   ├── evaluation/ (D6)     backtest.py, metrics.py
-│       │   └── synthetic/ (D6)      sales history generator
-│       ├── tests/ ✅
+│       │   ├── main.py ✅           FastAPI app + routes (runs in a background thread)
+│       │   ├── pipeline.py ✅       compute() (pure) + run_forecast() (DB)
+│       │   ├── repository.py ✅     every SQL statement; writes only to `forecast.*`
+│       │   ├── data.py ✅           history → (series × days) matrix
+│       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
+│       │   ├── models/ ✅           baselines.py, ml.py
+│       │   ├── evaluation/ ✅       backtest.py (windows, selection rule), metrics.py
+│       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
+│       ├── tests/ ✅                55 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
 │
@@ -466,7 +557,7 @@ RetailPulse/
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
 │           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
-│           └── pages/ ✅            Products, ProductDetail, Stock, Health
+│           └── pages/ ✅            Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
 └── scripts/simulation/pos-sim.mjs ✅  POS traffic simulator (npm run sim:pos)
 ```
@@ -546,3 +637,12 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 30 | Alerts judge *current* stock, not the event's numbers | Correct even if events arrive late or out of order; re-processing is harmless | One extra read per event |
 | 31 | A never-attempted event is due immediately; only retries wait on the clock | The test machine's clock stepped backwards (up to ~480 ms) and freshly created events looked "in the future" — found by stress-testing | Retry backoff can be a little longer after a backwards clock step |
 | 32 | Integration tests use one throw-away database per test file | Two test runs at once (yours, CI, an editor) used to wipe each other's data; found while chasing flaky tests | ~3 s extra setup per file |
+| 33 | Forecasting is a separate Python service that writes only the `forecast` schema | Different runtime (numpy / scikit-learn); the "never touches stock or orders" rule is checked by a source scan and a DB test | Needs to be started (`npm run forecast:serve`); no auth of its own → localhost only |
+| 34 | Time-ordered validation + untouched test window; ML served only if it beats the best baseline on both | No future data in training or selection; the ML model must earn its place | Needs ≥ 112 days of history; accuracy measured at 1–7 days ahead |
+| 35 | One global gradient-boosting model, direct multi-horizon, Poisson loss | Handles many small series, count data and short histories without per-series tuning | Less accurate than a model that knows each series' quirks; modest gain over the baseline (see §7.3) |
+| 36 | Low-history series use a flagged category × store average | Honest about uncertainty instead of extrapolating 30 days | Flat forecast, no weekday shape |
+| 37 | Replenishment is plain, explainable arithmetic, not ML | A manager can check it by hand; ML only supplies the demand numbers | Fixed 95 % service level and 7-day review period (constants, stored with every recommendation) |
+| 38 | Most-urgent-first allocation of scarce DC stock | Two stores are never promised the same units | Greedy, not optimal across stores |
+| 39 | Approving a recommendation creates an already-approved transfer / purchase order | The manager's decision is the approval; no second click | Stock still moves only at dispatch/receipt, so there can be a delay |
+| 40 | Purchase orders exist only via recommendations (no manual PO form yet) | Keeps one audited path; matches "ML never orders by itself" | Manual ordering is a later feature |
+| 41 | `forecast.runs` has a unique index on `(true) WHERE status = 'RUNNING'` | One run at a time without a lock service | A crashed run blocks new ones for up to 30 minutes (then auto-failed) |

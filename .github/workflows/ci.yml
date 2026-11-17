@@ -39,6 +39,20 @@ jobs:
 
   forecasting:
     runs-on: ubuntu-latest
+    # The tests build temporary databases from the API's migrations, so they need PostgreSQL.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: retailpulse
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: retailpulse
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U retailpulse" --health-interval 5s --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://retailpulse:ci-only-password@localhost:5432/retailpulse
     defaults:
       run:
         working-directory: services/forecasting

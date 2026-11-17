@@ -262,7 +262,10 @@ try {
 
   if (reset) {
     // TRUNCATE bypasses the row-level append-only trigger by design: dev reset only.
-    await client.query(`TRUNCATE alerts, processed_events, outbox_events,
+    await client.query(`TRUNCATE replenishment_recommendations, purchase_order_lines, purchase_orders,
+                        forecast.points, forecast.series, forecast.model_metrics, forecast.runs,
+                        forecast.model_versions, forecast.demand_daily,
+                        alerts, processed_events, outbox_events,
                         idempotency_keys, sessions, user_store_access, users,
                         stock_transfer_lines, stock_transfers, reservations,
                         sales_order_lines, sales_orders,

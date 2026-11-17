@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { getProduct } from '../api/catalog';
 import { getProductLedger, getProductStock } from '../api/inventory';
 import { Badge, StockBadge } from '../components/Badge';
+import { ForecastPanel } from '../components/ForecastPanel';
 import { MovementForm } from '../components/MovementForm';
 import { Pagination } from '../components/Pagination';
 import { ReservationsPanel } from '../components/ReservationsPanel';
@@ -76,6 +77,7 @@ export function ProductDetailPage({ id }: { id: string }) {
             productId={id}
             packSize={product.data.packSize}
           />
+          <ForecastPanel productId={id} />
           <ReservationsPanel key={`res-${version}`} productId={id} onChanged={refresh} />
           <Ledger key={`ledger-${version}`} productId={id} />
         </>

@@ -23,7 +23,7 @@ append-only ledger, forecasts demand, and suggests replenishment that a manager 
 | Web interface       | React, TypeScript, Vite, Tailwind CSS          | Day 1 ✅  |
 | Core API            | Node.js, NestJS, TypeScript                    | Day 1 ✅  |
 | Database            | PostgreSQL 17 (plain SQL migrations)           | Day 1 ✅  |
-| Forecasting service | Python, FastAPI, Pandas, NumPy, scikit-learn   | Day 1 ✅  |
+| Forecasting service | Python, FastAPI, Pandas, NumPy, scikit-learn   | Day 6 ✅  |
 | Events              | PostgreSQL outbox + in-API worker (no Kafka)   | Day 5 ✅  |
 | Metrics             | Prometheus + Grafana (optional compose profile)| Day 7     |
 | Local infra         | Docker Compose                                 | Day 1 ✅  |
@@ -136,14 +136,34 @@ npm run sim:pos -- --sales=100 --concurrency=4
 > [Roles and access](docs/ARCHITECTURE.md#roles-and-access)). The demo accounts and their shared
 > password are for local use only. Failed logins are rate-limited per email and IP.
 
-Forecasting service:
+### Forecasting and replenishment (Day 6)
+
+One-time setup of the Python environment:
 
 ```bash
 cd services/forecasting && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 ```
 
+Generate 12 months of **synthetic** daily sales history for every product and store (fictional data;
+safe to re-run, real sales are never overwritten):
+
 ```bash
-cd services/forecasting && .venv/bin/uvicorn app.main:app --reload --port 8000
+npm run forecast:history
+```
+
+Start the forecasting service (internal, no login, port 8000 — keep it on localhost):
+
+```bash
+npm run forecast:serve
+```
+
+Then sign in as an admin or inventory manager and open **Replenishment → Refresh forecasts**
+(about 30 seconds). It shows how accurate each model is, and lists recommendations that you can
+approve or reject. Approving creates the transfer or purchase order; stock moves only when those are
+received. A forecast never orders anything by itself.
+
+```bash
+npm run forecast:test
 ```
 
 ### Useful endpoints
@@ -156,6 +176,8 @@ cd services/forecasting && .venv/bin/uvicorn app.main:app --reload --port 8000
 | `GET http://localhost:3000/api/v1/products/{id}/ledger` | Every stock movement for a product |
 | `POST http://localhost:3000/api/v1/sales` | Record a sale (needs an `Idempotency-Key` header) |
 | `GET http://localhost:8000/health`    | Forecasting service status            |
+| `POST http://localhost:3000/api/v1/forecasts/run` | Start a forecast run (admin / inventory manager) |
+| `GET http://localhost:3000/api/v1/replenishment/recommendations` | Suggested transfers and orders |
 
 All endpoints: [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-api-conventions).
 

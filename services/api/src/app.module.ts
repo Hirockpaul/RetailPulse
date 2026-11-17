@@ -8,9 +8,12 @@ import { AlertsModule } from './modules/alerts/alerts.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { EventsModule } from './modules/events/events.module';
+import { ForecastsModule } from './modules/forecasts/forecasts.module';
 import { HealthModule } from './modules/health/health.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { LocationsModule } from './modules/locations/locations.module';
+import { PurchasingModule } from './modules/purchasing/purchasing.module';
+import { ReplenishmentModule } from './modules/replenishment/replenishment.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
@@ -39,6 +42,9 @@ export class AppModule {
         TransfersModule,
         EventsModule,
         AlertsModule,
+        ForecastsModule,
+        PurchasingModule,
+        ReplenishmentModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

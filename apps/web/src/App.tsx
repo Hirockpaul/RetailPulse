@@ -4,6 +4,10 @@ import { ROLE_LABEL } from './lib/permissions';
 import { href, type Route, useRoute } from './lib/router';
 import { AlertsPage } from './pages/AlertsPage';
 import { HealthPage } from './pages/HealthPage';
+import { PurchaseOrderDetailPage } from './pages/PurchaseOrderDetailPage';
+import { PurchaseOrdersPage } from './pages/PurchaseOrdersPage';
+import { RecommendationDetailPage } from './pages/RecommendationDetailPage';
+import { ReplenishmentPage } from './pages/ReplenishmentPage';
 import { LoginPage } from './pages/LoginPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
@@ -23,6 +27,16 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     to: href.transfers(),
     active: (r) => r.name === 'transfers' || r.name === 'transfer',
   },
+  {
+    label: 'Replenishment',
+    to: href.replenishment(),
+    active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
+  },
+  {
+    label: 'Purchase orders',
+    to: href.purchaseOrders(),
+    active: (r) => r.name === 'purchaseOrders' || r.name === 'purchaseOrder',
+  },
   { label: 'Alerts', to: href.alerts(), active: (r) => r.name === 'alerts' },
   { label: 'Health', to: href.health(), active: (r) => r.name === 'health' },
 ];
@@ -37,6 +51,14 @@ function Page({ route }: { route: Route }) {
       return <StockPage locationId={route.locationId} />;
     case 'alerts':
       return <AlertsPage />;
+    case 'replenishment':
+      return <ReplenishmentPage />;
+    case 'recommendation':
+      return <RecommendationDetailPage key={route.id} id={route.id} />;
+    case 'purchaseOrders':
+      return <PurchaseOrdersPage />;
+    case 'purchaseOrder':
+      return <PurchaseOrderDetailPage key={route.id} id={route.id} />;
     case 'transfers':
       return <TransfersPage />;
     case 'transfer':
