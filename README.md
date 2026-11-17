@@ -109,8 +109,18 @@ In a second terminal:
 npm run dev:web
 ```
 
-Open http://localhost:5173 — Products, Stock (per location), product detail with the
-inventory ledger, and Health.
+Open http://localhost:5173 — Products, Stock (per location), product detail (record sales,
+receipts, returns, adjustments and reservations, and watch the ledger update), and Health.
+
+Generate synthetic POS traffic against the running API (stock falls, some sales are rejected
+for no stock — that is expected):
+
+```bash
+npm run sim:pos -- --sales=100 --concurrency=4
+```
+
+> **Security note:** until Day 4 adds login and roles, the write endpoints are unauthenticated.
+> Run the API on localhost only.
 
 Forecasting service:
 
@@ -130,6 +140,7 @@ cd services/forecasting && .venv/bin/uvicorn app.main:app --reload --port 8000
 | `GET http://localhost:3000/api/v1/products?q=milk&sort=price:desc` | Search/sort/paginate products |
 | `GET http://localhost:3000/api/v1/locations/{id}/stock` | Stock at one location |
 | `GET http://localhost:3000/api/v1/products/{id}/ledger` | Every stock movement for a product |
+| `POST http://localhost:3000/api/v1/sales` | Record a sale (needs an `Idempotency-Key` header) |
 | `GET http://localhost:8000/health`    | Forecasting service status            |
 
 All endpoints: [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-api-conventions).

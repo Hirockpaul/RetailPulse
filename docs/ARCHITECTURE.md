@@ -173,7 +173,7 @@ erDiagram
 | --- | ------------------------------------------------------------------------------------------ |
 | 1   | `schema_migrations` (runner)                                                               |
 | 2   | `categories`, `suppliers`, `products`, `supplier_products`, `locations`, `inventory_balances`, `inventory_ledger` |
-| 3   | `sales_orders`, `sales_order_lines`, `reservations`, `idempotency_keys`                    |
+| 3 ✅ | `sales_orders`, `sales_order_lines`, `reservations`, `idempotency_keys`                   |
 | 4   | `stock_transfers`, `stock_transfer_lines`, `users`, `user_store_access`, `sessions`        |
 | 5   | `outbox_events`, `processed_events`, `alerts`                                              |
 | 6   | `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations`, `forecast.forecast_runs`, `forecast.forecast_points` |
@@ -228,8 +228,8 @@ Transitions are checked in the service and guarded in SQL
 | Lists          | `?page=1&pageSize=25` (max 100), `?q=` search, `?sort=field:asc`; response `{ data, page, pageSize, total }` |
 | Errors         | `{ error: { code, message, details? }, correlationId }`                      |
 | Business errors| `409 INSUFFICIENT_STOCK`, `409 INVALID_STATE_TRANSITION`, `404 NOT_FOUND`   |
-| Idempotency    | `Idempotency-Key` header required on `POST /sales`, `POST /transfers`, `POST /purchase-orders` |
-| Auth (Day 4)   | HttpOnly SameSite cookie session; role + store-access guard on every route   |
+| Idempotency    | `Idempotency-Key` header (8–100 chars) required on every stock-changing `POST`: `/sales`, `/receipts`, `/returns`, `/adjustments`, `/reservations` (Day 4+: `/transfers`, `/purchase-orders`). A retry returns the stored response with `Idempotent-Replayed: true`; same key + different body → `422 IDEMPOTENCY_KEY_REUSED`. |
+| Auth (Day 4)   | HttpOnly SameSite cookie session; role + store-access guard on every route. **Until Day 4 the write endpoints below are unauthenticated — local development only.** |
 | Docs           | Endpoint table below; generated OpenAPI at `/api/v1/docs` planned for Day 7  |
 
 ### Endpoints so far
@@ -245,6 +245,17 @@ Transitions are checked in the service and guarded in SQL
 | `GET /locations`                      | `q, type, sort (code·name·type), page, pageSize` | |
 | `GET /locations/:id`                  | —                                              | |
 | `GET /locations/:id/stock`            | `q, sort (sku·name·onHand·available), page, pageSize` | `asOf` + location |
+| `POST /sales`                         | body `{ locationId, lines:[{productId, quantity}] }` | stores only; prices snapshotted; all-or-nothing |
+| `GET /sales/:id`                      | —                                              | |
+| `POST /receipts`                      | body `{ locationId, reference?, lines }`       | any location |
+| `POST /returns`                       | body `{ locationId, productId, quantity, condition: SELLABLE\|DAMAGED, reason? }` | damaged: logged, not restocked |
+| `POST /adjustments`                   | body `{ locationId, productId, delta ≠ 0, reason }` | reason required |
+| `POST /reservations`                  | body `{ locationId, productId, quantity, reference? }` | lowers available, not on hand |
+| `POST /reservations/:id/release`      | — (no key needed; guarded by status)           | `409 INVALID_STATE_TRANSITION` if not ACTIVE |
+| `GET /reservations`, `GET /reservations/:id` | `productId, locationId, status, page, pageSize` | |
+
+Business errors: `409 INSUFFICIENT_STOCK` (with `details`), `409 PRODUCT_INACTIVE`,
+`422 INVALID_LOCATION_TYPE`, `422 IDEMPOTENCY_KEY_REUSED`, `404 NOT_FOUND`.
 
 ---
 
@@ -335,7 +346,8 @@ RetailPulse/
 │   │   │       ├── catalog/ ✅      products, categories, supplier terms
 │   │   │       ├── locations/ ✅
 │   │   │       ├── inventory/ ✅    stock + ledger reads; (D3) applyMovement()
-│   │   │       ├── sales/ (D3)
+│   │   │       ├── sales/ ✅
+│   │   │       ├── reservations/ ✅
 │   │   │       ├── transfers/ (D4)
 │   │   │       ├── users/ (D4)
 │   │   │       ├── events/ (D5)     outbox writer, publisher, consumers
@@ -367,7 +379,7 @@ RetailPulse/
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
 │           └── pages/ ✅            Products, ProductDetail, Stock, Health
 │
-└── scripts/simulation/ (D3)         POS traffic simulator
+└── scripts/simulation/pos-sim.mjs ✅  POS traffic simulator (npm run sim:pos)
 ```
 
 ### Module file convention (API)
@@ -426,3 +438,7 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 11 | Balances maintained by a ledger trigger (Day 2) | The DB itself guarantees balance = Σ ledger, even for scripts/SQL that bypass the API | Logic lives partly in SQL; covered by integration tests |
 | 12 | Hash router + `useAsync` hook in the web app | Five screens don't justify a router/data library | Revisit if the UI grows a lot |
 | 13 | Integration tests use a separate `<db>_test` database | Tests never touch dev data; reseeded per test file | Needs Postgres running (`npm run db:up`) |
+| 14 | Idempotency key row lives in the same transaction as the work (Day 3) | A failed request leaves no key, so it can be retried; concurrent duplicates wait, then replay | Keys accumulate; a cleanup job is planned (Day 7) |
+| 15 | Multi-line writes lock balance rows in `product_id` order | Prevents deadlocks between concurrent multi-line sales (tested) | Callers must use `sortByProduct()` |
+| 16 | Damaged returns write a ledger row with `on_hand_delta = 0` and the quantity in the reason text | Keeps the ledger complete without making damaged goods sellable | Damaged quantity is not queryable as a number yet |
+| 17 | Write endpoints unauthenticated until Day 4 | Avoids a throwaway login; documented as local-only | Do not expose the API beyond localhost before Day 4 |

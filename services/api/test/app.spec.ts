@@ -91,6 +91,57 @@ describe('request validation (400 VALIDATION_FAILED)', () => {
   });
 });
 
+describe('write endpoints validate before touching the database', () => {
+  let app: INestApplication;
+  const ID = '00000000-0000-4000-8000-000000000000';
+  const KEY = 'test-key-12345678';
+  beforeAll(async () => {
+    app = await buildApp(async () => 1);
+  });
+  afterAll(async () => app.close());
+
+  it.each(['/sales', '/receipts', '/returns', '/adjustments', '/reservations'])(
+    'POST %s without an Idempotency-Key → 400',
+    async (url) => {
+      const bodies: Record<string, object> = {
+        '/sales': { locationId: ID, lines: [{ productId: ID, quantity: 1 }] },
+        '/receipts': { locationId: ID, lines: [{ productId: ID, quantity: 1 }] },
+        '/returns': { locationId: ID, productId: ID, quantity: 1, condition: 'SELLABLE' },
+        '/adjustments': { locationId: ID, productId: ID, delta: 1, reason: 'count' },
+        '/reservations': { locationId: ID, productId: ID, quantity: 1 },
+      };
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1${url}`)
+        .send(bodies[url])
+        .expect(400);
+      expect(res.body.error.code).toBe('VALIDATION_FAILED');
+      expect(res.body.error.details[0].path).toBe('Idempotency-Key');
+    },
+  );
+
+  it.each([
+    ['/sales', { locationId: 'nope', lines: [] }],
+    ['/receipts', { locationId: ID, lines: [{ productId: ID, quantity: -1 }] }],
+    ['/returns', { locationId: ID, productId: ID, quantity: 1, condition: 'BROKEN' }],
+    ['/adjustments', { locationId: ID, productId: ID, delta: 0, reason: 'x' }],
+    ['/reservations', { locationId: ID, productId: ID, quantity: 0 }],
+  ])('POST %s with an invalid body → 400 with field details', async (url, body) => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1${url}`)
+      .set('Idempotency-Key', KEY)
+      .send(body)
+      .expect(400);
+    expect(res.body.error.code).toBe('VALIDATION_FAILED');
+    expect(res.body.error.details.length).toBeGreaterThan(0);
+  });
+
+  it('rejects an invalid reservation id and list filters', async () => {
+    await request(app.getHttpServer()).post('/api/v1/reservations/not-a-uuid/release').expect(400);
+    await request(app.getHttpServer()).get('/api/v1/reservations?status=OPEN').expect(400);
+    await request(app.getHttpServer()).get('/api/v1/sales/not-a-uuid').expect(400);
+  });
+});
+
 describe('loadEnv', () => {
   it('rejects a missing DATABASE_URL without echoing values', () => {
     expect(() => loadEnv({ API_PORT: '3000' })).toThrow(/DATABASE_URL/);

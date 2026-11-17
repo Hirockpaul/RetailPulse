@@ -81,3 +81,74 @@ export interface LedgerEntry {
 export interface WithAsOf {
   asOf: string;
 }
+
+// ----- write side (Day 3)
+
+export const quantitySchema = z.number().int().min(1).max(100_000);
+
+/** Rejects a lines array that repeats a product (merge quantities client-side instead). */
+export const uniqueProducts = (lines: { productId: string }[]) =>
+  new Set(lines.map((l) => l.productId)).size === lines.length;
+
+export const receiptBodySchema = z.object({
+  locationId: uuidSchema,
+  /** Free-text document reference, e.g. a delivery note number. */
+  reference: z.string().trim().min(1).max(100).optional(),
+  lines: z
+    .array(z.object({ productId: uuidSchema, quantity: quantitySchema }))
+    .min(1)
+    .max(100)
+    .refine(uniqueProducts, 'Each product may appear only once.'),
+});
+export type ReceiptBody = z.output<typeof receiptBodySchema>;
+
+export const RETURN_CONDITIONS = ['SELLABLE', 'DAMAGED'] as const;
+
+export const returnBodySchema = z.object({
+  locationId: uuidSchema,
+  productId: uuidSchema,
+  quantity: quantitySchema,
+  /** SELLABLE goes back on the shelf; DAMAGED is recorded but not restocked. */
+  condition: z.enum(RETURN_CONDITIONS),
+  reason: z.string().trim().min(1).max(200).optional(),
+});
+export type ReturnBody = z.output<typeof returnBodySchema>;
+
+export const adjustmentBodySchema = z.object({
+  locationId: uuidSchema,
+  productId: uuidSchema,
+  delta: z
+    .number()
+    .int()
+    .min(-100_000)
+    .max(100_000)
+    .refine((n) => n !== 0, 'Must not be 0.'),
+  reason: z.string().trim().min(3).max(200),
+});
+export type AdjustmentBody = z.output<typeof adjustmentBodySchema>;
+
+/** Input to the single stock write path. Deltas are signed; the type fixes their direction. */
+export interface Movement {
+  productId: string;
+  locationId: string;
+  type: MovementType;
+  onHandDelta: number;
+  reservedDelta?: number;
+  reason?: string;
+  referenceType?: string;
+  referenceId?: string;
+  correlationId?: string;
+}
+
+/** The ledger row that was written, including the resulting balance. */
+export interface MovementResult {
+  ledgerId: string;
+  productId: string;
+  locationId: string;
+  movementType: MovementType;
+  onHandDelta: number;
+  reservedDelta: number;
+  onHandAfter: number;
+  reservedAfter: number;
+  occurredAt: Date;
+}

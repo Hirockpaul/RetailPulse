@@ -31,14 +31,14 @@ export function qs(params: Record<string, string | number | undefined>): string 
   return s ? `?${s}` : '';
 }
 
-/**
- * GET a JSON resource. Statuses listed in `acceptStatuses` are returned as data
- * (e.g. health's 503 still carries a valid report); anything else non-2xx throws ApiError.
- */
-export async function getJson<T>(path: string, acceptStatuses: number[] = []): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit,
+  acceptStatuses: number[] = [],
+): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, { headers: { Accept: 'application/json' } });
+    res = await fetch(`${BASE}${path}`, init);
   } catch {
     throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the API.');
   }
@@ -52,4 +52,32 @@ export async function getJson<T>(path: string, acceptStatuses: number[] = []): P
     body?.error?.message ?? `API responded ${res.status}`,
     body?.correlationId,
   );
+}
+
+/**
+ * GET a JSON resource. Statuses listed in `acceptStatuses` are returned as data
+ * (e.g. health's 503 still carries a valid report); anything else non-2xx throws ApiError.
+ */
+export function getJson<T>(path: string, acceptStatuses: number[] = []): Promise<T> {
+  return request<T>(path, { headers: { Accept: 'application/json' } }, acceptStatuses);
+}
+
+/**
+ * POST JSON. Stock-changing endpoints need an `Idempotency-Key`: reuse the same key when
+ * retrying the same request (it will not be applied twice); use a new key for a new request.
+ */
+export function postJson<T>(
+  path: string,
+  body: unknown,
+  opts: { idempotencyKey?: string } = {},
+): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(opts.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
+    },
+    body: JSON.stringify(body),
+  });
 }

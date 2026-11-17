@@ -9,7 +9,7 @@ export const table = {
   row: 'border-b last:border-0 hover:bg-slate-50',
   td: 'px-3 py-2',
   tdNum: 'px-3 py-2 text-right tabular-nums',
-  link: 'font-medium text-sky-700 hover:underline focus:outline-2 focus:outline-sky-500',
+  link: 'whitespace-nowrap font-medium text-sky-700 hover:underline focus:outline-2 focus:outline-sky-500',
 };
 
 export const field =

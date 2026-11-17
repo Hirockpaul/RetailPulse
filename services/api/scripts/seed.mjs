@@ -189,7 +189,8 @@ try {
 
   if (reset) {
     // TRUNCATE bypasses the row-level append-only trigger by design: dev reset only.
-    await client.query(`TRUNCATE inventory_ledger, inventory_balances, supplier_products,
+    await client.query(`TRUNCATE idempotency_keys, reservations, sales_order_lines, sales_orders,
+                        inventory_ledger, inventory_balances, supplier_products,
                         products, categories, suppliers, locations RESTART IDENTITY CASCADE`);
   } else {
     const { rows } = await client.query('SELECT COUNT(*)::int AS n FROM products');

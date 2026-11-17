@@ -2,7 +2,9 @@ import { useCallback, useState } from 'react';
 import { getProduct } from '../api/catalog';
 import { getProductLedger, getProductStock } from '../api/inventory';
 import { Badge, StockBadge } from '../components/Badge';
+import { MovementForm } from '../components/MovementForm';
 import { Pagination } from '../components/Pagination';
+import { ReservationsPanel } from '../components/ReservationsPanel';
 import { AsOf, Empty, ErrorMessage, Loading } from '../components/Status';
 import { table } from '../components/table';
 import { formatDateTime, formatDelta, formatInt, formatMoney, humanize } from '../lib/format';
@@ -13,6 +15,9 @@ const LEDGER_PAGE_SIZE = 20;
 
 export function ProductDetailPage({ id }: { id: string }) {
   const product = useAsync(useCallback(() => getProduct(id), [id]));
+  // Bumped after every stock movement; sections keyed on it remount and re-fetch.
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
 
   return (
     <section className="space-y-6">
@@ -37,8 +42,6 @@ export function ProductDetailPage({ id }: { id: string }) {
             <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
               <Fact label="Unit price" value={formatMoney(product.data.unitPrice)} />
               <Fact label="Pack size" value={formatInt(product.data.packSize)} />
-              <Fact label="Network on hand" value={formatInt(product.data.totalOnHand)} />
-              <Fact label="Network available" value={formatInt(product.data.totalAvailable)} />
             </dl>
             <div className="mt-4 border-t pt-4 text-sm">
               <h3 className="mb-2 font-medium">Primary supplier</h3>
@@ -64,8 +67,14 @@ export function ProductDetailPage({ id }: { id: string }) {
             </div>
           </header>
 
-          <StockByLocation productId={id} packSize={product.data.packSize} />
-          <Ledger productId={id} />
+          <MovementForm productId={id} onDone={refresh} />
+          <StockByLocation
+            key={`stock-${version}`}
+            productId={id}
+            packSize={product.data.packSize}
+          />
+          <ReservationsPanel key={`res-${version}`} productId={id} onChanged={refresh} />
+          <Ledger key={`ledger-${version}`} productId={id} />
         </>
       )}
     </section>
@@ -92,6 +101,12 @@ function StockByLocation({ productId, packSize }: { productId: string; packSize:
         </h3>
         {stock.status === 'success' && <AsOf iso={stock.data.asOf} />}
       </div>
+      {stock.status === 'success' && stock.data.data.length > 0 && (
+        <p className="text-sm text-slate-600">
+          Network total: {formatInt(stock.data.data.reduce((n, r) => n + r.onHand, 0))} on hand,{' '}
+          {formatInt(stock.data.data.reduce((n, r) => n + r.available, 0))} available
+        </p>
+      )}
       {stock.status === 'loading' && <Loading />}
       {stock.status === 'error' && <ErrorMessage message={stock.error} onRetry={stock.reload} />}
       {stock.status === 'success' && stock.data.data.length === 0 && (

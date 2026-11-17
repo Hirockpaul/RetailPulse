@@ -176,7 +176,7 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
 - **Done notes:** balances are maintained by a ledger trigger and can't be edited directly
   (see ARCHITECTURE decision #11). Integration tests: `npm run test:int` (needs `npm run db:up`).
 
-### Day 3 — Stock movements (the core)
+### Day 3 — Stock movements (the core) ✅
 
 - **A — Build:** `InventoryService.applyMovement()` — the **only** code path that changes
   stock (row lock → ledger → balance). Endpoints: POS sale, receipt, return
@@ -187,6 +187,10 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   **20 concurrent sales on 10 units → exactly 10 succeed** · duplicate key → same response,
   one ledger row · failure mid-transaction → nothing written.
 - **Checklist:** every stock change has a ledger row · no oversell under concurrency.
+- **Done notes:** `POST /sales|receipts|returns|adjustments|reservations` (+ release), all with
+  `Idempotency-Key`; `npm run sim:pos` simulates POS traffic; product page has a movement form.
+  Writes are **unauthenticated until Day 4** (local only). Use `InventoryService.applyMovement()`
+  for any new stock change and lock multi-line writes with `sortByProduct()`.
 
 ### Day 4 — Transfers, users & roles
 

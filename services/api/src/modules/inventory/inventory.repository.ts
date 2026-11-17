@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import { DatabaseService } from '../../core/database/database.service';
 import { containsPattern } from '../../core/database/sql';
 import { offsetOf } from '../../core/http/query';
@@ -7,6 +8,8 @@ import type {
   LedgerQuery,
   LocationStockQuery,
   LocationStockRow,
+  Movement,
+  MovementResult,
   ProductStockRow,
 } from './inventory.schemas';
 
@@ -90,5 +93,33 @@ export class InventoryRepository {
       this.db.query<{ total: number }>(`SELECT COUNT(*)::int AS total ${where}`, filter),
     ]);
     return { rows: rows.rows, total: count.rows[0].total };
+  }
+  /**
+   * Insert one ledger row inside the caller's transaction. The database trigger applies it to
+   * the balance (row-locked) and fills in the after-values; CHECK constraints reject oversell.
+   */
+  async insertLedgerEntry(client: PoolClient, m: Movement): Promise<MovementResult> {
+    const { rows } = await client.query<MovementResult>(
+      `INSERT INTO inventory_ledger
+         (product_id, location_id, movement_type, on_hand_delta, reserved_delta,
+          reason, reference_type, reference_id, correlation_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id::text AS "ledgerId", product_id AS "productId", location_id AS "locationId",
+                 movement_type AS "movementType", on_hand_delta AS "onHandDelta",
+                 reserved_delta AS "reservedDelta", on_hand_after AS "onHandAfter",
+                 reserved_after AS "reservedAfter", occurred_at AS "occurredAt"`,
+      [
+        m.productId,
+        m.locationId,
+        m.type,
+        m.onHandDelta,
+        m.reservedDelta ?? 0,
+        m.reason ?? null,
+        m.referenceType ?? null,
+        m.referenceId ?? null,
+        m.correlationId ?? null,
+      ],
+    );
+    return rows[0];
   }
 }
