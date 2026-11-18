@@ -46,13 +46,13 @@ export function ProductsPage() {
       </h2>
 
       <div className="flex flex-wrap items-end gap-3">
-        <form onSubmit={onSearch} className="flex gap-2" role="search">
+        <form onSubmit={onSearch} className="flex max-w-full gap-2" role="search">
           <label className="sr-only" htmlFor="product-search">
             Search by SKU or name
           </label>
           <input
             id="product-search"
-            className={`${field} w-64`}
+            className={`${field} w-64 min-w-0`}
             placeholder="Search SKU or name"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

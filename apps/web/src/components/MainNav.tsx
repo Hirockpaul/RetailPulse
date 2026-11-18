@@ -5,6 +5,8 @@ export interface NavLink {
   label: string;
   to: string;
   active: (r: Route) => boolean;
+  /** Hidden from store managers (a UI hint; the API refuses them anyway). */
+  networkOnly?: boolean;
 }
 
 export type NavEntry = NavLink | { label: string; items: NavLink[] };

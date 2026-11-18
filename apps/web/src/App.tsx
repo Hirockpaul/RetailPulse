@@ -1,7 +1,7 @@
 import { MainNav, type NavEntry } from './components/MainNav';
 import { Empty, Loading } from './components/Status';
 import { AuthProvider, useAuth, useUser } from './lib/auth';
-import { ROLE_LABEL } from './lib/permissions';
+import { isStoreScoped, ROLE_LABEL } from './lib/permissions';
 import { href, type Route, useRoute } from './lib/router';
 import { AlertsPage } from './pages/AlertsPage';
 import { AnomaliesPage } from './pages/AnomaliesPage';
@@ -14,6 +14,7 @@ import { RecommendationDetailPage } from './pages/RecommendationDetailPage';
 import { ReplenishmentPage } from './pages/ReplenishmentPage';
 import { LoginPage } from './pages/LoginPage';
 import { ModelsPage } from './pages/ModelsPage';
+import { ScenariosPage } from './pages/ScenariosPage';
 import { MonitoringPage } from './pages/MonitoringPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
@@ -61,6 +62,12 @@ const NAV: NavEntry[] = [
         to: href.suppliers(),
         active: (r) => r.name === 'suppliers' || r.name === 'supplier',
       },
+      {
+        label: 'Scenarios',
+        to: href.scenarios(),
+        active: (r) => r.name === 'scenarios',
+        networkOnly: true,
+      },
     ],
   },
   {
@@ -101,6 +108,8 @@ function Page({ route }: { route: Route }) {
       return <ModelsPage />;
     case 'monitoring':
       return <MonitoringPage />;
+    case 'scenarios':
+      return <ScenariosPage />;
     case 'suppliers':
       return <SuppliersPage />;
     case 'supplier':
@@ -125,6 +134,12 @@ function Page({ route }: { route: Route }) {
       return <Empty>Page not found.</Empty>;
   }
 }
+
+/** Store managers do not see pages whose data is network-wide. */
+const withoutNetworkOnly = (entries: NavEntry[]): NavEntry[] =>
+  entries
+    .map((e) => ('items' in e ? { ...e, items: e.items.filter((i) => !i.networkOnly) } : e))
+    .filter((e) => !('networkOnly' in e && e.networkOnly));
 
 function UserMenu() {
   const user = useUser();
@@ -158,7 +173,12 @@ function Shell() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-6">
             <h1 className="text-lg font-semibold">RetailPulse</h1>
-            {signedIn && <MainNav entries={NAV} route={route} />}
+            {state.status === 'authenticated' && (
+              <MainNav
+                entries={isStoreScoped(state.user) ? withoutNetworkOnly(NAV) : NAV}
+                route={route}
+              />
+            )}
           </div>
           <div className="flex items-center gap-4">
             <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">

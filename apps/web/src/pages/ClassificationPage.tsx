@@ -80,7 +80,7 @@ export function ClassificationPage() {
             closely to manage a product. Advice only — nothing is ordered or changed.
           </p>
         </div>
-        <div className="flex items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col text-xs text-slate-500">
             Scope
             <select

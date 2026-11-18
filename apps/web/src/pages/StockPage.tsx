@@ -39,7 +39,7 @@ export function StockPage({ locationId }: { locationId?: string }) {
         <h2 id="stock-heading" className="text-xl font-semibold">
           Stock by location
         </h2>
-        <label className="flex flex-col text-xs text-slate-500">
+        <label className="flex min-w-0 max-w-full flex-col text-xs text-slate-500">
           Location
           <select
             className={field}
@@ -87,14 +87,14 @@ function LocationStock({ locationId }: { locationId: string }) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <form onSubmit={onSearch} className="flex gap-2" role="search">
+        <div className="flex min-w-0 max-w-full flex-wrap items-end gap-3">
+          <form onSubmit={onSearch} className="flex max-w-full gap-2" role="search">
             <label className="sr-only" htmlFor="stock-search">
               Search by SKU or name
             </label>
             <input
               id="stock-search"
-              className={`${field} w-64`}
+              className={`${field} w-64 min-w-0`}
               placeholder="Search SKU or name"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}

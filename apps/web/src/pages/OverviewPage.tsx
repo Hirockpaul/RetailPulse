@@ -240,7 +240,7 @@ function Freshness({ o }: { o: Overview }) {
       <h3 id="freshness-heading" className="mb-3 font-semibold">
         How fresh is this?
       </h3>
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-[max-content_1fr] sm:gap-y-2">
         <dt className="text-slate-500">Stock numbers</dt>
         <dd>
           <AsOf iso={o.asOf} />

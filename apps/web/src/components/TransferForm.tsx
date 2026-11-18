@@ -102,7 +102,7 @@ export function TransferForm({ onCreated }: { onCreated: (id: string) => void })
       </h3>
       <form onSubmit={submit} className="space-y-3 rounded-lg border bg-white p-4">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col text-xs text-slate-500">
+          <label className="flex min-w-0 max-w-full flex-col text-xs text-slate-500">
             From
             <select
               className={field}
@@ -119,7 +119,7 @@ export function TransferForm({ onCreated }: { onCreated: (id: string) => void })
               ))}
             </select>
           </label>
-          <label className="flex flex-col text-xs text-slate-500">
+          <label className="flex min-w-0 max-w-full flex-col text-xs text-slate-500">
             To {isStoreScoped(user) && '(your store)'}
             <select
               className={field}

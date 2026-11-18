@@ -115,3 +115,30 @@ test('a large write-off becomes a finding that a manager can investigate', async
   await page.getByRole('button', { name: 'Start investigating' }).click();
   await expect(page.getByText('new → investigating')).toBeVisible();
 });
+
+test('a manager saves a what-if scenario; without a forecast, running it says so clearly', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByLabel('Email').fill('inventory@retailpulse.test');
+  await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
+
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('button', { name: 'Planning' }).click();
+  await nav.getByRole('link', { name: 'Scenarios' }).click();
+  await expect(page.getByRole('heading', { name: 'What-if scenarios' })).toBeVisible();
+
+  const name = `E2E demand +10 % ${Date.now()}`;
+  const form = page.getByRole('form', { name: 'New scenario' });
+  await form.getByLabel('Name').fill(name);
+  await form.getByLabel('Demand change (%)').fill('10');
+  await form.getByRole('button', { name: 'Save scenario' }).click();
+
+  const row = page.getByRole('row').filter({ hasText: name });
+  await expect(row).toContainText('Demand +10 %');
+  await expect(row).toContainText('never run');
+  await row.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByRole('alert')).toContainText('There is no forecast yet');
+});

@@ -73,7 +73,7 @@ export function ModelsPage() {
           recommendations are never rewritten. Metrics shown here use synthetic data.
         </p>
         <p className="text-sm">
-          <a className={table.link} href={href.monitoring()}>
+          <a className={table.textLink} href={href.monitoring()}>
             Model monitoring: drift, accuracy on new days and run health →
           </a>
         </p>

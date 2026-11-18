@@ -1,8 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3, step 4a and step 4b-1 are built** (see §9); next is 4b-2, the Scenarios page with
-side-by-side comparison.
+Phase 3 and steps 4a–4b are built** (see §9); next is 4c, reports (CSV + print).
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1257,4 +1256,56 @@ other stores' needs.
 - Tests: API unit 215 → 218, integration 251 → 258 (no forecast → 409; zero = baseline; identical
   reruns; writes nothing; directions; list / detail; roles incl. store managers 403; validation;
   immutability). Python 124 and e2e unchanged. Docker API rebuilt.
+
+
+### Step 4b-2 — Scenarios page: rules (written 2026-11-18, BEFORE building)
+
+**Page** `#/scenarios`, under **Planning** in the menu; visible to admins, inventory managers and
+analysts (store managers do not see the menu item; the API refuses them anyway).
+- **Create** (admins / inventory managers): name, optional description, and the three parameters
+  with their limits shown; the server's validation message is shown on error.
+- **List:** every scenario with its parameters in words, who created it, and its latest result's
+  headline (recommendations, purchase-order value, positions running out within 7 days) with the
+  change against its own baseline; "Run" for approvers; "never run" when there is no result.
+- **Compare 2–3:** select up to three scenarios → a comparison **table** (a table, not a chart:
+  twelve metrics across a few columns is a lookup task) — rows are the summary metrics, columns the
+  baseline and each scenario, each scenario cell showing its value and the signed change.
+  If the selected results were not computed from the same forecast run *and* identical baselines,
+  the page says so and shows each scenario's change against its *own* baseline; "Run selected now"
+  (approvers) re-runs them one after another to bring them close in time.
+- What a scenario cannot show is stated on the page: totals only (not per product), stock as it was
+  when the scenario ran, and a parameter that the batch does not use shows no effect.
+
+**Checks:** e2e: create a scenario and run it on the test database (which has no forecast) and see
+the clear "no forecast yet" message; browser check against the demo data: create, run, compare three
+scenarios; no horizontal overflow at 1280 / 768 / 390 / 320 px; keyboard can select and compare.
+
+### Step 4b-2 — Scenarios page ✅ (2026-11-18)
+
+- `#/scenarios` under **Planning** (hidden from store managers, who also get "not allowed" from
+  the API): create form with the limits shown, scenario list with parameters in words and each
+  latest result's change against its own baseline, *Run* for approvers, and a **comparison table**
+  for up to three (one baseline column when all results share the forecast run and baseline,
+  otherwise a warning and changes against each scenario's own baseline; *Run selected now*).
+  The page states what a scenario cannot show.
+- e2e: a third test creates a scenario through the menu and checks the "There is no forecast yet"
+  message (the e2e database has no forecast). My first version built a regular expression from a
+  name containing "+" — fixed in the test.
+- **Found while checking widths:** the page scrolled sideways on phones (167 px at 390, 237 px at
+  320). Cause: `sr-only` table-header labels are absolutely positioned and escaped the table's scroll
+  box. One-word fix in the shared table style (`relative` on `table.wrap`); this also fixed the
+  product page's old phone overflow (547 px → 0).
+- **Then, at the user's request, every remaining phone overflow was fixed** (found per page by
+  locating the innermost element past the edge, or by hiding elements one at a time):
+  location drop-downs sized to their longest option (shared `field` now `max-w-full`, their labels
+  may shrink); search rows that could not wrap their button (Products, Stock); a non-wrapping
+  filter row (ABC/XYZ); a sentence link using the no-wrap table-link style (Models → new
+  `table.textLink`); the freshness list's two columns (one column below `sm`); and the supplier
+  bar chart, whose rows added value and note after a percentage-wide bar (each bar now has its own
+  track, the value follows it in an aligned column, the note sits below — bars stay proportional at
+  any width). **Result: 0 px horizontal overflow on all 15 pages at 1280, 768, 390 and 320 px**
+  (60 measurements); the changed spots were looked at in screenshots.
+- Browser check on the demo data: three scenarios compared by keyboard (Space on the check boxes);
+  numbers identical to step 4b-1's measurements; 0 px overflow at 1280 / 768 / 390 / 320.
+- Tests: API unit 218 and integration 258 unchanged; e2e 2 → 3; Python 124. Docker web rebuilt.
 

@@ -201,6 +201,7 @@ erDiagram
 | V2 4a-1 ✅ | — (read model only) |
 | V2 4a-2 ✅ | — (web only) |
 | V2 4b-1 ✅ | `scenarios`, `scenario_results` (both immutable) |
+| V2 4b-2 ✅ | — (web only) |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
