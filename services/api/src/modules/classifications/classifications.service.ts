@@ -144,6 +144,16 @@ export class ClassificationsService implements OnApplicationBootstrap, OnModuleD
     return this.summary({}, user);
   }
 
+  /**
+   * The latest run's class of each product at each store (`productId:locationId` → 'AX' … 'NEW'),
+   * for service levels in replenishment. Empty if nothing has been classified yet.
+   */
+  async latestStoreClasses(): Promise<{ runId: string | null; classes: Map<string, string> }> {
+    const run = await this.repo.latestRun();
+    if (!run) return { runId: null, classes: new Map() };
+    return { runId: run.id, classes: await this.repo.storeClasses(run.id) };
+  }
+
   async summary(scope: ScopeQuery, user: AuthUser | null): Promise<ClassificationSummary> {
     if (scope.locationId && user) assertLocationAccess(user, scope.locationId);
     const run = await this.repo.latestRun();

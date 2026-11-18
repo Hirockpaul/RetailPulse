@@ -1,9 +1,14 @@
 /**
  * The replenishment calculation: pure functions, no database, fully explainable.
  *
+ *   L, σL            = lead time and its spread: 2 days / 0 from a distribution centre; from a
+ *                      supplier, its promise + its measured average delay, and the spread of that
+ *                      delay (promise and 0 while it has too few recorded deliveries)
  *   demandDuringLead = forecast units over the next L days (days beyond the forecast horizon
- *                      use the horizon's average)
- *   safetyStock      = z × σ_daily × √L
+ *                      use the horizon's average; part of a day counts in proportion)
+ *   d                = demandDuringLead / L, average forecast units per day
+ *   safetyStock      = z × √(L × σe² + d² × σL²)    σe = the forecast's typical daily error;
+ *                      z from the service level of the product's ABC/XYZ class at the store
  *   reorderPoint     = demandDuringLead + safetyStock
  *   orderUpTo        = forecast units over L + R days + safetyStock      (R = review period)
  *   position         = available + inbound            (available = on hand − reserved)
@@ -12,7 +17,15 @@
  *
  * Source: a distribution centre with enough stock (short lead time) — otherwise the supplier.
  * Nothing here moves stock or orders anything; a manager approves the result.
+ * Rules: docs/V2-PLAN.md step 2b (safety stock v2).
  */
+
+import {
+  REPLENISHMENT,
+  SERVICE_LEVEL_BY_CLASS,
+  type ServiceLevel,
+  Z_BY_SERVICE_LEVEL,
+} from './replenishment.config';
 
 export type Action = 'TRANSFER' | 'PURCHASE_ORDER';
 export type Risk = 'CRITICAL' | 'HIGH';
@@ -32,20 +45,44 @@ export interface SupplierTerms {
   unitCost: number;
 }
 
+/** How late a supplier delivers compared with its promise, over its recorded deliveries. */
+export interface SupplierDelay {
+  deliveries: number;
+  meanDelayDays: number;
+  /** null with fewer than 2 deliveries. */
+  stdDelayDays: number | null;
+}
+
+export type LeadTimeBasis = 'transfer' | 'measured' | 'promised';
+
+export interface LeadTime {
+  /** Expected lead time L in days (may be fractional when measured). */
+  meanDays: number;
+  /** Standard deviation σL of the lead time in days (0 when not measured). */
+  stdDays: number;
+  basis: LeadTimeBasis;
+  /** Supplier deliveries behind the measurement (null for transfers). */
+  deliveries: number | null;
+}
+
 export interface PlanInput {
   /** Forecast units for day 1..H. */
   yhat: number[];
-  /** Standard deviation of daily demand. */
-  sigmaDaily: number;
+  /** The forecast's typical daily error σe (root-mean-square backtest error). */
+  sigmaError: number;
   packSize: number;
   available: number;
   inbound: number;
   supplier: SupplierTerms | null;
+  /** The supplier's measured delay; null when it has no recorded deliveries. */
+  supplierDelay: SupplierDelay | null;
   /** DC stock still unallocated (earlier recommendations in the same batch already took theirs). */
   dcs: DcStock[];
   serviceLevelZ: number;
   reviewPeriodDays: number;
   transferLeadTimeDays: number;
+  /** Deliveries a supplier needs before its measured delay is used. */
+  minSupplierDeliveries: number;
 }
 
 export interface Plan {
@@ -56,10 +93,15 @@ export interface Plan {
   daysOfCover: number | null;
   leadTimeDays: number;
   leadTimeSource: 'transfer' | 'supplier';
+  leadTimeStdDays: number;
+  leadTimeBasis: LeadTimeBasis;
+  leadTimeDeliveries: number | null;
   demandDuringLead: number;
   demandDuringCover: number;
   avgDailyDemand: number;
   safetyStock: number;
+  /** The two parts under the square root: forecast error (L·σe²) and lead time (d²·σL²). */
+  safetyStockParts: { demandVariance: number; leadTimeVariance: number };
   reorderPoint: number;
   orderUpTo: number;
   position: number;
@@ -76,40 +118,102 @@ export type PlanResult = { plan: Plan } | { skip: 'NO_NEED' | 'NO_SOURCE' };
 export const roundUpToMultiple = (quantity: number, multiple: number): number =>
   Math.ceil(quantity / Math.max(multiple, 1)) * Math.max(multiple, 1);
 
-/** Forecast demand over `days` days; beyond the forecast horizon, assume the horizon's average. */
+/**
+ * Forecast demand over `days` days; beyond the forecast horizon, assume the horizon's average.
+ * A fractional day counts in proportion (2.5 days = days 1 and 2 + half of day 3).
+ */
 export function demandOver(yhat: number[], days: number): number {
-  const n = Math.max(0, Math.ceil(days));
-  if (yhat.length === 0) return 0;
-  const used = yhat.slice(0, n).reduce((a, b) => a + b, 0);
+  if (yhat.length === 0 || days <= 0) return 0;
   const average = yhat.reduce((a, b) => a + b, 0) / yhat.length;
-  return used + Math.max(0, n - yhat.length) * average;
+  const day = (i: number) => (i < yhat.length ? yhat[i] : average);
+  const whole = Math.floor(days);
+  let total = 0;
+  for (let i = 0; i < whole; i++) total += day(i);
+  return total + (days - whole) * day(whole);
+}
+
+/** Service level and z for a product's ABC/XYZ class at a store (NEW / unknown: the default). */
+export function serviceLevelFor(cls: string | null): { serviceLevel: ServiceLevel; z: number } {
+  const serviceLevel =
+    (cls ? SERVICE_LEVEL_BY_CLASS[cls] : undefined) ??
+    (REPLENISHMENT.defaultServiceLevel as ServiceLevel);
+  return { serviceLevel, z: Z_BY_SERVICE_LEVEL[serviceLevel] };
+}
+
+/**
+ * Supplier lead time: the promise plus the measured average delay, with the delay's spread — or
+ * the plain promise with no spread while the supplier has fewer than `minDeliveries` deliveries.
+ */
+export function supplierLeadTime(
+  promisedDays: number,
+  delay: SupplierDelay | null,
+  minDeliveries: number,
+): LeadTime {
+  if (delay && delay.deliveries >= minDeliveries) {
+    return {
+      meanDays: Math.max(0, promisedDays + delay.meanDelayDays),
+      stdDays: delay.stdDelayDays ?? 0,
+      basis: 'measured',
+      deliveries: delay.deliveries,
+    };
+  }
+  return {
+    meanDays: promisedDays,
+    stdDays: 0,
+    basis: 'promised',
+    deliveries: delay?.deliveries ?? 0,
+  };
+}
+
+/** SS = z × √(L·σe² + d²·σL²), with the two variance parts for the explanation. */
+export function safetyStock(
+  z: number,
+  sigmaError: number,
+  avgDailyDemand: number,
+  lead: Pick<LeadTime, 'meanDays' | 'stdDays'>,
+): { value: number; demandVariance: number; leadTimeVariance: number } {
+  const demandVariance = lead.meanDays * sigmaError ** 2;
+  const leadTimeVariance = avgDailyDemand ** 2 * lead.stdDays ** 2;
+  return {
+    value: z * Math.sqrt(demandVariance + leadTimeVariance),
+    demandVariance,
+    leadTimeVariance,
+  };
 }
 
 interface Evaluation {
+  lead: LeadTime;
   dLead: number;
   dCover: number;
+  avgDailyDemand: number;
   safetyStock: number;
+  safetyStockParts: Plan['safetyStockParts'];
   reorderPoint: number;
   orderUpTo: number;
 }
 
-function evaluate(input: PlanInput, leadDays: number): Evaluation {
-  const dLead = demandOver(input.yhat, leadDays);
-  const dCover = demandOver(input.yhat, leadDays + input.reviewPeriodDays);
-  const safetyStock = input.serviceLevelZ * input.sigmaDaily * Math.sqrt(leadDays);
+function evaluate(input: PlanInput, lead: LeadTime): Evaluation {
+  const L = lead.meanDays;
+  const dLead = demandOver(input.yhat, L);
+  const dCover = demandOver(input.yhat, L + input.reviewPeriodDays);
+  // Average per day over the lead time (over day 1 if the lead time is under a day).
+  const avgDailyDemand = L >= 1 ? dLead / L : demandOver(input.yhat, 1);
+  const ss = safetyStock(input.serviceLevelZ, input.sigmaError, avgDailyDemand, lead);
   return {
+    lead,
     dLead,
     dCover,
-    safetyStock,
-    reorderPoint: dLead + safetyStock,
-    orderUpTo: dCover + safetyStock,
+    avgDailyDemand,
+    safetyStock: ss.value,
+    safetyStockParts: { demandVariance: ss.demandVariance, leadTimeVariance: ss.leadTimeVariance },
+    reorderPoint: dLead + ss.value,
+    orderUpTo: dCover + ss.value,
   };
 }
 
 function buildPlan(
   input: PlanInput,
   action: Action,
-  leadDays: number,
   e: Evaluation,
   extra: Pick<Plan, 'sourceDc' | 'supplier' | 'dcShortfall'>,
 ): Plan {
@@ -119,8 +223,8 @@ function buildPlan(
   if (action === 'PURCHASE_ORDER' && extra.supplier) {
     quantity = Math.max(quantity, roundUpToMultiple(extra.supplier.minOrderQty, input.packSize));
   }
-  const avgDailyDemand = leadDays > 0 ? e.dLead / leadDays : 0;
-  const daysOfCover = avgDailyDemand > 0 ? position / avgDailyDemand : null;
+  const leadDays = e.lead.meanDays;
+  const daysOfCover = e.avgDailyDemand > 0 ? position / e.avgDailyDemand : null;
   const critical = input.available <= 0 || (daysOfCover !== null && daysOfCover < leadDays);
   return {
     action,
@@ -129,10 +233,14 @@ function buildPlan(
     daysOfCover,
     leadTimeDays: leadDays,
     leadTimeSource: action === 'TRANSFER' ? 'transfer' : 'supplier',
+    leadTimeStdDays: e.lead.stdDays,
+    leadTimeBasis: e.lead.basis,
+    leadTimeDeliveries: e.lead.deliveries,
     demandDuringLead: e.dLead,
     demandDuringCover: e.dCover,
-    avgDailyDemand,
+    avgDailyDemand: e.avgDailyDemand,
     safetyStock: e.safetyStock,
+    safetyStockParts: e.safetyStockParts,
     reorderPoint: e.reorderPoint,
     orderUpTo: e.orderUpTo,
     position,
@@ -150,9 +258,14 @@ export function plan(input: PlanInput): PlanResult {
     .filter((d) => d.availableNet >= 1)
     .sort((a, b) => b.availableNet - a.availableNet);
   if (dcs.length > 0) {
-    const e = evaluate(input, input.transferLeadTimeDays);
+    const e = evaluate(input, {
+      meanDays: input.transferLeadTimeDays,
+      stdDays: 0,
+      basis: 'transfer',
+      deliveries: null,
+    });
     if (position >= e.reorderPoint) return { skip: 'NO_NEED' };
-    const candidate = buildPlan(input, 'TRANSFER', input.transferLeadTimeDays, e, {
+    const candidate = buildPlan(input, 'TRANSFER', e, {
       sourceDc: dcs[0],
       supplier: null,
       dcShortfall: null,
@@ -166,10 +279,13 @@ export function plan(input: PlanInput): PlanResult {
   }
 
   if (!input.supplier) return { skip: 'NO_SOURCE' };
-  const e = evaluate(input, input.supplier.leadTimeDays);
+  const e = evaluate(
+    input,
+    supplierLeadTime(input.supplier.leadTimeDays, input.supplierDelay, input.minSupplierDeliveries),
+  );
   if (position >= e.reorderPoint) return { skip: 'NO_NEED' };
   return {
-    plan: buildPlan(input, 'PURCHASE_ORDER', input.supplier.leadTimeDays, e, {
+    plan: buildPlan(input, 'PURCHASE_ORDER', e, {
       sourceDc: null,
       supplier: input.supplier,
       dcShortfall,
@@ -178,13 +294,18 @@ export function plan(input: PlanInput): PlanResult {
 }
 
 const n1 = (x: number) => (Math.round(x * 10) / 10).toString();
+const n2 = (x: number) => (Math.round(x * 100) / 100).toString();
+const pct = (x: number) => `${Math.round(x * 100)} %`;
 
 export interface ExplainContext {
   sku: string;
   locationCode: string;
   model: string;
   isFallback: boolean;
-  sigmaDaily: number;
+  sigmaError: number;
+  /** The product's ABC/XYZ class at this store (null = not classified yet). */
+  cls: string | null;
+  serviceLevel: number;
   serviceLevelZ: number;
   reviewPeriodDays: number;
   packSize: number;
@@ -192,13 +313,32 @@ export interface ExplainContext {
   inbound: number;
 }
 
+function leadTimeText(p: Plan): string {
+  const L = n1(p.leadTimeDays);
+  if (p.leadTimeBasis === 'transfer') {
+    return `Lead time ${L} days from a distribution centre (no measured transfer history, so no spread is assumed).`;
+  }
+  const promised = p.supplier?.leadTimeDays ?? p.leadTimeDays;
+  if (p.leadTimeBasis === 'measured') {
+    const delay = p.leadTimeDays - promised;
+    return (
+      `Lead time ${L} days = ${promised} promised + ${n1(delay)} average delay over ${p.leadTimeDeliveries} recorded deliveries;` +
+      ` the delay varies by ${n2(p.leadTimeStdDays)} days (standard deviation).`
+    );
+  }
+  return `Lead time ${L} days as promised (only ${p.leadTimeDeliveries ?? 0} recorded deliveries, too few to measure delays, so no spread is assumed).`;
+}
+
 /** The calculation in words and numbers, so a manager can check it by hand. */
 export function explain(p: Plan, c: ExplainContext): string {
-  const L = p.leadTimeDays;
+  const L = n1(p.leadTimeDays);
   const lines = [
     `Forecast demand for ${c.sku} at ${c.locationCode} over the next ${L} days: ${n1(p.demandDuringLead)} units` +
       ` (model ${c.model}${c.isFallback ? ', category-average fallback because this product has little sales history' : ''}).`,
-    `Safety stock = ${c.serviceLevelZ} × ${n1(c.sigmaDaily)} (daily demand spread) × √${L} = ${n1(p.safetyStock)}.`,
+    leadTimeText(p),
+    `Service level ${pct(c.serviceLevel)} (${c.cls && c.cls !== 'NEW' ? `class ${c.cls} at ${c.locationCode}` : 'not classified yet: default'}) → z = ${c.serviceLevelZ}.`,
+    `Safety stock = z × √(L × σe² + d² × σL²) = ${c.serviceLevelZ} × √(${L} × ${n2(c.sigmaError)}² + ${n2(p.avgDailyDemand)}² × ${n2(p.leadTimeStdDays)}²) = ${n1(p.safetyStock)}` +
+      ` (σe = the forecast's typical daily error, d = forecast units per day, σL = lead-time spread).`,
     `Reorder point = ${n1(p.demandDuringLead)} + ${n1(p.safetyStock)} = ${n1(p.reorderPoint)}.`,
     `Stock position = ${c.available} available + ${c.inbound} inbound = ${p.position}, which is below the reorder point.`,
     `Order-up-to level covers ${L} + ${c.reviewPeriodDays} days: ${n1(p.demandDuringCover)} + ${n1(p.safetyStock)} = ${n1(p.orderUpTo)}.`,
@@ -215,14 +355,14 @@ export function explain(p: Plan, c: ExplainContext): string {
   } else if (p.supplier) {
     lines.push(
       p.dcShortfall
-        ? `Source: no distribution centre can cover it (${p.dcShortfall.code} has ${p.dcShortfall.availableNet}, ${p.dcShortfall.needed} needed), so order from ${p.supplier.name}, lead time ${L} days.`
-        : `Source: no distribution centre has stock, so order from ${p.supplier.name}, lead time ${L} days.`,
+        ? `Source: no distribution centre can cover it (${p.dcShortfall.code} has ${p.dcShortfall.availableNet}, ${p.dcShortfall.needed} needed), so order from ${p.supplier.name}.`
+        : `Source: no distribution centre has stock, so order from ${p.supplier.name}.`,
     );
   }
   lines.push(
     p.daysOfCover === null
       ? `Risk ${p.risk}.`
-      : `Days of cover: ${n1(p.daysOfCover)} (${p.daysOfCover < L ? 'less than' : 'at least'} the ${L}-day lead time) → risk ${p.risk}.`,
+      : `Days of cover: ${n1(p.daysOfCover)} (${p.daysOfCover < p.leadTimeDays ? 'less than' : 'at least'} the ${L}-day lead time) → risk ${p.risk}.`,
   );
   return lines.join(' ');
 }

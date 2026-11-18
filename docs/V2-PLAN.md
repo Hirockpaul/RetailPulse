@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a and 2c built** (see §9);
-waiting for approval of step 2b.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c and 2b built** (see §9);
+waiting for approval of step 2d.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -546,7 +546,7 @@ deliveries; lead time mean / median / standard deviation (days from order to rec
 **Check:** the measured on-time rates must put the suppliers in the profile order (Greenfield >
 Harbor > Summit), and each supplier's measured on-time rate must be within 10 points of its profile.
 
-### Step 2c — supplier performance ✅ (2026-11-18, not committed yet)
+### Step 2c — supplier performance ✅ (2026-11-18, commit 7e20a3b)
 
 - Migration `0013_supplier_deliveries.sql` (immutable rows; SYNTHETIC or ORDER). The seed adds 2,601
   synthetic deliveries once, from its own random stream (catalog and stock unchanged; re-seeding adds
@@ -560,4 +560,98 @@ Harbor > Summit), and each supplier's measured on-time rate must be within 10 po
   50 % supplier) — use the supplier-level lead-time spread unless a product has many deliveries.
 - Tests: API unit 139 → 143, integration 223 → 227; all checks and e2e green. One lint false
   positive (a pipe used only in a decorator) fixed by inlining it like the other controllers.
+
+
+
+### Step 2b — safety stock rules (written 2026-11-18, BEFORE any calculation)
+
+Replaces today's `SS = 1.645 × σ_demand × √L` (one service level for everything, the spread of
+*demand* instead of the forecast's *error*, and lead times treated as exact).
+
+```text
+SS = z(SL) × √( L̄ · σe² + d̄² · σL² )
+```
+
+- **σe — forecast error per day** = `forecast.series.sigma`: the served model's root-mean-square
+  daily error over the validation and test windows (the same residuals that calibrate the conformal
+  ranges, ~56 origins × 7 horizons per series). Fallback series keep their category-average spread
+  (flagged as today). Not the spread of demand (`std_daily_90`): the forecast already follows the
+  weekday pattern, promotions and trend, so counting that variation again would double it.
+  Assumption stated with the result: daily errors are independent, so they add up as L̄ · σe².
+- **d̄** = average forecast units per day over the lead time (as today).
+- **L̄ and σL — lead time.** Purchase orders: L̄ = the lead time the supplier promises for this product
+  + the supplier's **mean delay**; σL = the standard deviation of the supplier's **delay**
+  (delay = actual lead time − promised, per delivery, all products and stores of that supplier).
+  Delay rather than raw lead time, because promised lead times differ between a supplier's products
+  (step 2c's "11.1 ± 3.8 days" mixes them). Supplier level, not per product: per-product samples of
+  12–15 deliveries were measured as too noisy in 2c. A supplier with fewer than **20** deliveries:
+  L̄ = promised, σL = 0, and the recommendation says "no delivery history". L̄ is also the lead time
+  for forecast demand during the lead time and for the risk check, so reorder point and safety stock
+  use the same lead time. The purchase order's expected date stays the supplier's promise.
+  Transfers from a distribution centre: L = 2 days, σL = 0 (no measured transfer history; stated).
+- **Service level per class** — the product's class **at that store** in the latest ABC/XYZ run
+  (2a). Value decides how costly a stock-out is relative to holding stock; erratic (Z) demand gets
+  one step less, because its safety stock is the largest and the normal approximation is weakest
+  there (matches the 2a policies "avoid overstocking" / "review whether to stock at all"):
+
+  | | X | Y | Z |
+  |---|---|---|---|
+  | **A** | 99 % | 99 % | 97 % |
+  | **B** | 97 % | 97 % | 95 % |
+  | **C** | 95 % | 95 % | 90 % |
+
+  NEW or not classified yet: 95 % (today's level). z from a fixed table (90 % 1.2816, 95 % 1.6449,
+  97 % 1.8808, 99 % 2.3263), configurable in `replenishment.config.ts`.
+- Every input (σe, d̄, L̄, σL with its basis and delivery count, class, service level, z, and the two
+  variance parts) is stored with the recommendation and written into its explanation.
+
+**Checks, fixed now:**
+1. Unit tests with hand-checked numbers for the formula, the class → service level table, both
+   lead-time bases and both σ = 0 edge cases.
+2. A seeded simulation test: under the formula's own assumptions (normal daily errors, normal lead
+   time), the share of lead times covered by d̄·L̄ + SS is within **±1 point** of 90 / 95 / 99 %.
+   This checks the implementation, not reality.
+3. Measured on the dev data, v1 vs v2 for every product × store, reported as found (no target):
+   total safety stock in units and at cost, per class and per supplier; median σe ÷ σ_demand
+   (expected below 1); share of the variance that comes from lead time, per supplier (expected
+   largest for Summit Household, the least punctual supplier).
+
+Not claimed: that the service levels are achieved in practice — that needs a replay of past
+lead-time demand against past forecasts, which belongs to the scenarios / monitoring steps.
+
+### Step 2b — safety stock v2 ✅ (2026-11-18)
+
+- Rules as written above. Pure functions in `replenishment.calc.ts` (`safetyStock`,
+  `serviceLevelFor`, `supplierLeadTime`; `demandOver` now counts part of a day in proportion);
+  service-level table in `replenishment.config.ts`. No migration: σe is `forecast.series.sigma`
+  (already stored per run), delays come from `supplier_deliveries` (2c), classes from the latest
+  ABC/XYZ run (2a). Replenishment now calls `SuppliersService.delays()` and
+  `ClassificationsService.latestStoreClasses()` (two new arrows in the module map, no cycles).
+- Every input is stored with the recommendation and explained in words; the detail page shows σe,
+  the lead-time basis and spread, and the class service level. Older recommendations still display
+  (their `sigmaDaily` is shown as before).
+- **Checks.** (1) Hand-checked unit tests for the formula, all 9 classes + NEW/none, both lead-time
+  bases, early suppliers and the σ = 0 cases. (2) Seeded simulation: covered share within ±1 point
+  of 90 / 95 / 99 % — passed. (3) Measured on the dev data, 1,000 product × store pairs, supplier
+  route, an independent re-statement of the formulas (not the API code):
+
+  | Safety stock, total units | v1 | σe only | + measured lead time | v2 (+ class service level) |
+  |---|---:|---:|---:|---:|
+  | All pairs | 7,272 | 6,949 (−4 %) | 8,388 (+15 %) | **10,790 (+48 %)** |
+
+  Per class (v1 → v2): AX 4,483 → 7,347 (+64 %), BX 1,468 → 1,901 (+30 %), CX 669 → 778 (+16 %),
+  CZ 52 → 52 (0 %). Supplier delays: Greenfield +0.10 ± 0.30 days, Harbor +0.50 ± 0.98, Summit
+  +1.64 ± 2.11 (n = 1,039 / 930 / 632). Share of the variance from lead time: Greenfield 8.5 %,
+  Harbor 28.3 %, **Summit 37.0 %** — largest for the least punctual supplier, as expected.
+  Median σe ÷ σ_demand = **0.97** (below 1 as expected, but only just; 62 % of pairs below 1): on
+  this synthetic data the forecast removes little of the day-to-day spread, so switching to σe
+  alone changes little; most of the increase is the 99 % policy for A items.
+- End to end on the dev data (API on 3200): generating gave 269 transfer recommendations (v1: 259);
+  one checked by hand against the database (AX → 99 %, z 2.3263 × σe 2.3239 × √2 = 7.645 ✓). The
+  Docker demo was rebuilt with this code.
+- Not claimed: that the service levels are achieved in practice (needs a replay of past lead-time
+  demand — scenarios / monitoring). Limitation: delays are per supplier, not per product; transfers
+  assume an exact 2-day lead time.
+- Tests: API unit 143 → 165, integration 227 → 228 (class → service level through the API, measured
+  supplier delay on the purchase-order path); Python unchanged (94); all checks and e2e green.
 

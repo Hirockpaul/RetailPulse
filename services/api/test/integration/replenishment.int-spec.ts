@@ -189,17 +189,22 @@ async function seedForecast(specs: SeriesSpec[], withMetrics = true): Promise<st
 const count = async (sql: string, params: unknown[] = []): Promise<number> =>
   (await db.query(sql, params)).rows[0].n;
 
-/** Independent re-statement of the formulas (see replenishment.calc.ts) for hand-checked cases. */
+/**
+ * Independent re-statement of the formulas (see replenishment.calc.ts) for hand-checked cases,
+ * with a flat forecast: SS = z × √(L·σe² + d²·σL²); z 1.6449 = 95 %, the level for products
+ * that are not classified (nothing is classified in this file).
+ */
 const roundUp = (q: number, m: number) => Math.ceil(q / m) * m;
 const orderQuantity = (a: {
   perDay: number;
   sigma: number;
   lead: number;
+  sigmaLead?: number;
   position: number;
   pack: number;
   moq?: number;
 }) => {
-  const ss = 1.645 * a.sigma * Math.sqrt(a.lead);
+  const ss = 1.6449 * Math.sqrt(a.lead * a.sigma ** 2 + a.perDay ** 2 * (a.sigmaLead ?? 0) ** 2);
   const upTo = a.perDay * (a.lead + 7) + ss;
   const qty = roundUp(Math.ceil(upTo - a.position), a.pack);
   return a.moq === undefined ? qty : Math.max(qty, roundUp(a.moq, a.pack));
@@ -256,6 +261,8 @@ describe('recommendations from a forecast', () => {
     unit_cost: string;
     name: string;
   };
+  /** The supplier's seeded delivery history: average delay and its spread (V2 2b). */
+  let supplierDelay: { n: number; mean: number; sd: number };
   let generated: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   const before: Record<string, number> = {};
 
@@ -287,6 +294,17 @@ describe('recommendations from a forecast', () => {
       await db.query(
         `SELECT sp.lead_time_days, sp.min_order_qty, sp.unit_cost::text, s.name
            FROM supplier_products sp JOIN suppliers s ON s.id = sp.supplier_id
+          WHERE sp.product_id = $1 AND sp.is_primary`,
+        [B.id],
+      )
+    ).rows[0];
+    supplierDelay = (
+      await db.query(
+        `SELECT COUNT(*)::int AS n,
+                AVG((d.received_on - d.ordered_on) - d.promised_days)::float8 AS mean,
+                STDDEV_SAMP((d.received_on - d.ordered_on) - d.promised_days)::float8 AS sd
+           FROM supplier_deliveries d
+           JOIN supplier_products sp ON sp.supplier_id = d.supplier_id
           WHERE sp.product_id = $1 AND sp.is_primary`,
         [B.id],
       )
@@ -341,11 +359,27 @@ describe('recommendations from a forecast', () => {
     const r = await recFor(B.sku, loc.str1);
     expect(r).toMatchObject({ action: 'PURCHASE_ORDER', sourceCode: null });
     expect(r.supplierName).toBe(supplierTerms.name);
+    // The seed gives every supplier a year of deliveries, so the measured delay applies (V2 2b).
+    expect(supplierDelay.n).toBeGreaterThanOrEqual(20);
+    const lead = supplierTerms.lead_time_days + supplierDelay.mean;
+    expect(r.inputs.parameters).toMatchObject({
+      leadTimeBasis: 'measured',
+      supplierDeliveries: supplierDelay.n,
+      serviceLevel: 0.95,
+      classification: { cls: null, runId: null },
+    });
+    expect(r.inputs.parameters.leadTimeDays).toBeCloseTo(lead, 9);
+    expect(r.inputs.parameters.leadTimeStdDays).toBeCloseTo(supplierDelay.sd, 9);
+    expect(r.inputs.supplier.leadTimeDays).toBe(supplierTerms.lead_time_days); // order's promise
+    expect(r.explanation).toContain(
+      `${supplierTerms.lead_time_days} promised + ${Math.round(supplierDelay.mean * 10) / 10} average delay over ${supplierDelay.n} recorded deliveries`,
+    );
     expect(r.quantity).toBe(
       orderQuantity({
         perDay: 10,
         sigma: 3,
-        lead: supplierTerms.lead_time_days,
+        lead,
+        sigmaLead: supplierDelay.sd,
         position: 20,
         pack: B.packSize,
         moq: supplierTerms.min_order_qty,
@@ -392,7 +426,10 @@ describe('recommendations from a forecast', () => {
   it('explains every recommendation with the numbers, and stores every input', async () => {
     const r = await recFor(A.sku, loc.str1);
     expect(r.explanation).toContain(`${A.sku} at STR-01 over the next 2 days: 20 units`);
-    expect(r.explanation).toContain('1.645 × 3 (daily demand spread) × √2 = 7');
+    expect(r.explanation).toContain(
+      'Service level 95 % (not classified yet: default) → z = 1.6449',
+    );
+    expect(r.explanation).toContain('= 1.6449 × √(2 × 3² + 10² × 0²) = 7');
     expect(r.explanation).toContain('20 available + 0 inbound = 20');
     expect(r.explanation).toContain(`rounded up to packs of ${A.packSize} = ${r.quantity} units`);
     expect(r.explanation).toContain('transfer from DC-NORTH');
@@ -402,13 +439,17 @@ describe('recommendations from a forecast', () => {
         model: 'moving_average_28',
         isFallback: false,
         demandDuringLead: 20,
-        sigmaDaily: 3,
+        sigmaError: 3,
       },
       parameters: {
-        serviceLevelZ: 1.645,
+        serviceLevel: 0.95,
+        serviceLevelZ: 1.6449,
         reviewPeriodDays: 7,
         leadTimeDays: 2,
         leadTimeSource: 'transfer',
+        leadTimeStdDays: 0,
+        leadTimeBasis: 'transfer',
+        supplierDeliveries: null,
         packSize: A.packSize,
       },
       stock: { onHand: 20, reserved: 0, available: 20, inbound: 0, position: 20 },
@@ -416,8 +457,12 @@ describe('recommendations from a forecast', () => {
       source: { code: 'DC-NORTH' },
       supplier: null,
     });
-    expect(r.inputs.calculation.safetyStock).toBeCloseTo(6.979, 3);
+    expect(r.inputs.calculation.safetyStock).toBeCloseTo(1.6449 * 3 * Math.sqrt(2), 9); // 6.979
     expect(r.inputs.calculation.reorderPoint).toBeCloseTo(26.979, 3);
+    expect(r.inputs.calculation.safetyStockParts).toEqual({
+      demandVariance: 18,
+      leadTimeVariance: 0,
+    });
   });
 
   it('lists the most urgent first and supports filters and pagination', async () => {
@@ -628,6 +673,63 @@ describe('recommendations from a forecast', () => {
       (await count('SELECT COUNT(*)::int AS n FROM stock_transfers')) +
         (await count('SELECT COUNT(*)::int AS n FROM purchase_orders')),
     ).toBe(docs + 1);
+  });
+
+  it('V2 2b: the service level follows the product’s ABC/XYZ class at the store', async () => {
+    const [P1, P2, P3] = await Promise.all(['RP-00131', 'RP-00132', 'RP-00133'].map(product));
+    for (const p of [P1, P2, P3]) {
+      await setOnHand(p.id, loc.str1, 5);
+      await setOnHand(p.id, loc.dcN, 500);
+    }
+    // A classification run: P1 is AX and P2 is CZ at STR-01; P3 is AX network-wide only.
+    const run = (
+      await db.query(
+        `INSERT INTO classification_runs (window_start, window_end, data_label, item_count)
+         VALUES (current_date - 364, current_date - 1, 'SYNTHETIC', 3) RETURNING id`,
+      )
+    ).rows[0].id as string;
+    for (const [p, location, abc, xyz] of [
+      [P1.id, loc.str1, 'A', 'X'],
+      [P2.id, loc.str1, 'C', 'Z'],
+      [P3.id, null, 'A', 'X'],
+    ]) {
+      await db.query(
+        `INSERT INTO inventory_classifications (run_id, product_id, location_id, weeks_observed, units,
+            value, value_share, cumulative_share, weekly_mean, cv, adi, abc, xyz, cls)
+         VALUES ($1, $2, $3, 52, 520, 100, 0.1, 0.1, 10, 0.3, 1, $4, $5, $6)`,
+        [run, p, location, abc, xyz, `${abc}${xyz}`],
+      );
+    }
+    try {
+      await seedForecast(
+        [P1, P2, P3].map((p) => ({ product: p.id, location: loc.str1, perDay: 10 })),
+      );
+      await inv().post('/replenishment/generate').expect(200);
+      const [r1, r2, r3] = await Promise.all([P1, P2, P3].map((p) => recFor(p.sku, loc.str1)));
+
+      expect(r1.inputs.parameters).toMatchObject({
+        serviceLevel: 0.99,
+        serviceLevelZ: 2.3263,
+        classification: { cls: 'AX', runId: run },
+      });
+      expect(r1.inputs.calculation.safetyStock).toBeCloseTo(2.3263 * 3 * Math.sqrt(2), 9);
+      expect(r1.explanation).toContain('Service level 99 % (class AX at STR-01) → z = 2.3263');
+
+      expect(r2.inputs.parameters).toMatchObject({ serviceLevel: 0.9, serviceLevelZ: 1.2816 });
+      expect(r2.inputs.calculation.safetyStock).toBeCloseTo(1.2816 * 3 * Math.sqrt(2), 9);
+
+      // Only the class AT THE STORE counts; a network-wide class alone gives the default.
+      expect(r3.inputs.parameters).toMatchObject({
+        serviceLevel: 0.95,
+        classification: { cls: null, runId: run },
+      });
+      // Leave nothing pending for the tests below.
+      for (const r of [r1, r2, r3]) {
+        await inv().post(`/replenishment/recommendations/${r.id}/reject`).expect(200);
+      }
+    } finally {
+      await db.query('DELETE FROM classification_runs WHERE id = $1', [run]);
+    }
   });
 
   it('regenerating replaces the pending recommendations (old ones expire) and counts inbound stock', async () => {

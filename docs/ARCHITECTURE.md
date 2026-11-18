@@ -81,7 +81,7 @@ flowchart TB
   purchasing --> inventory & suppliers
   suppliers --> database
   forecasts --> database
-  replenishment --> forecasts & purchasing & transfers
+  replenishment --> forecasts & purchasing & transfers & suppliers & classifications
   events --> database
   alerts --> events & inventory
   overview --> forecasts & events
@@ -461,6 +461,7 @@ flowchart LR
   pick --> fp[(forecast.series / points / metrics)]
   fp --> calc[API: reorder point, safety stock,<br/>days of cover, pack & minimum rounding]
   stock[(stock, inbound, DC stock)] --> calc
+  pol[(ABC/XYZ class · supplier delays)] --> calc
   calc --> rec[(replenishment_recommendations<br/>PENDING + every input + explanation)]
   rec -->|a manager approves| doc[Transfer or purchase order<br/>created, already approved]
   doc --> led[Stock moves later,<br/>through the ledger]
@@ -494,8 +495,15 @@ flowchart LR
 ### 7.2 Replenishment (`modules/replenishment`, TypeScript, pure arithmetic)
 
 ```text
-demandDuringLead = forecast units over the next L days   (beyond the horizon: the horizon's average)
-safetyStock      = z × σ_daily × √L            z = 1.645 (≈ 95 % service level)
+L, σL            = lead time and its spread:
+                   from a distribution centre 2 days, σL = 0 (no measured transfer history);
+                   from a supplier: its promise + its average delay, σL = spread of its delay
+                   (the promise and σL = 0 while it has fewer than 20 recorded deliveries)
+demandDuringLead = forecast units over the next L days   (beyond the horizon: the horizon's average;
+                                                          part of a day counts in proportion)
+d                = demandDuringLead / L
+safetyStock      = z × √(L × σe² + d² × σL²)   σe = the forecast's typical daily error (backtest RMSE)
+                   z from the service level of the product's ABC/XYZ class at the store
 reorderPoint     = demandDuringLead + safetyStock
 orderUpTo        = forecast units over L + R days + safetyStock                R = review period, 7 days
 position         = available + inbound         available = on hand − reserved;
@@ -503,6 +511,24 @@ position         = available + inbound         available = on hand − reserved;
 needed when position < reorderPoint;  quantity = orderUpTo − position
 rounded UP to whole packs (purchase orders: at least the supplier minimum, in whole packs)
 ```
+
+**Safety stock v2 (V2 2b; rules fixed before measuring, docs/V2-PLAN.md).** Service level by class
+at the store: AX/AY 99 %, AZ/BX/BY 97 %, BZ/CX/CY 95 %, CZ 90 %, NEW or unclassified 95 %
+(`replenishment.config.ts`). σe is the forecast's *error*, not the spread of demand: the forecast
+already follows weekdays, promotions and trend, so counting that variation again would double it.
+The supplier delay (actual − promised lead time, per delivery) is measured per supplier, not per
+product (12–15 deliveries per product are too noisy, 2c), and as a delay because promised lead
+times differ between a supplier's products. The purchase order's expected date stays the promise.
+Every input (σe, d, L, σL and its basis, class, service level, z, both variance parts) is stored
+with the recommendation and written into its explanation.
+
+Measured on the dev data (1,000 product × store pairs, supplier route, total safety stock in
+units): v1 7,272 → σe instead of demand spread 6,949 (−4 %) → + measured lead time 8,388 (+15 %)
+→ + class service levels **10,790 (+48 %)**; at unit cost 22,128 → 34,062. The forecast error is only
+a little smaller than the demand spread (median σe ÷ σ_demand 0.97): the synthetic demand is mostly
+noise the model cannot predict (§7.3). Lead time contributes 8.5 % of the variance for Greenfield,
+28 % for Harbor and 37 % for Summit (the least punctual). Not claimed: that 99 % is achieved in
+practice — that needs a replay of past lead-time demand (scenarios / monitoring steps).
 
 - **Source:** a distribution centre with unallocated stock (lead time 2 days) when it can cover the
   whole quantity — otherwise the primary supplier (its lead time and minimum). A centre that has
@@ -829,4 +855,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 56 | Operational anomalies are plain rules in an event consumer, not ML | Write-offs, repeated corrections and return rates are explainable as thresholds; no labelled history exists to learn from | Fixed thresholds suit the synthetic store sizes; they are not tuned and will need adjusting for real data |
 | 57 | ABC/XYZ is computed in the API from `forecast.demand_daily`, read-only (V2 2a) | It is plain arithmetic over sales history and drives stocking policy (an API concern); no ML runtime needed | The API reads a table the forecasting service writes; the read is isolated in one repository |
 | 58 | Supplier performance from a delivery table, with synthetic history in the seed (V2 2c) | Lead-time statistics need history that does not exist yet; history rows never create orders or stock, and real receipts are added automatically | Synthetic profiles are simple (independent delays); no partial receipts yet, so real ORDER rows always have fill rate 100 % |
-
+| 59 | Safety stock from forecast error, measured supplier delay and a service level per ABC/XYZ class (V2 2b) | The forecast's error is the uncertainty left after forecasting (demand spread double-counts it); late suppliers need both a longer expected lead time and a cushion for its spread; value and predictability decide how much a stock-out is worth avoiding | Assumes independent, roughly normal daily errors; supplier-level delay ignores product differences; raises total safety stock by 48 % on the dev data, mostly through the 99 % level for A items — a policy choice, visible in config |

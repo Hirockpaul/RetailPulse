@@ -52,7 +52,7 @@ export class ReplenishmentRepository {
        SELECT s.product_id AS "productId", s.location_id AS "locationId", l.code::text AS "locationCode",
               p.sku::text AS sku, p.name AS "productName", p.pack_size AS "packSize",
               s.model, s.is_fallback AS "isFallback", s.history_days AS "historyDays",
-              s.test_wape::float8 AS "testWape", s.std_daily_90::float8 AS "sigmaDaily", pts.yhat,
+              s.test_wape::float8 AS "testWape", s.sigma::float8 AS "sigmaError", pts.yhat,
               COALESCE(b.on_hand, 0) AS "onHand", COALESCE(b.reserved, 0) AS reserved,
               (COALESCE((SELECT SUM(tl.quantity) FROM stock_transfer_lines tl
                            JOIN stock_transfers t ON t.id = tl.transfer_id

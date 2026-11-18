@@ -33,6 +33,15 @@ export interface ProductRow extends DeliveryStats {
   promisedDays: number | null;
 }
 
+/** Delay = actual lead time − promised lead time, per delivery (negative = early). */
+export interface DelayRow {
+  supplierId: string;
+  deliveries: number;
+  meanDelayDays: number;
+  /** Sample standard deviation; null with fewer than 2 deliveries. */
+  stdDelayDays: number | null;
+}
+
 export interface DeliveryRow {
   orderedOn: string;
   receivedOn: string;
@@ -88,6 +97,17 @@ export class SuppliersRepository {
         WHERE d.supplier_id = $1
         GROUP BY p.id ORDER BY p.sku`,
       [supplierId],
+    );
+    return rows;
+  }
+
+  /** Delay statistics per supplier, all products and stores together (safety stock, V2 2b). */
+  async delays(): Promise<DelayRow[]> {
+    const { rows } = await this.db.query<DelayRow>(
+      `SELECT supplier_id AS "supplierId", COUNT(*)::int AS deliveries,
+              AVG((received_on - ordered_on) - promised_days)::float8 AS "meanDelayDays",
+              STDDEV_SAMP((received_on - ordered_on) - promised_days)::float8 AS "stdDelayDays"
+         FROM supplier_deliveries GROUP BY supplier_id`,
     );
     return rows;
   }

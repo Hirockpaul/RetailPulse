@@ -190,10 +190,17 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                 label="Demand during lead time"
                 value={formatDecimal(rec.data.inputs.forecast.demandDuringLead)}
               />
-              <Row
-                label="Daily demand spread (σ)"
-                value={formatDecimal(rec.data.inputs.forecast.sigmaDaily)}
-              />
+              {rec.data.inputs.forecast.sigmaError !== undefined ? (
+                <Row
+                  label="Typical daily forecast error (σe)"
+                  value={formatDecimal(rec.data.inputs.forecast.sigmaError)}
+                />
+              ) : (
+                <Row
+                  label="Daily demand spread (σ)"
+                  value={formatDecimal(rec.data.inputs.forecast.sigmaDaily ?? 0)}
+                />
+              )}
               <Row label="History" value={`${rec.data.inputs.forecast.historyDays} days`} />
               <Row
                 label="Accuracy on test window"
@@ -212,9 +219,21 @@ export function RecommendationDetailPage({ id }: { id: string }) {
 
             <InputsCard title="Calculation">
               <Row
-                label={`Lead time (${rec.data.inputs.parameters.leadTimeSource})`}
-                value={`${rec.data.inputs.parameters.leadTimeDays} days`}
+                label={`Lead time (${LEAD_BASIS[rec.data.inputs.parameters.leadTimeBasis ?? 'v1'] ?? rec.data.inputs.parameters.leadTimeSource})`}
+                value={`${formatDecimal(rec.data.inputs.parameters.leadTimeDays)} days`}
               />
+              {rec.data.inputs.parameters.leadTimeStdDays !== undefined && (
+                <Row
+                  label="Lead-time spread (σL)"
+                  value={`${formatDecimal(rec.data.inputs.parameters.leadTimeStdDays)} days`}
+                />
+              )}
+              {rec.data.inputs.parameters.serviceLevel !== undefined && (
+                <Row
+                  label={`Service level (${rec.data.inputs.parameters.classification?.cls && rec.data.inputs.parameters.classification.cls !== 'NEW' ? `class ${rec.data.inputs.parameters.classification.cls}` : 'default'})`}
+                  value={formatPercent(rec.data.inputs.parameters.serviceLevel)}
+                />
+              )}
               <Row
                 label="Service level z"
                 value={String(rec.data.inputs.parameters.serviceLevelZ)}
@@ -248,6 +267,12 @@ export function RecommendationDetailPage({ id }: { id: string }) {
     </section>
   );
 }
+
+const LEAD_BASIS: Record<string, string> = {
+  transfer: 'transfer',
+  measured: 'supplier, measured',
+  promised: 'supplier, as promised',
+};
 
 function InputsCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (

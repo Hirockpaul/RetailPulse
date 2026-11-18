@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { accessibleLocationIds } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
-import { type DeliveryRow, SuppliersRepository } from './suppliers.repository';
+import { type DelayRow, type DeliveryRow, SuppliersRepository } from './suppliers.repository';
 import { MIN_DELIVERIES, type ScoredStats, score } from './suppliers.score';
 
 export interface SupplierPerformance extends ScoredStats {
@@ -47,6 +47,15 @@ export class SuppliersService {
       lastDelivery,
       ...score(stats),
     }));
+  }
+
+  /**
+   * How late each supplier delivers compared with its promise (mean and spread of the delay),
+   * keyed by supplier id. Used by replenishment for lead-time variability in safety stock.
+   */
+  async delays(): Promise<Map<string, DelayRow>> {
+    const rows = await this.repo.delays();
+    return new Map(rows.map((r) => [r.supplierId, r]));
   }
 
   async get(id: string, user: AuthUser): Promise<SupplierDetail> {

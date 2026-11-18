@@ -20,7 +20,11 @@ export const decisionBodySchema = z.object({
 });
 export type DecisionBody = z.output<typeof decisionBodySchema>;
 
-/** Every input and intermediate number of a recommendation, stored as JSON for the "why" panel. */
+/**
+ * Every input and intermediate number of a recommendation, stored as JSON for the "why" panel.
+ * Fields marked "v2" exist on recommendations generated since V2 step 2b (safety stock v2);
+ * older rows have `sigmaDaily` (the spread of demand) in place of `sigmaError`.
+ */
 export interface RecommendationInputs {
   forecast: {
     runId: string;
@@ -32,19 +36,32 @@ export interface RecommendationInputs {
     demandDuringLead: number;
     demandDuringCover: number;
     avgDailyDemand: number;
-    sigmaDaily: number;
+    /** v1 only: standard deviation of daily demand (last 90 days). */
+    sigmaDaily?: number;
+    /** v2: the forecast's typical daily error (backtest root-mean-square error). */
+    sigmaError?: number;
   };
   parameters: {
+    /** v2: target share of cycles without a stock-out, from the ABC/XYZ class. */
+    serviceLevel?: number;
+    /** v2: the product's class at this store in the latest ABC/XYZ run (null = none yet). */
+    classification?: { cls: string | null; runId: string | null };
     serviceLevelZ: number;
     reviewPeriodDays: number;
     leadTimeDays: number;
     leadTimeSource: 'transfer' | 'supplier';
+    /** v2: lead-time spread σL and where L and σL come from. */
+    leadTimeStdDays?: number;
+    leadTimeBasis?: 'transfer' | 'measured' | 'promised';
+    supplierDeliveries?: number | null;
     packSize: number;
     minOrderQty: number | null;
   };
   stock: { onHand: number; reserved: number; available: number; inbound: number; position: number };
   calculation: {
     safetyStock: number;
+    /** v2: the two parts under the square root (L·σe² and d²·σL²). */
+    safetyStockParts?: { demandVariance: number; leadTimeVariance: number };
     reorderPoint: number;
     orderUpTo: number;
     rawQuantity: number;
@@ -105,7 +122,8 @@ export interface PairRow {
   isFallback: boolean;
   historyDays: number;
   testWape: number | null;
-  sigmaDaily: number;
+  /** The forecast's typical daily error (forecast.series.sigma). */
+  sigmaError: number;
   yhat: number[];
   onHand: number;
   reserved: number;

@@ -4,10 +4,12 @@ import type { AuthUser } from '../../core/auth/auth.types';
 import { DatabaseService } from '../../core/database/database.service';
 import type { Page } from '../../core/http/query';
 import type { RequestContext } from '../../core/http/request-context';
+import { ClassificationsService } from '../classifications/classifications.service';
 import { ForecastsService } from '../forecasts/forecasts.service';
 import { PurchasingService } from '../purchasing/purchasing.service';
+import { SuppliersService } from '../suppliers/suppliers.service';
 import { TransfersService } from '../transfers/transfers.service';
-import { type DcStock, explain, plan } from './replenishment.calc';
+import { type DcStock, explain, plan, serviceLevelFor } from './replenishment.calc';
 import { REPLENISHMENT } from './replenishment.config';
 import { ReplenishmentRepository } from './replenishment.repository';
 import type {
@@ -43,6 +45,8 @@ export class ReplenishmentService {
     private readonly forecasts: ForecastsService,
     private readonly transfers: TransfersService,
     private readonly purchasing: PurchasingService,
+    private readonly suppliers: SuppliersService,
+    private readonly classifications: ClassificationsService,
     private readonly db: DatabaseService,
   ) {}
 
@@ -54,9 +58,11 @@ export class ReplenishmentService {
         message: 'There is no forecast yet. Run a forecast first.',
       });
     }
-    const [pairs, dcByProduct] = await Promise.all([
+    const [pairs, dcByProduct, delays, classified] = await Promise.all([
       this.repo.loadPairs(run.id),
       this.repo.loadDcStock(),
+      this.suppliers.delays(),
+      this.classifications.latestStoreClasses(),
     ]);
 
     // Most urgent first, so scarce distribution-centre stock goes to the stores that need it most.
@@ -102,17 +108,21 @@ export class ReplenishmentService {
             }
           : null;
       const available = pair.onHand - pair.reserved;
+      const cls = classified.classes.get(`${pair.productId}:${pair.locationId}`) ?? null;
+      const { serviceLevel, z } = serviceLevelFor(cls);
       const outcome = plan({
         yhat: pair.yhat,
-        sigmaDaily: pair.sigmaDaily,
+        sigmaError: pair.sigmaError,
         packSize: pair.packSize,
         available,
         inbound: pair.inbound,
         supplier,
+        supplierDelay: (pair.supplierId && delays.get(pair.supplierId)) || null,
         dcs: remaining.get(pair.productId) ?? [],
-        serviceLevelZ: REPLENISHMENT.serviceLevelZ,
+        serviceLevelZ: z,
         reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
         transferLeadTimeDays: REPLENISHMENT.transferLeadTimeDays,
+        minSupplierDeliveries: REPLENISHMENT.minSupplierDeliveries,
       });
       if ('skip' in outcome) {
         if (outcome.skip === 'NO_NEED') result.skipped.noNeed++;
@@ -143,8 +153,10 @@ export class ReplenishmentService {
           locationCode: pair.locationCode,
           model: pair.model,
           isFallback: pair.isFallback,
-          sigmaDaily: pair.sigmaDaily,
-          serviceLevelZ: REPLENISHMENT.serviceLevelZ,
+          sigmaError: pair.sigmaError,
+          cls,
+          serviceLevel,
+          serviceLevelZ: z,
           reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
           packSize: pair.packSize,
           available,
@@ -160,13 +172,18 @@ export class ReplenishmentService {
             demandDuringLead: p.demandDuringLead,
             demandDuringCover: p.demandDuringCover,
             avgDailyDemand: p.avgDailyDemand,
-            sigmaDaily: pair.sigmaDaily,
+            sigmaError: pair.sigmaError,
           },
           parameters: {
-            serviceLevelZ: REPLENISHMENT.serviceLevelZ,
+            serviceLevel,
+            classification: { cls, runId: classified.runId },
+            serviceLevelZ: z,
             reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
             leadTimeDays: p.leadTimeDays,
             leadTimeSource: p.leadTimeSource,
+            leadTimeStdDays: p.leadTimeStdDays,
+            leadTimeBasis: p.leadTimeBasis,
+            supplierDeliveries: p.leadTimeDeliveries,
             packSize: pair.packSize,
             minOrderQty: p.supplier?.minOrderQty ?? null,
           },
@@ -179,6 +196,7 @@ export class ReplenishmentService {
           },
           calculation: {
             safetyStock: p.safetyStock,
+            safetyStockParts: p.safetyStockParts,
             reorderPoint: p.reorderPoint,
             orderUpTo: p.orderUpTo,
             rawQuantity: p.rawQuantity,

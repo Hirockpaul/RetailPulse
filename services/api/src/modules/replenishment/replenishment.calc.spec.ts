@@ -5,6 +5,10 @@ import {
   plan,
   type PlanInput,
   roundUpToMultiple,
+  safetyStock,
+  serviceLevelFor,
+  supplierLeadTime,
+  type SupplierDelay,
   type SupplierTerms,
 } from './replenishment.calc';
 
@@ -21,18 +25,23 @@ const dc = (availableNet: number, code = 'DC-NORTH'): DcStock => ({
   availableNet,
 });
 
-/** 10 units/day forecast for 14 days, σ = 3, packs of 12 — easy numbers to check by hand. */
+/**
+ * 10 units/day forecast for 14 days, σe = 3, packs of 12, no measured supplier delay (σL = 0) —
+ * easy numbers to check by hand. With σL = 0, SS = z × σe × √L.
+ */
 const base = (over: Partial<PlanInput> = {}): PlanInput => ({
   yhat: Array(14).fill(10),
-  sigmaDaily: 3,
+  sigmaError: 3,
   packSize: 12,
   available: 20,
   inbound: 0,
   supplier,
+  supplierDelay: null,
   dcs: [],
   serviceLevelZ: 1.645,
   reviewPeriodDays: 7,
   transferLeadTimeDays: 2,
+  minSupplierDeliveries: 20,
   ...over,
 });
 
@@ -70,8 +79,9 @@ describe('demandOver', () => {
     expect(demandOver([5, 5], 0)).toBe(0);
   });
 
-  it('rounds fractional days up', () => {
-    expect(demandOver([10, 10, 10], 1.2)).toBe(20);
+  it('counts part of a day in proportion (measured lead times are fractional)', () => {
+    expect(demandOver([10, 20, 30], 1.5)).toBeCloseTo(10 + 0.5 * 20, 9);
+    expect(demandOver([2, 4], 2.5)).toBeCloseTo(6 + 0.5 * 3, 9); // half a day at the average
   });
 });
 
@@ -120,7 +130,7 @@ describe('plan — purchase order (no distribution-centre stock)', () => {
     const tiny = planned(
       base({
         yhat: Array(14).fill(1),
-        sigmaDaily: 0,
+        sigmaError: 0,
         available: 3,
         supplier: { ...supplier, minOrderQty: 30 },
       }),
@@ -130,7 +140,7 @@ describe('plan — purchase order (no distribution-centre stock)', () => {
   });
 
   it('suggests nothing when there is no demand', () => {
-    expect(plan(base({ yhat: Array(14).fill(0), sigmaDaily: 0, available: 0 }))).toEqual({
+    expect(plan(base({ yhat: Array(14).fill(0), sigmaError: 0, available: 0 }))).toEqual({
       skip: 'NO_NEED',
     });
   });
@@ -222,7 +232,9 @@ describe('explain', () => {
     locationCode: 'STR-01',
     model: 'hgb_direct',
     isFallback: false,
-    sigmaDaily: 3,
+    sigmaError: 3,
+    cls: 'BY',
+    serviceLevel: 0.95,
     serviceLevelZ: 1.645,
     reviewPeriodDays: 7,
     packSize: 12,
@@ -233,7 +245,11 @@ describe('explain', () => {
   it('shows every step of a transfer with the numbers', () => {
     const text = explain(planned(base({ dcs: [dc(500)] })), ctx);
     expect(text).toContain('RP-00042 at STR-01 over the next 2 days: 20 units');
-    expect(text).toContain('1.645 × 3 (daily demand spread) × √2 = 7');
+    expect(text).toContain(
+      'Lead time 2 days from a distribution centre (no measured transfer history',
+    );
+    expect(text).toContain('Service level 95 % (class BY at STR-01) → z = 1.645');
+    expect(text).toContain('= 1.645 × √(2 × 3² + 10² × 0²) = 7');
     expect(text).toContain('Reorder point = 20 + 7 = 27');
     expect(text).toContain('20 available + 0 inbound = 20');
     expect(text).toContain('rounded up to packs of 12 = 84 units');
@@ -245,7 +261,8 @@ describe('explain', () => {
     const text = explain(planned(base({ dcs: [dc(40)] })), ctx);
     expect(text).toContain('supplier minimum order 24');
     expect(text).toContain('DC-NORTH has 40, 84 needed');
-    expect(text).toContain('order from Harbor Provisions (synthetic), lead time 7 days');
+    expect(text).toContain('order from Harbor Provisions (synthetic).');
+    expect(text).toContain('Lead time 7 days as promised (only 0 recorded deliveries');
     expect(text).toContain('= 144 units');
   });
 
@@ -254,5 +271,169 @@ describe('explain', () => {
     expect(text).toContain(
       'category-average fallback because this product has little sales history',
     );
+  });
+});
+
+describe('safety stock v2 — SS = z × √(L·σe² + d²·σL²)', () => {
+  it('combines forecast error and lead-time spread (checked by hand)', () => {
+    // L = 9, σe = 2, d = 10, σL = 1.5: 9 × 4 = 36; 100 × 2.25 = 225; √261 = 16.1555; × 1.6449
+    const ss = safetyStock(1.6449, 2, 10, { meanDays: 9, stdDays: 1.5 });
+    expect(ss.demandVariance).toBe(36);
+    expect(ss.leadTimeVariance).toBe(225);
+    expect(ss.value).toBeCloseTo(1.6449 * Math.sqrt(261), 9);
+    expect(ss.value).toBeCloseTo(26.574, 3);
+  });
+
+  it('is z × σe × √L when the lead time is exact, and z × d × σL when the forecast is', () => {
+    expect(safetyStock(2, 3, 10, { meanDays: 4, stdDays: 0 }).value).toBeCloseTo(12, 9); // 2×3×2
+    expect(safetyStock(2, 0, 10, { meanDays: 4, stdDays: 1.5 }).value).toBeCloseTo(30, 9); // 2×10×1.5
+    expect(safetyStock(2, 0, 10, { meanDays: 4, stdDays: 0 }).value).toBe(0);
+  });
+});
+
+describe('serviceLevelFor — by ABC/XYZ class at the store', () => {
+  it.each([
+    ['AX', 0.99, 2.3263],
+    ['AY', 0.99, 2.3263],
+    ['AZ', 0.97, 1.8808],
+    ['BX', 0.97, 1.8808],
+    ['BY', 0.97, 1.8808],
+    ['BZ', 0.95, 1.6449],
+    ['CX', 0.95, 1.6449],
+    ['CY', 0.95, 1.6449],
+    ['CZ', 0.9, 1.2816],
+    ['NEW', 0.95, 1.6449],
+    [null, 0.95, 1.6449],
+  ])('%s → %f (z %f)', (cls, level, z) => {
+    expect(serviceLevelFor(cls)).toEqual({ serviceLevel: level, z });
+  });
+});
+
+describe('supplierLeadTime', () => {
+  const delay = (deliveries: number, mean = 1.75, std: number | null = 1.6): SupplierDelay => ({
+    deliveries,
+    meanDelayDays: mean,
+    stdDelayDays: std,
+  });
+
+  it('promise + measured average delay, with the delay spread, from 20 deliveries', () => {
+    expect(supplierLeadTime(10, delay(20), 20)).toEqual({
+      meanDays: 11.75,
+      stdDays: 1.6,
+      basis: 'measured',
+      deliveries: 20,
+    });
+  });
+
+  it('the plain promise with no spread below 20 deliveries or with no history', () => {
+    expect(supplierLeadTime(10, delay(19), 20)).toEqual({
+      meanDays: 10,
+      stdDays: 0,
+      basis: 'promised',
+      deliveries: 19,
+    });
+    expect(supplierLeadTime(10, null, 20)).toMatchObject({ basis: 'promised', deliveries: 0 });
+  });
+
+  it('an early supplier shortens the lead time, never below 0', () => {
+    expect(supplierLeadTime(3, delay(50, -0.5, 0.5), 20).meanDays).toBe(2.5);
+    expect(supplierLeadTime(1, delay(50, -2, 0.5), 20).meanDays).toBe(0);
+  });
+});
+
+describe('plan — purchase order with a measured supplier delay', () => {
+  it('uses L = promise + delay for demand, safety stock and risk (checked by hand)', () => {
+    // promised 7 + delay 1.5 → L = 8.5; demand over 8.5 days = 85; d = 10
+    // SS = 2.3263 × √(8.5 × 3² + 10² × 2²) = 2.3263 × √476.5 = 50.781
+    // reorder point 135.781; order-up-to covers 15.5 days = 155 + 50.781 = 205.781
+    // position 20 → need 185.781 → 186 → packs of 12 = 192
+    const p = planned(
+      base({
+        supplierDelay: { deliveries: 120, meanDelayDays: 1.5, stdDelayDays: 2 },
+        serviceLevelZ: 2.3263,
+      }),
+    );
+    expect(p.leadTimeDays).toBe(8.5);
+    expect(p.leadTimeBasis).toBe('measured');
+    expect(p.leadTimeStdDays).toBe(2);
+    expect(p.demandDuringLead).toBeCloseTo(85, 9);
+    expect(p.avgDailyDemand).toBeCloseTo(10, 9);
+    expect(p.safetyStockParts).toEqual({ demandVariance: 76.5, leadTimeVariance: 400 });
+    expect(p.safetyStock).toBeCloseTo(50.781, 3);
+    expect(p.reorderPoint).toBeCloseTo(135.781, 3);
+    expect(p.orderUpTo).toBeCloseTo(205.781, 3);
+    expect(p.quantity).toBe(192);
+    expect(p.supplier?.leadTimeDays).toBe(7); // the order's expected date stays the promise
+  });
+
+  it('a transfer ignores the supplier delay (2 days, no spread)', () => {
+    const p = planned(
+      base({
+        dcs: [dc(500)],
+        supplierDelay: { deliveries: 120, meanDelayDays: 3, stdDelayDays: 2 },
+      }),
+    );
+    expect(p.leadTimeDays).toBe(2);
+    expect(p.leadTimeBasis).toBe('transfer');
+    expect(p.safetyStock).toBeCloseTo(6.979, 3);
+  });
+
+  it('explains the measured lead time', () => {
+    const p = planned(
+      base({ supplierDelay: { deliveries: 120, meanDelayDays: 1.5, stdDelayDays: 2 } }),
+    );
+    const text = explain(p, {
+      sku: 'RP-00042',
+      locationCode: 'STR-01',
+      model: 'hgb_direct',
+      isFallback: false,
+      sigmaError: 3,
+      cls: null,
+      serviceLevel: 0.95,
+      serviceLevelZ: 1.6449,
+      reviewPeriodDays: 7,
+      packSize: 12,
+      available: 20,
+      inbound: 0,
+    });
+    expect(text).toContain(
+      'Lead time 8.5 days = 7 promised + 1.5 average delay over 120 recorded deliveries',
+    );
+    expect(text).toContain('the delay varies by 2 days');
+    expect(text).toContain('Service level 95 % (not classified yet: default)');
+    expect(text).toContain('√(8.5 × 3² + 10² × 2²)');
+  });
+});
+
+describe('safety stock v2 — simulation under its own assumptions', () => {
+  // Pre-registered check (docs/V2-PLAN.md step 2b): with normal daily errors and a normal lead
+  // time, d·L + SS must cover the lead-time demand in the target share of cycles, ±1 point.
+  // This checks the implementation of the formula, not whether real demand behaves like this.
+  const rng = (seed: number) => () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0; // LCG, deterministic
+    return (seed + 0.5) / 2 ** 32;
+  };
+  const normal = (u: () => number) => () =>
+    Math.sqrt(-2 * Math.log(u())) * Math.cos(2 * Math.PI * u());
+
+  it.each([
+    [0.9, 1.2816],
+    [0.95, 1.6449],
+    [0.99, 2.3263],
+  ])('target %f is met within ±1 point', (target, z) => {
+    const draw = normal(rng(42));
+    const d = 10;
+    const sigmaE = 4;
+    const lead = { meanDays: 8, stdDays: 1.5 };
+    const ss = safetyStock(z, sigmaE, d, lead).value;
+    const cycles = 40_000;
+    let covered = 0;
+    for (let i = 0; i < cycles; i++) {
+      const L = lead.meanDays + lead.stdDays * draw();
+      // demand over a lead time of L days: d·L plus the sum of L daily errors (variance L·σe²)
+      const demand = d * L + Math.sqrt(Math.max(L, 0)) * sigmaE * draw();
+      if (demand <= d * lead.meanDays + ss) covered++;
+    }
+    expect(Math.abs(covered / cycles - target)).toBeLessThanOrEqual(0.01);
   });
 });

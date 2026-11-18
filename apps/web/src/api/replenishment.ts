@@ -39,19 +39,28 @@ export interface RecommendationInputs {
     demandDuringLead: number;
     demandDuringCover: number;
     avgDailyDemand: number;
-    sigmaDaily: number;
+    /** Recommendations before V2 2b: spread of daily demand. */
+    sigmaDaily?: number;
+    /** Since V2 2b: the forecast's typical daily error. */
+    sigmaError?: number;
   };
   parameters: {
+    serviceLevel?: number;
+    classification?: { cls: string | null; runId: string | null };
     serviceLevelZ: number;
     reviewPeriodDays: number;
     leadTimeDays: number;
     leadTimeSource: 'transfer' | 'supplier';
+    leadTimeStdDays?: number;
+    leadTimeBasis?: 'transfer' | 'measured' | 'promised';
+    supplierDeliveries?: number | null;
     packSize: number;
     minOrderQty: number | null;
   };
   stock: { onHand: number; reserved: number; available: number; inbound: number; position: number };
   calculation: {
     safetyStock: number;
+    safetyStockParts?: { demandVariance: number; leadTimeVariance: number };
     reorderPoint: number;
     orderUpTo: number;
     rawQuantity: number;

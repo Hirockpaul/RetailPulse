@@ -141,6 +141,16 @@ export class ClassificationsRepository {
     return rows[0] ?? null;
   }
 
+  /** Class of every product at every store in a run, keyed `productId:locationId`. */
+  async storeClasses(runId: string): Promise<Map<string, string>> {
+    const { rows } = await this.db.query<{ key: string; cls: string }>(
+      `SELECT product_id || ':' || location_id AS key, cls
+         FROM inventory_classifications WHERE run_id = $1 AND location_id IS NOT NULL`,
+      [runId],
+    );
+    return new Map(rows.map((r) => [r.key, r.cls]));
+  }
+
   async cells(
     runId: string,
     locationId: string | null,
