@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 and steps 4a–4b are built** (see §9); next is 4c, reports (CSV + print).
+Phase 3, steps 4a–4b and 4c-1 are built** (see §9); next is 4c-2, the Reports page and print layout.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1308,4 +1308,77 @@ scenarios; no horizontal overflow at 1280 / 768 / 390 / 320 px; keyboard can sel
 - Browser check on the demo data: three scenarios compared by keyboard (Space on the check boxes);
   numbers identical to step 4b-1's measurements; 0 px overflow at 1280 / 768 / 390 / 320.
 - Tests: API unit 218 and integration 258 unchanged; e2e 2 → 3; Python 124. Docker web rebuilt.
+
+
+### Step 4c — split (decided 2026-11-18)
+
+- **4c-1** reports data and API: generated snapshots (`report_runs`), CSV export, the daily/weekly
+  schedule, store scope.
+- **4c-2** the Reports page: list, view, print-friendly layout (browser "Save as PDF", decision D7).
+
+### Step 4c-1 — reports: rules (written 2026-11-18, BEFORE building or measuring)
+
+**A report is a frozen snapshot** of one period and one scope, stored as JSON in `report_runs`
+(immutable) and never recomputed: reading it later shows exactly what was generated, with its
+period and generation time.
+- **Kind:** DAILY (one day) or WEEKLY (seven days ending on the period end). Days are UTC calendar
+  days, as in the forecast's ledger roll-up. Default period end: yesterday.
+- **Scope:** the whole network, or one location.
+
+**Contents** (all from data the system records; synthetic labelled):
+1. *Sales in the period* (ledger SALE and RETURN rows): units sold, units returned, sales value at
+   the product's current unit price (stated: not the price at the time of sale), sales per store,
+   top 10 products by units.
+2. *Stock movements in the period*: units per movement type (receipts, transfers in / out,
+   adjustments as net and as removed, returns).
+3. *Work done in the period*: transfers requested / dispatched / received, purchase orders created /
+   received, recommendations generated / approved / rejected, alerts opened, anomalies found and
+   reviewed.
+4. *Stock at generation time* (stated as such — not at period end, which the system cannot
+   reconstruct cheaply): the Control Tower figures for the same scope (units, value at cost, out of
+   stock, at risk 7 / 14 days, excess) — reused from the Overview read model, not recomputed.
+
+**Access:** store managers generate and read reports for their own stores only (network-wide and
+other locations: 403); admins, inventory managers and analysts generate and read any scope.
+
+**CSV:** `GET /reports/:id/export.csv` — one row per number: `section,metric,location,product,value`,
+RFC 4180 quoting, header row, UTF-8; a file name with kind, scope and period.
+
+**Schedule** (with the other background jobs, `HOUSEKEEPING_ENABLED`; off in tests): every hour the
+API checks for yesterday's network DAILY report and, on Mondays, last week's WEEKLY report, and
+creates any that are missing. A unique index on scheduled reports (kind, period, scope) makes two
+API instances or a restart unable to create duplicates. Manual reports may repeat (each is its own
+snapshot).
+
+**Checks:** hand-built ledger rows → exact totals, including the UTC day boundary (a sale at 23:59:59
+vs 00:00:00); weekly = sum of its seven days; store scope (own store yes, other store / network 403);
+CSV header, quoting and one row per number; the scheduled job run twice → one report each; generating
+writes nothing outside `report_runs`. Measured on the dev data: generation time and snapshot size.
+
+### Step 4c-1 — reports ✅ (2026-11-18)
+
+- Module `reports` (`reports → overview`; `OverviewService.forScope` added so a report reuses the
+  Control Tower figures for its scope), migration `0022_reports.sql` (`report_runs`, immutable;
+  unique scheduled reports; an index on `inventory_ledger.occurred_at` for the time-range queries).
+  Pure `reports.period.ts` (UTC days, weeks, what the schedule owes) and `reports.csv.ts`.
+- **Checks:** exact totals from hand-built ledger rows including the UTC boundary (a sale at
+  00:00:00 and at 23:59:59.999 count; the instants before and after do not); weekly = its seven days;
+  network = sum of stores; frozen (a later sale changes a new report, never an old one; UPDATE refused);
+  periods must be complete (422); store scope (own store yes; other store, network report and list
+  filter 403); CSV header, quoting, rows and file name; the schedule run twice — and twice
+  concurrently — creates one report per due period; generating writes nothing else (counts + balance
+  checksum).
+- One mistake in my own test (a CSV expectation that ignored a sale added by the previous test);
+  the code was right.
+- Measured on the dev data (yesterday = 2026-11-17): network DAILY 2,845 units sold — identical to the
+  Control Tower's "latest day sold" — 15,173.43 at current prices; STR-01 647 units; stock figures equal
+  the Control Tower's. Receipts of 170,151 units on that day are the seed loading the initial stock (a
+  reader of this demo should know). The WEEKLY report equals the DAILY because the ledger has no sales
+  before 2026-11-17 (older history is synthetic forecast data, not ledger rows). 170–450 ms per report,
+  about 2.9 KB, 47–55 CSV rows. Ledger, balances, recommendations, transfers, orders and outbox
+  identical afterwards.
+- **Schedule seen working in the Docker demo:** 3 minutes after the rebuilt API started it created
+  the network DAILY report for 2026-11-17 on its own (`SCHEDULED`, 706 ms); no WEEKLY, because
+  2026-11-18 is a Wednesday.
+- Tests: API unit 218 → 225, integration 258 → 266; Python 124 and e2e 3 unchanged.
 

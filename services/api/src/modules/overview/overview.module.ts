@@ -11,5 +11,6 @@ import { OverviewService } from './overview.service';
   imports: [ForecastsModule, EventsModule, SuppliersModule],
   controllers: [OverviewController],
   providers: [OverviewService, OverviewRepository],
+  exports: [OverviewService],
 })
 export class OverviewModule {}

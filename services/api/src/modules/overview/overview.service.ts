@@ -19,8 +19,12 @@ export class OverviewService {
     private readonly suppliers: SuppliersService,
   ) {}
 
-  async get(user: AuthUser): Promise<Overview> {
-    const scope = accessibleLocationIds(user);
+  get(user: AuthUser): Promise<Overview> {
+    return this.forScope(accessibleLocationIds(user));
+  }
+
+  /** The same overview for an explicit scope (null = everything); used by reports (V2 4c-1). */
+  async forScope(scope: string[] | null): Promise<Overview> {
     const asOf = new Date();
     const [run, eventStats] = await Promise.all([
       this.forecasts.latestSucceededRun(),

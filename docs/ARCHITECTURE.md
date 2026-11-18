@@ -84,6 +84,7 @@ flowchart TB
   ml --> database & forecasts
   replenishment --> forecasts & purchasing & transfers & suppliers & classifications
   scenarios --> replenishment
+  reports --> overview
   events --> database
   alerts --> events & inventory
   overview --> forecasts & events & suppliers
@@ -202,6 +203,7 @@ erDiagram
 | V2 4a-2 ✅ | — (web only) |
 | V2 4b-1 ✅ | `scenarios`, `scenario_results` (both immutable) |
 | V2 4b-2 ✅ | — (web only) |
+| V2 4c-1 ✅ | `report_runs` (immutable; scheduled ones unique per kind, period, scope); ledger index on `occurred_at` |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -333,6 +335,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `POST /scenarios`                     | body `{ name, description?, demandPct (−50…200), supplierLeadTimeDays (0…30), dcAvailabilityPct (0…100) }` | admin / inventory manager; stored, never edited (V2 4b-1) |
 | `POST /scenarios/:id/run`             | —                                              | admin / inventory manager; recomputes the replenishment batch in memory for a baseline and the scenario from one snapshot and stores one summary; writes nothing else (tested: ledger, balances checksum, outbox, transfers, orders, recommendations, alerts) |
 | `GET /scenarios`, `GET /scenarios/:id` | —                                             | each scenario with its latest result / all results; admin, inventory manager, analyst — **store managers 403** (results are network-wide) |
+| `POST /reports/generate`             | body `{ kind: DAILY \| WEEKLY, locationId?, periodEnd? }` (default yesterday, UTC; later than yesterday → 422 `PERIOD_NOT_COMPLETE`) | every role; store managers own stores only (no network reports). Stores one frozen snapshot (V2 4c-1) |
+| `GET /reports`, `GET /reports/:id`    | `kind, locationId, page, pageSize`             | snapshots newest period first; store managers see their stores' reports only |
+| `GET /reports/:id/export.csv`         | —                                              | `section,metric,location,product,value`, one row per number, RFC 4180, file name with kind, scope and period |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
 **Overview rules** (`modules/overview/overview.calc.ts`, unit-tested): `position = available + inbound`
@@ -581,6 +586,12 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   → write*. A scenario run loads the same inputs once, applies its parameters (`replenishment.scenario.ts`:
   forecast and σe × (1 + demand %), supplier lead time + days, DC stock × (1 − %)), computes the
   batch for the baseline and the scenario and stores only a summary in `scenario_results`.
+- **Reports (V2 4c-1, `modules/reports`):** a report is a frozen JSON snapshot of one period (UTC
+  days; DAILY or WEEKLY) and scope (network or one location): sales and returns from the ledger,
+  movements by type, work done (transfers, orders, recommendations, alerts, anomalies) and the
+  Control Tower figures *at generation time* (from `OverviewService.forScope`, not recomputed).
+  An hourly job (`HOUSEKEEPING_ENABLED`) creates yesterday's network DAILY report and, on Mondays,
+  last week's WEEKLY one; a unique index makes duplicates impossible.
 - **"No action required"** is not stored: the product page asks `GET /replenishment/status`, which
   runs the same `plan()` for that product's stores now (DC stock is not shared out between stores
   there, unlike in a generation batch). Measured on the dev data: for all 1,000 pairs it agreed
@@ -941,3 +952,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 66 | The Control Tower extends the Overview read model instead of adding a new module, and reuses every existing definition (V2 4a-1) | One landing page, one scope rule, no second meaning of "at risk", "excess", "open anomaly" or "supplier risk"; the old Overview numbers are unchanged (checked on the dev data) | `/overview` now does ~10 queries in parallel (p95 122.5 ms); a materialized summary would be needed at much larger scale |
 | 67 | Control Tower charts are hand-written SVG / HTML with a palette validated by script, not a chart library (V2 4a-2) | Four simple forms (segmented bars, bars, one line); the app already draws its forecast chart this way; no dependency to keep updated; full control of accessibility (focusable marks, table view, keyboard crosshair) | More code per chart; anything richer (zoom, many series) would justify a library |
 | 68 | Scenarios reuse the replenishment batch in memory instead of a separate simulator, and store summaries only (V2 4b-1) | One calculation means a scenario can never disagree with what generation would do; baseline and scenario from one snapshot isolate the parameters' effect; summaries are small and immutable | Results are not per pair (only totals); a parameter that the batch does not use (e.g. lead time when DCs cover everything) shows no effect — reported, not hidden |
+| 69 | Reports are immutable snapshots with the period and generation time inside, not live queries (V2 4c-1) | A report must say the same thing when re-read or exported later; the period's numbers come from the append-only ledger, the stock figures are labelled "at generation time" | Stock at period end is not reconstructed; sales value uses current prices; a report generated before late corrections does not include them (generate a new one) |
