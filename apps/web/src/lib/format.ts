@@ -39,3 +39,8 @@ export const formatDay = (isoDay: string) =>
     year: 'numeric',
     timeZone: 'UTC',
   });
+
+const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+/** Stat-tile values: 1,284 / 12.9K / 4.2M (full under 10,000). */
+export const formatCompact = (n: number) =>
+  Math.abs(n) < 10_000 ? formatInt(n) : compact.format(n);

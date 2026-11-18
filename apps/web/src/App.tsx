@@ -1,3 +1,4 @@
+import { MainNav, type NavEntry } from './components/MainNav';
 import { Empty, Loading } from './components/Status';
 import { AuthProvider, useAuth, useUser } from './lib/auth';
 import { ROLE_LABEL } from './lib/permissions';
@@ -22,45 +23,60 @@ import { SupplierDetailPage, SuppliersPage } from './pages/SuppliersPage';
 import { TransferDetailPage } from './pages/TransferDetailPage';
 import { TransfersPage } from './pages/TransfersPage';
 
-const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
-  { label: 'Overview', to: href.overview(), active: (r) => r.name === 'overview' },
+const NAV: NavEntry[] = [
+  { label: 'Control Tower', to: href.overview(), active: (r) => r.name === 'overview' },
   {
-    label: 'Products',
-    to: href.products(),
-    active: (r) => r.name === 'products' || r.name === 'product',
-  },
-  { label: 'Stock', to: href.stock(), active: (r) => r.name === 'stock' },
-  {
-    label: 'Transfers',
-    to: href.transfers(),
-    active: (r) => r.name === 'transfers' || r.name === 'transfer',
-  },
-  {
-    label: 'Replenishment',
-    to: href.replenishment(),
-    active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
-  },
-  { label: 'ABC/XYZ', to: href.classification(), active: (r) => r.name === 'classification' },
-  {
-    label: 'Models',
-    to: href.models(),
-    active: (r) => r.name === 'models' || r.name === 'monitoring',
-  },
-  {
-    label: 'Suppliers',
-    to: href.suppliers(),
-    active: (r) => r.name === 'suppliers' || r.name === 'supplier',
+    label: 'Inventory',
+    items: [
+      {
+        label: 'Products',
+        to: href.products(),
+        active: (r) => r.name === 'products' || r.name === 'product',
+      },
+      { label: 'Stock', to: href.stock(), active: (r) => r.name === 'stock' },
+      {
+        label: 'Transfers',
+        to: href.transfers(),
+        active: (r) => r.name === 'transfers' || r.name === 'transfer',
+      },
+      {
+        label: 'Purchase orders',
+        to: href.purchaseOrders(),
+        active: (r) => r.name === 'purchaseOrders' || r.name === 'purchaseOrder',
+      },
+      { label: 'Alerts', to: href.alerts(), active: (r) => r.name === 'alerts' },
+    ],
   },
   {
-    label: 'Purchase orders',
-    to: href.purchaseOrders(),
-    active: (r) => r.name === 'purchaseOrders' || r.name === 'purchaseOrder',
+    label: 'Planning',
+    items: [
+      {
+        label: 'Replenishment',
+        to: href.replenishment(),
+        active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
+      },
+      { label: 'ABC/XYZ', to: href.classification(), active: (r) => r.name === 'classification' },
+      {
+        label: 'Suppliers',
+        to: href.suppliers(),
+        active: (r) => r.name === 'suppliers' || r.name === 'supplier',
+      },
+    ],
   },
-  { label: 'Alerts', to: href.alerts(), active: (r) => r.name === 'alerts' },
   {
-    label: 'Unusual activity',
-    to: href.anomalies(),
-    active: (r) => r.name === 'anomalies' || r.name === 'anomaly',
+    label: 'Intelligence',
+    items: [
+      {
+        label: 'Unusual activity',
+        to: href.anomalies(),
+        active: (r) => r.name === 'anomalies' || r.name === 'anomaly',
+      },
+      {
+        label: 'Models',
+        to: href.models(),
+        active: (r) => r.name === 'models' || r.name === 'monitoring',
+      },
+    ],
   },
   { label: 'Health', to: href.health(), active: (r) => r.name === 'health' },
 ];
@@ -142,25 +158,7 @@ function Shell() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-6">
             <h1 className="text-lg font-semibold">RetailPulse</h1>
-            {signedIn && (
-              <nav aria-label="Main" className="flex flex-wrap gap-1">
-                {NAV.map((item) => {
-                  const active = item.active(route);
-                  return (
-                    <a
-                      key={item.label}
-                      href={item.to}
-                      aria-current={active ? 'page' : undefined}
-                      className={`rounded px-3 py-1.5 text-sm focus:outline-2 focus:outline-sky-500 ${
-                        active ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
-                      }`}
-                    >
-                      {item.label}
-                    </a>
-                  );
-                })}
-              </nav>
-            )}
+            {signedIn && <MainNav entries={NAV} route={route} />}
           </div>
           <div className="flex items-center gap-4">
             <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">

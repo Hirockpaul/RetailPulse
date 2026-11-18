@@ -46,6 +46,81 @@ export interface Overview {
     lastEventProcessedAt: string | null;
     eventsWaiting: number;
   };
+  /** Control Tower additions (V2 4a). */
+  controlTower: ControlTower;
+}
+
+export interface StoreHealth {
+  locationId: string;
+  locationCode: string;
+  outOfStock: number;
+  noForecast: number;
+  atRisk: number;
+  excess: number;
+  healthy: number;
+  excessUnits: number;
+  excessValue: number;
+}
+
+export interface SupplierRisk {
+  id: string;
+  code: string;
+  name: string;
+  score: number | null;
+  onTimeRate: number | null;
+  openPurchaseOrders: number;
+}
+
+export interface DayUnits {
+  day: string;
+  units: number;
+}
+
+export interface ControlTower {
+  rules: { riskWindowLongDays: number; transferDelayDays: number; supplierRiskScore: number };
+  kpis: {
+    onHand: number;
+    available: number;
+    valueAtCost: number;
+    openTransfers: number;
+    openAnomalies: number;
+    excessValueAtCost: number;
+  };
+  risks: {
+    atRisk7: number;
+    atRisk14: number;
+    excess: { positions: number; units: number; valueAtCost: number };
+    delayedTransfers: number;
+    overduePurchaseOrders: number;
+    openAnomalies: number;
+    openHighAnomalies: number;
+    suppliersAtRisk: SupplierRisk[];
+  };
+  charts: {
+    storeHealth: StoreHealth[];
+    sales: { history: DayUnits[]; forecast: DayUnits[] };
+    suppliers: SupplierRisk[];
+  };
+}
+
+export interface LocationHealth {
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  locationType: 'STORE' | 'DISTRIBUTION_CENTER';
+  onHand: number;
+  available: number;
+  valueAtCost: number;
+  pendingRecommendations: number;
+  openAlerts: number;
+  openAnomalies: number;
+  transfersIn: number;
+  transfersOut: number;
+  outOfStock: number | null;
+  atRisk: number | null;
+  excess: number | null;
+  excessValueAtCost: number | null;
 }
 
 export const fetchOverview = () => getJson<Overview>('/overview');
+export const fetchLocationHealth = () => getJson<LocationHealth[]>('/overview/locations');

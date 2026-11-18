@@ -29,13 +29,14 @@ test('inventory manager: overview → receive → sell → transfer DC to store'
   await page.getByRole('button', { name: 'Sign in' }).click();
 
   // Overview is the landing page; without a forecast it says so instead of guessing.
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
   await expect(page.getByText('Out of stock now')).toBeVisible();
   await expect(page.getByText('No forecast yet')).toBeVisible();
   await expect(page.getByText('Synthetic demo data').first()).toBeVisible();
 
   // Find a product.
   const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('button', { name: 'Inventory' }).click();
   await nav.getByRole('link', { name: 'Products' }).click();
   await page.getByPlaceholder('Search SKU or name').fill(SKU);
   await page.getByRole('button', { name: 'Search' }).click();
@@ -52,6 +53,7 @@ test('inventory manager: overview → receive → sell → transfer DC to store'
   await expect(ledgerRows.nth(1)).toContainText('+10');
 
   // Request a transfer DC-NORTH → STR-01 and take it through every step.
+  await nav.getByRole('button', { name: 'Inventory' }).click();
   await nav.getByRole('link', { name: 'Transfers' }).click();
   const form = page.locator('form', {
     has: page.getByRole('button', { name: 'Request transfer' }),
@@ -82,10 +84,11 @@ test('a large write-off becomes a finding that a manager can investigate', async
   await page.getByLabel('Email').fill('inventory@retailpulse.test');
   await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
 
   // Receive 30 of a product at STR-02, then write 25 of them off in one adjustment.
   const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('button', { name: 'Inventory' }).click();
   await nav.getByRole('link', { name: 'Products' }).click();
   await page.getByPlaceholder('Search SKU or name').fill('RP-00002');
   await page.getByRole('button', { name: 'Search' }).click();
@@ -100,6 +103,7 @@ test('a large write-off becomes a finding that a manager can investigate', async
   await expect(form.getByRole('status')).toBeVisible();
 
   // The event worker turns it into a finding within seconds.
+  await nav.getByRole('button', { name: 'Intelligence' }).click();
   await nav.getByRole('link', { name: 'Unusual activity' }).click();
   const finding = page.getByRole('link', { name: 'Large write-off' });
   await expect(async () => {

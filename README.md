@@ -94,7 +94,7 @@ That builds three images, migrates and seeds the database with **synthetic** dat
 app. Open **http://localhost:8080** and sign in as `inventory@retailpulse.test` with the
 `DEMO_PASSWORD` from your `.env`. The first build takes a few minutes (2.5 min measured on a laptop).
 
-Then, in the app: **Replenishment → Refresh forecasts** (about 30 s), and start at **Overview**.
+Then, in the app: **Replenishment → Refresh forecasts** (about 30 s), and start at the **Control Tower**.
 To also simulate shop traffic and fill in alerts and recommendations from the command line
 (needs Node; uses the API on port 3000 like any client):
 
@@ -318,10 +318,13 @@ npm run test:e2e
 
 ## A five-minute walkthrough
 
-1. **Overview** (landing page): how many product × store positions are out of stock now, which
+1. **Control Tower** (landing page): how many product × store positions are out of stock now, which
    will run out within 7 days (available + inbound below the forecast), surplus stock (> 60 days of
-   cover), pending recommendations, and *how fresh each number is* (last movement, forecast run
-   and its history end, last processed event).
+   cover), pending recommendations; key figures (units, value at cost, open transfers, anomalies);
+   a **Risks** list where every count links to the page that fixes it; four charts (stock health
+   per store, units sold and forecast, excess value per store, supplier on-time rate — each with
+   “Show as table”); every location; and *how fresh each number is*. The menu groups pages into
+   Inventory, Planning and Intelligence.
 2. Click a product in “Soonest to run out” → **product page**: stock per location, the forecast
    chart with its 80 % range, and the **ledger** explaining every unit.
 3. **Replenishment** → open a recommendation: the “why” panel shows every input (forecast and its

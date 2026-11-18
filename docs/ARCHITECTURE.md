@@ -198,6 +198,7 @@ erDiagram
 | V2 3c-1 ✅ | `forecast.monitoring_runs`, `forecast.monitoring_results` (immutable; newest 30 kept) |
 | V2 3c-2 ✅ | — (API and page only; run health is computed on request) |
 | V2 4a-1 ✅ | — (read model only) |
+| V2 4a-2 ✅ | — (web only) |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -806,7 +807,8 @@ RetailPulse/
 │           ├── main.tsx ✅          entry
 │           ├── App.tsx ✅           layout shell (header, nav, page outlet)
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
-│           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
+│           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts,
+│           │                       MainNav (grouped menus), ControlTower; charts/ = plain SVG/HTML charts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
 │           └── pages/ ✅            Overview (landing), ABC/XYZ, Suppliers (+ detail), Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
@@ -927,3 +929,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 64 | Monitoring compares the ACTIVE model's training tail with days after training; PSI sets status, KS is context; store sales are checked separately from pooled inputs (V2 3c-1) | The question is "has the world moved since this model learned?"; with ~28,000 points KS p-values flag trivial differences; a measured one-store shift is invisible in pooled inputs but obvious per store | Needs 7 new days before saying anything; 28/56-day inputs react late; thresholds are conventions, not tuned on real data |
 | 65 | Run health (stale / failed forecasts, missed monitoring) is computed on request, not stored or alerted on a timer (V2 3c-2) | It is about runs that did *not* happen, so no run can write it; computing from the latest rows is always current and needs no scheduler | Nobody is notified until someone opens the page; a notification channel is a later decision |
 | 66 | The Control Tower extends the Overview read model instead of adding a new module, and reuses every existing definition (V2 4a-1) | One landing page, one scope rule, no second meaning of "at risk", "excess", "open anomaly" or "supplier risk"; the old Overview numbers are unchanged (checked on the dev data) | `/overview` now does ~10 queries in parallel (p95 122.5 ms); a materialized summary would be needed at much larger scale |
+| 67 | Control Tower charts are hand-written SVG / HTML with a palette validated by script, not a chart library (V2 4a-2) | Four simple forms (segmented bars, bars, one line); the app already draws its forecast chart this way; no dependency to keep updated; full control of accessibility (focusable marks, table view, keyboard crosshair) | More code per chart; anything richer (zoom, many series) would justify a library |

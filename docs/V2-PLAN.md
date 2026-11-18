@@ -1,8 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 (3a–3c) and step 4a-1 are built** (see §9); next is 4a-2, the Control Tower page and
-regrouped navigation.
+Phase 3 and step 4a (Control Tower) are built** (see §9); next is 4b, what-if scenarios.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1112,4 +1111,68 @@ GET writes nothing; unit tests for any new pure function.
   vs yesterday), supplier risk with open orders, anomalies and HIGH, locations table incl. DCs, store
   scope, writes nothing). Two mistakes in my own tests fixed (a helper with the wrong daily rate,
   a loose type); no code change was needed. Python 124 and e2e unchanged; Docker API rebuilt.
+
+
+### Step 4a-2 — Control Tower page and navigation: rules (written 2026-11-18, BEFORE building)
+
+**Page** — the Overview becomes the **Control Tower** (same route `#/`, same store scope); nothing
+already on it is removed (stock-out / at-risk / excess tiles and top lists, freshness):
+1. KPI row: units on hand, value at cost, open transfers, open anomalies, excess value at cost,
+   pending recommendations — each a stat tile with a plain label; one hero-free row.
+2. **Risk panel**: at risk 7 d / 14 d, excess, delayed transfers, overdue purchase orders, open
+   anomalies (HIGH), suppliers at risk — each a count, a one-line meaning and a link to the page
+   that lists it (Stock, Transfers, Purchase orders, Unusual activity, Suppliers, Replenishment).
+   A zero is shown as zero, never hidden.
+3. **Location table** from `GET /overview/locations` (stores first, DCs show "—" where no forecast).
+4. **Four charts**, plain SVG like the existing forecast chart, following the dataviz skill:
+   - *Stock health by store* — one tall segmented bar per store (out of stock / at risk / healthy /
+     excess / no forecast), state colours from the status palette (critical / warning / good),
+     excess in the sequential blue, no forecast in neutral grey; legend always shown; counts inside
+     a segment only when they fit.
+   - *Units sold and forecast* — one line chart, two series (last 28 days sold, next 14 days
+     forecast; categorical slots 1 and 2), one y-axis, legend, crosshair tooltip with both values.
+   - *Excess value at cost by store* — horizontal bars, single series, value at each bar's tip.
+   - *Supplier on-time rate* — horizontal bars, value at the tip; suppliers below the score
+     threshold say so in text next to the bar (not by colour alone).
+   Every chart: hover and keyboard focus show the exact value; each has a "Show as table" view, so
+   no value is tooltip-only; ≤ 24 px bars, 2 px lines, hairline grid, text never in series colours.
+   Light theme only, as the rest of the app (no dark mode exists yet — stated, not hidden).
+   Palette validated with the skill's `validate_palette.js` before use.
+
+**Navigation** — the 12 flat links become 5 entries: **Control Tower**, **Inventory** (Products,
+Stock, Transfers, Purchase orders, Alerts), **Planning** (Replenishment, ABC/XYZ, Suppliers),
+**Intelligence** (Unusual activity, Models), **Health**. Groups are disclosure menus (button with
+`aria-expanded`, Escape and outside-click close, keyboard reachable); the group of the current page
+is highlighted; one row on desktop; fits a phone without horizontal scroll.
+
+**Checks:** typecheck/lint/build; the e2e test updated for the new name and still green (it is the
+navigation test too); screenshots at 1280 px and 390 px with 0 px horizontal overflow; every chart
+checked by eye for clipped labels; keyboard: Tab reaches every menu item and chart mark.
+
+### Step 4a-2 — Control Tower page and navigation ✅ (2026-11-18)
+
+- The landing page is now the **Control Tower** (same route and scope; everything on the old
+  Overview kept): KPI row, a **Risks** list (each count with its meaning and a link; zeros shown),
+  four charts, the locations table. Components: `ControlTower.tsx`, `charts/` (`ChartCard` with
+  legend and "Show as table", `SegmentedBars`, `HBarChart`, `SalesLineChart`, `useTooltip`,
+  `theme.ts`). The KPI row shows *units available* instead of *pending recommendations*, which the
+  first row of tiles already shows.
+- **Palette validated by script** (`validate_palette.js`, light surface): line series blue/orange
+  pass every check; stock-state segments pass the hard gates with two allowed warnings (yellow vs
+  green CVD 6.3, yellow contrast 2.1:1), covered by 2 px gaps, in-segment counts, legend and table
+  view. The status palette's own warning yellow failed the lightness band, so the categorical
+  yellow step is used for "at risk" (recorded in `theme.ts`).
+- **Navigation:** 12 flat links (not 13 as first written) → Control Tower, Inventory ▾, Planning ▾,
+  Intelligence ▾, Health. Menus close on Escape (focus returns to the button), outside click and
+  page change; the open direction is chosen from the button's position.
+- **Found by looking, fixed before reporting:** supplier names were clipped ("Greenfield Fr…"); the
+  line chart's text rendered at ~7 px (720-unit view box drawn at ~470 px); the Planning menu ran
+  off a phone screen (my first overflow check only opened the Intelligence menu, which opened
+  leftwards); two lint errors from the React compiler rules (state set inside an effect; a ref read
+  during render) fixed by deriving menu state and fixed-positioning the tooltip; a duplicate
+  "No forecast yet" message (the empty chart now says "Appears after the first forecast run").
+- **Checks:** every menu inside the window at 1280 / 768 / 390 / 320 px; page overflow 0 px at 1280
+  and 390; keyboard: Escape → focus on the menu button, Enter / Tab / Enter navigates, a focused chart
+  mark shows its value; e2e updated to open menus and still green (2). API unit 215, integration
+  251, Python 124 unchanged. Light theme only (the app has no dark mode). Docker web rebuilt.
 

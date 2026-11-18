@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { fetchOverview, type Overview, type PositionItem } from '../api/overview';
 import { Badge } from '../components/Badge';
+import { ControlTowerCharts, KpiRow, LocationTable, RiskPanel } from '../components/ControlTower';
 import { AsOf, Empty, ErrorMessage, Loading } from '../components/Status';
 import { table } from '../components/table';
 import { useUser } from '../lib/auth';
@@ -9,7 +10,10 @@ import { isStoreScoped } from '../lib/permissions';
 import { href } from '../lib/router';
 import { useAsync } from '../lib/useAsync';
 
-/** Landing page: what needs attention, and how fresh each number is. */
+/**
+ * Landing page — the Control Tower (V2 4a): what needs attention, the key figures, risks with
+ * links, charts, every location, and how fresh each number is.
+ */
 export function OverviewPage() {
   const user = useUser();
   const overview = useAsync(fetchOverview);
@@ -19,7 +23,7 @@ export function OverviewPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 id="overview-heading" className="text-xl font-semibold">
-            Overview
+            Control Tower
           </h2>
           <p className="text-sm text-slate-500">
             {isStoreScoped(user) ? 'Your stores' : 'All stores'}
@@ -96,6 +100,11 @@ function OverviewBody({ o }: { o: Overview }) {
           {formatInt(o.stock.withoutForecast)} positions have no forecast and are not judged.
         </p>
       )}
+
+      <KpiRow c={o.controlTower} />
+      <RiskPanel o={o} />
+      <ControlTowerCharts c={o.controlTower} />
+      <LocationTable />
 
       {hasForecast && (
         <div className="grid gap-6 lg:grid-cols-2">
