@@ -67,6 +67,24 @@ def _run_safely(run_id: str, horizon: int) -> None:
         pass
 
 
+@app.post("/monitoring/run")
+def start_monitoring() -> dict[str, Any]:
+    """Run model monitoring now (V2 3c-1). Synchronous: a few seconds. It never retrains,
+    activates or changes a forecast; a failure is stored as a FAILED monitoring run."""
+    from app.monitoring.run import run_monitoring
+
+    monitoring_id = run_monitoring("MANUAL")
+    with connect(read_only=True) as conn:
+        row = conn.execute(
+            """SELECT status, data_drift_status, prediction_drift_status, performance_status,
+                      current_days, error
+                 FROM forecast.monitoring_runs WHERE id = %s""",
+            (monitoring_id,),
+        ).fetchone()
+    keys = ["status", "dataDrift", "predictionDrift", "performance", "currentDays", "error"]
+    return {"monitoringRunId": monitoring_id, **dict(zip(keys, row, strict=True))}
+
+
 @app.get("/forecast/runs/latest")
 def latest_run() -> dict[str, Any]:
     with connect(read_only=True) as conn:

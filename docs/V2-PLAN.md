@@ -1,8 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 steps 3a–3b are built** (see §9); the next slice is step 3c, drift and performance
-monitoring.
+Phase 3 steps 3a, 3b and 3c-1 are built** (see §9); next is step 3c-2 (monitoring API, run-health
+checks, Model Monitoring page).
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -912,3 +912,82 @@ optional MLflow are separate later slices; this step makes the model policy real
   have schema-1 digests; MLflow correctly recorded `DISABLED` because no tracking URI was supplied.
 - Remaining for 3c: feature/prediction drift, realized WAPE/bias, stale/failed-run alerts and the
   Model Monitoring page. There is still no automatic retraining.
+
+### Step 3c — split (decided 2026-11-18)
+
+- **3c-1** monitoring in the forecasting service: data drift, prediction drift and accuracy on newly
+  observed days, stored per monitoring run, triggered after every forecast run and on demand.
+- **3c-2** API (`GET /ml/monitoring`, `POST /ml/monitoring/run`), stale-forecast and failed-run
+  checks (computed live, since they are about runs that did *not* happen), Model Monitoring page.
+
+### Step 3c-1 — monitoring rules (written 2026-11-18, BEFORE building or measuring)
+
+Monitoring describes; it **never** retrains, activates, rolls back or changes a forecast (tested:
+registry unchanged, writes only its own `forecast.*` tables).
+
+**Windows.** Reference = the last **28** days of data up to the ACTIVE model's `training_end` (what
+it learned from most recently). Current = the complete days **after** `training_end`, at most the
+latest 28. Fewer than **7** current days → every drift check is `INSUFFICIENT_DATA` (never "stable").
+
+**Statistics** (own code with SciPy, decision D2). For each check, two samples (reference, current):
+- **PSI** with 10 bins at the reference sample's deciles (duplicate edges merged — sales are
+  counts with many zeros), proportions floored at 1e-4: PSI = Σ (c − r) · ln(c / r).
+- **KS** two-sample statistic D and p-value (`scipy.stats.ks_2samp`), reported for context only:
+  with ~28,000 points almost any difference is "significant", so p does not set the status.
+- Status from PSI (common convention): **STABLE** < 0.10, **WATCH** 0.10–0.25, **DRIFT** ≥ 0.25.
+
+**Checks.**
+1. *Feature drift* — the model's demand inputs at every origin in each window (horizon 1, all
+   series with enough history): `mean_7d`, `mean_28d`, `mean_56d`, `std_28d`, `last_same_weekday`,
+   `ratio_7d_28d`. Calendar inputs (weekday, season, horizon) change by design and are not checked.
+2. *Sales level per store* — daily units per product at each store, reference vs current.
+3. *Prediction drift* — the ACTIVE model's day-1 forecast at every origin of each window, made with
+   its loaded, verified artifact (ML) or its baseline rule.
+4. *Accuracy on newly observed days* — every kept run's forecast points (days 1–7, model-served
+   series; fallback series excluded) whose day now has data (no row = 0 units, as in training):
+   realized WAPE and bias, compared with the ACTIVE model's backtest **test** WAPE.
+   **INSUFFICIENT_DATA** below 7 distinct days or 1,000 points; **DEGRADED** if realized WAPE
+   exceeds backtest test WAPE by more than **5 points** or |bias| > **10 %**; else **OK**.
+   Five points is far above the seed-to-seed noise (~0.15, step 1d) but a 7-day window is noisier
+   than a 28-day test window; the threshold is a starting point, stated as such.
+
+**Storage** (migration 0020): `forecast.monitoring_runs` (trigger, forecast run, model version,
+windows, overall status per check family) and `forecast.monitoring_results` (one row per check
+subject with PSI, KS D/p, sample sizes, WAPE, bias, points, status). Immutable; the newest 30
+monitoring runs are kept.
+
+**Checks of the code:** PSI hand-checked on small samples and 0 for identical samples; synthetic
+data with a known +50 % demand shift after training must give DRIFT on demand features and that
+store's sales, STABLE on an unshifted store and on an unshifted control; an unshifted series must
+not degrade; accuracy hand-checked on a tiny table; under 7 days → INSUFFICIENT_DATA; registry and
+non-forecast tables unchanged. Measured on the dev data and reported as found (expected:
+INSUFFICIENT_DATA, because the ACTIVE model was trained through the latest data day).
+
+### Step 3c-1 — model monitoring ✅ (2026-11-18)
+
+- Migration `0020_model_monitoring.sql`: `forecast.monitoring_runs` and `forecast.monitoring_results`
+  (immutable by trigger; no FK to forecast runs because those are pruned). Package
+  `app/monitoring/`: `drift.py` (PSI, KS, status), `monitor.py` (windows and the four checks, pure),
+  `store.py` (SQL), `run.py` (one run; failures stored as FAILED). Runs after every forecast run and
+  via `POST /monitoring/run` on the forecasting service. Nothing retrains or activates (tested).
+- **Pre-registered expectation only partly met.** A +50 % demand shift after training:
+  per-store sales PSI ≈ 1.8 (**DRIFT**) for shifted stores, 0.004–0.011 (**STABLE**) for unshifted
+  ones; the unshifted control is STABLE everywhere. But the pooled demand inputs did **not** all
+  reach DRIFT: network-wide shift → `mean_7d` 0.26, `std_28d` 0.30, `last_same_weekday` 0.34,
+  `ratio_7d_28d` 0.38 (DRIFT), `mean_28d` 0.15 (WATCH), `mean_56d` 0.05 (STABLE) — longer windows
+  still average pre-shift days; a one-store shift barely moves pooled inputs (≤ 0.11). The overall
+  data-drift status still flags every shifted case because the per-store check catches it.
+  Thresholds were not changed after seeing this; the tests assert the measured behaviour.
+- Prediction drift with a 28-day moving average as ACTIVE model: network-wide +50 % → PSI 0.15
+  (WATCH) — the forecast itself lags the shift.
+- Dev data (as expected): ACTIVE `hgb_direct` v2 was trained through 2026-11-17, the latest data
+  day, so 0 new days → all three statuses `INSUFFICIENT_DATA`. For context only: kept forecasts
+  for 2026-11-17 (1 day, 2,850 points, simulator sales) show realized WAPE 116 % vs backtest 54 %,
+  bias −12.7 % — one unusual day, below the 7-day minimum. Cost: 7.2 s and 355 MB per run.
+- The Docker `forecasting` container still runs pre-3b code (no artifact volume); it was not
+  recreated, because its empty artifact volume would make forecasts fail until artifacts are
+  bridged there — to be handled with 3c-2.
+- Tests: Python 104 → 124 (PSI by hand, thresholds, windows, known shifts, accuracy by hand,
+  stored after a run, registry and non-forecast tables unchanged, immutable rows, failure isolated,
+  pruning); API unit 194 and integration 236 unchanged and green (fresh migrations include 0020).
+

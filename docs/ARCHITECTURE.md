@@ -195,6 +195,7 @@ erDiagram
 | V2 2d-2 ✅ | `REDISTRIBUTE_EXCESS`; `destination_location_id` on `replenishment_recommendations` |
 | V2 3a ✅ | lifecycle/artifact metadata on `forecast.model_versions`; immutable `forecast.model_activations` |
 | V2 3b ✅ | immutable artifact schema/digest/time on `forecast.model_versions`; MLflow mirror state on `forecast.runs` |
+| V2 3c-1 ✅ | `forecast.monitoring_runs`, `forecast.monitoring_results` (immutable; newest 30 kept) |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -582,6 +583,18 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   successful run is the recorded `BOOTSTRAP` exception. Later activation/rollback requires a
   manager, reason and immutable history row, and affects only future runs. Registry changes write
   no inventory/order/event rows. Artifact path/SHA fields exist but remain null until step 3b.
+- **Model monitoring (V2 3c-1, `app/monitoring/`):** after every forecast run and on demand
+  (`POST /monitoring/run` on the service). Reference = the 28 days up to the ACTIVE model's
+  training end; current = complete days after it (latest 28; under 7 → `INSUFFICIENT_DATA`).
+  PSI at the reference deciles sets STABLE / WATCH (≥ 0.10) / DRIFT (≥ 0.25); KS D and p are shown
+  for context only. Checks: six demand inputs (pooled), daily sales per store, the ACTIVE model's
+  day-1 forecasts (its verified artifact or baseline rule), and realized WAPE/bias of kept
+  forecasts on days that now have data (DEGRADED above backtest test WAPE + 5 points or |bias| >
+  10 %; needs 7 days and 1,000 points). It never retrains, activates or changes a forecast; a
+  monitoring failure is stored as FAILED and the forecast stays SUCCEEDED. Measured: a +50 % shift
+  is caught by the per-store check (PSI ≈ 1.8 vs ≤ 0.011 unshifted); pooled inputs dilute a
+  one-store shift, and 28/56-day means lag a network-wide one (0.15 / 0.05) while short-window
+  inputs reach DRIFT (0.26–0.38). Cost on the dev data: 7.2 s, 355 MB per run.
 
 ### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
 
@@ -900,3 +913,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 61 | Store excess covers whole needs before DC stock; unused movable excess becomes `REDISTRIBUTE_EXCESS` to the least-stocked DC (V2 2d-2) | Reuses stock already in the network without splitting one need across documents; the keep level, pack rounding and exclusions are explainable and tested | Greedy per generation batch, not a transport optimizer; store transfers assume the same 2-day lead time as DC transfers; eligible movable stock (402 units measured) is intentionally below Overview surplus (714) |
 | 62 | One ACTIVE model; validation gain ≥ 0.005 makes a candidate ELIGIBLE; managers activate/roll back with immutable history (V2 3a) | Prevents a fresh run from silently changing production policy while preserving honest comparison on the same windows | Activation affects the next run rather than rewriting stored forecasts |
 | 63 | One immutable, content-addressed local artifact per activatable registry version; optional MLflow is a post-commit mirror (V2 3b) | Rollback restores exact verified bytes; path containment and SHA checks happen before joblib load; forecasts stay available when MLflow is stopped | Existing 3a rows are materialized once by their first 3b run; local artifacts need filesystem backup; MLflow has no authentication and is localhost-only |
+| 64 | Monitoring compares the ACTIVE model's training tail with days after training; PSI sets status, KS is context; store sales are checked separately from pooled inputs (V2 3c-1) | The question is "has the world moved since this model learned?"; with ~28,000 points KS p-values flag trivial differences; a measured one-store shift is invisible in pooled inputs but obvious per store | Needs 7 new days before saying anything; 28/56-day inputs react late; thresholds are conventions, not tuned on real data |

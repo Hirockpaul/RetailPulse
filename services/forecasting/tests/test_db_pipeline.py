@@ -414,3 +414,92 @@ def test_unavailable_mlflow_never_fails_the_forecast(
         ).fetchone()
     assert status == "SUCCEEDED" and mirror_status == "FAILED"
     assert error and "Connection" in error
+
+
+# ---------------------------------------------------------------- V2 3c-1: model monitoring
+
+
+def _registry(url: str) -> list[tuple]:
+    with psycopg.connect(url) as conn:
+        return conn.execute(
+            """SELECT id, status, artifact_sha256, training_end FROM forecast.model_versions
+                ORDER BY id"""
+        ).fetchall()
+
+
+def test_every_forecast_run_is_followed_by_monitoring_that_changes_nothing(catalog: dict) -> None:
+    from app.monitoring.run import run_monitoring
+
+    url = catalog["url"]
+    load_history(url)
+    run_id = new_run(horizon=7)
+    pipeline.run_forecast(run_id, 7)
+    with psycopg.connect(url) as conn:
+        row = conn.execute(
+            """SELECT trigger, forecast_run_id::text, status, model_name, training_end,
+                      latest_data_day, current_days, data_drift_status, prediction_drift_status,
+                      performance_status
+                 FROM forecast.monitoring_runs ORDER BY created_at DESC LIMIT 1"""
+        ).fetchone()
+    assert row[:3] == ("FORECAST_RUN", run_id, "SUCCEEDED")
+    # The ACTIVE model was just trained through the latest day: nothing new to judge yet.
+    assert row[4] == row[5] and row[6] == 0
+    assert row[7:] == ("INSUFFICIENT_DATA",) * 3
+
+    before, registry = counts(url), _registry(url)
+    monitoring_id = run_monitoring("MANUAL")
+    assert counts(url) == before and _registry(url) == registry
+    with psycopg.connect(url) as conn:
+        kinds = conn.execute(
+            """SELECT check_kind, count(*) FROM forecast.monitoring_results
+                WHERE run_id = %s GROUP BY 1 ORDER BY 1""",
+            (monitoring_id,),
+        ).fetchall()
+        stores = conn.execute("SELECT count(*) FROM locations WHERE type = 'STORE'").fetchone()[0]
+        assert dict(kinds) == {
+            "FEATURE": 6,
+            "PERFORMANCE": 1,
+            "PREDICTION": 1,
+            "STORE_SALES": stores,
+        }
+        with pytest.raises(psycopg.errors.RestrictViolation):
+            conn.execute(
+                "UPDATE forecast.monitoring_runs SET model_name = 'x' WHERE id = %s",
+                (monitoring_id,),
+            )
+
+
+def test_a_monitoring_failure_is_recorded_and_never_fails_the_forecast(
+    catalog: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.monitoring import run as monitoring_run
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("monitoring exploded")
+
+    monkeypatch.setattr(monitoring_run, "compute", boom)
+    url = catalog["url"]
+    load_history(url)
+    run_id = new_run(horizon=7)
+    pipeline.run_forecast(run_id, 7)
+    with psycopg.connect(url) as conn:
+        assert conn.execute(
+            "SELECT status FROM forecast.runs WHERE id = %s", (run_id,)
+        ).fetchone() == ("SUCCEEDED",)
+        assert conn.execute(
+            """SELECT status, error FROM forecast.monitoring_runs
+                WHERE forecast_run_id = %s""",
+            (run_id,),
+        ).fetchone() == ("FAILED", "RuntimeError: monitoring exploded")
+
+
+def test_only_the_newest_30_monitoring_runs_are_kept(catalog: dict) -> None:
+    from app.monitoring import store
+
+    url = catalog["url"]
+    with connect() as conn:
+        for _ in range(33):
+            store.save_failed(conn, "MANUAL", None, "test")
+        conn.commit()
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT count(*) FROM forecast.monitoring_runs").fetchone() == (30,)

@@ -311,6 +311,11 @@ def run_forecast(run_id: str, horizon: int, seed: int = 42) -> None:
             repository.save_results(conn, run_id, hist, outcome)
             repository.save_anomalies(conn, run_id, hist, findings)
             conn.commit()
+        # Monitoring describes the ACTIVE model after the run is committed; its own failure is
+        # stored as a FAILED monitoring run and never fails this forecast (V2 3c-1).
+        from app.monitoring.run import run_monitoring
+
+        run_monitoring("FORECAST_RUN", run_id)
         uri = mlflow_tracking_uri()
         if uri:
             try:
