@@ -1,8 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 steps 3a, 3b and 3c-1 are built** (see §9); next is step 3c-2 (monitoring API, run-health
-checks, Model Monitoring page).
+Phase 3 (3a–3c) are built** (see §9); next is Phase 4 (analytics), starting with 4a Control
+Tower.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -990,4 +990,62 @@ INSUFFICIENT_DATA, because the ACTIVE model was trained through the latest data 
 - Tests: Python 104 → 124 (PSI by hand, thresholds, windows, known shifts, accuracy by hand,
   stored after a run, registry and non-forecast tables unchanged, immutable rows, failure isolated,
   pruning); API unit 194 and integration 236 unchanged and green (fresh migrations include 0020).
+
+
+### Step 3c-2 — monitoring API, run health and page: rules (written 2026-11-18, BEFORE building)
+
+**API** (module `ml`, which now also calls the forecasting service through `forecasts`'
+`ForecastClient`):
+- `GET /ml/monitoring` (read roles): the latest monitoring run with every result, the 10 most
+  recent runs (summary), the run-health checks below and the thresholds in words. Writes nothing.
+- `POST /ml/monitoring/run` (admin / inventory manager): asks the service to monitor now
+  (synchronous, 60 s timeout). Service down → 503, service error → 502, as for forecast runs.
+
+**Run health** — computed on request, never stored (it is about runs that did *not* happen), and it
+never starts, retries or changes anything. Each check is OK / WARN / ALERT with one sentence:
+1. *Forecast freshness*: days behind = (today − 1) − the latest successful run's last data day.
+   0 → OK; 1 → WARN; ≥ 2, or no successful run at all → ALERT.
+2. *Latest forecast run*: FAILED → ALERT (with its error); RUNNING → OK ("in progress");
+   SUCCEEDED → OK. A failure followed by a later success is shown in history only.
+3. *Monitoring itself*: no monitoring run yet → WARN; the latest one FAILED → ALERT; the latest
+   monitoring run older than the latest successful forecast run → WARN (monitoring missed a run).
+4. *Model quality* from the latest successful monitoring run: data or prediction DRIFT, or
+   accuracy DEGRADED → ALERT; WATCH → WARN; OK / STABLE → OK; INSUFFICIENT_DATA → OK with the
+   sentence "not enough new days to judge yet" (never presented as healthy evidence).
+Overall = the worst check.
+
+**Page** `#/monitoring` (linked from the Models page; no new top-level nav item, the bar is
+already crowded): run-health list, the latest windows in words, the three statuses, tables for
+inputs, sales per store, forecasts and accuracy (PSI, KS D, sample sizes, WAPE vs backtest),
+recent runs, the thresholds, and "Run monitoring now" for approvers. Synthetic-data label; every
+INSUFFICIENT_DATA says why. Fits a phone screen.
+
+**Docker demo**: the `forecasting` container is recreated with 3b/3c code; the existing verified
+artifacts are copied into its artifact volume (same relative paths and digests — nothing is
+retrained or re-registered), so the demo can forecast and monitor.
+
+**Checks:** each run-health rule hand-tested through the API with crafted run/monitoring rows
+(including no runs at all); roles (analyst/store manager can read but not run); service down →
+503; `GET` writes nothing; e2e or browser check of the page at desktop and phone width.
+
+### Step 3c-2 — monitoring API, run health and page ✅ (2026-11-18)
+
+- `ml` module: `GET /ml/monitoring` and `POST /ml/monitoring/run` (through `ForecastClient`, now
+  exported by `forecasts`; module map `ml → forecasts`). Run health is a pure function
+  (`monitoring.health.ts`) over the latest rows, with dates from the database clock.
+- Page `#/monitoring` (linked from Models; the Models nav item stays highlighted): run health,
+  windows in words, the three statuses, inputs / stores / forecasts tables with PSI and KS D,
+  accuracy vs backtest, recent runs, thresholds in words; the run button for approvers only.
+  Desktop and phone: 0 px overflow.
+- One test-fixture bug found while building: fixture monitoring rows were stamped "now" while
+  forecast runs were back-dated, so an old monitoring run looked newer than a stale forecast. Fixed
+  in the fixture (rows now follow their run); the rule itself was right.
+- **Docker demo:** images rebuilt; the three existing artifacts were copied into the
+  `model_artifacts` volume and their SHA-256 digests compared equal to the registry; `forecasting`,
+  `api`, `web` recreated (`--no-deps`, so synthetic history was not regenerated). Through the demo
+  (port 8080) *Run monitoring now* took 3.9 s, loaded the verified `hgb_direct` v2 artifact and
+  stored 13 results; health OK; quality "not enough new days (0 since training; 7 needed)".
+- Tests: API unit 194 → 212 (every health rule), integration 236 → 243 (crafted runs: no runs,
+  fresh, failed, stale, missed monitoring, drift; read roles; approvers only; GET writes nothing;
+  service OK / 502 / 503); Python 124 unchanged; e2e 2. All green.
 

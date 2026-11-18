@@ -43,4 +43,34 @@ export class ForecastClient {
     }
     return (await res.json()) as { runId: string; status: string };
   }
+
+  /** Ask the service to run model monitoring now (V2 3c-2). Synchronous: a few seconds. */
+  async runMonitoring(): Promise<MonitoringStarted> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.env.FORECAST_URL}/monitoring/run`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'FORECAST_SERVICE_UNAVAILABLE',
+        message:
+          'The forecasting service is not reachable. Start it with `npm run forecast:serve`.',
+      });
+    }
+    if (!res.ok) {
+      throw new BadGatewayException({
+        code: 'FORECAST_SERVICE_ERROR',
+        message: `The forecasting service answered ${res.status}.`,
+      });
+    }
+    return (await res.json()) as MonitoringStarted;
+  }
+}
+
+export interface MonitoringStarted {
+  monitoringRunId: string;
+  status: 'SUCCEEDED' | 'FAILED';
+  error: string | null;
 }

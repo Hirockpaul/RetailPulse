@@ -225,6 +225,13 @@ an ELIGIBLE candidate or roll back to the immediately previous model; the decisi
 run and never rewrites an existing forecast. Every activatable version has a write-once local
 artifact whose SHA-256 is verified before loading; the page shows its schema and digest prefix.
 
+**Model monitoring** (linked from Models) runs after every forecast and on demand (“Run monitoring
+now”, admins / inventory managers). It compares the days after the active model was trained with
+the 28 days before: drift in its inputs, in each store's sales and in its forecasts (PSI), and its
+real accuracy on days that now have sales. It also shows run health: is the forecast fresh, did
+the last run fail, did monitoring run. With fewer than 7 new days it says “not enough data” rather
+than “healthy”. It never retrains or switches models.
+
 Optional MLflow is a mirror of committed PostgreSQL runs, never a dependency or source of truth.
 To start it with the full Docker demo and mirror future forecast runs:
 
@@ -336,7 +343,9 @@ npm run test:e2e
 7. **Suppliers** shows how reliably each supplier delivers (on time, in full, lead-time spread)
    with a score, per product and the latest deliveries; history is synthetic until real purchase
    orders are received.
-8. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+8. **Models → Model monitoring** shows run health and drift; press *Run monitoring now* (it says
+   “not enough data” until 7 days of sales exist after the model's training).
+9. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
 
 ## Measured numbers
 
@@ -353,7 +362,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 194 unit/HTTP + 236 integration (TypeScript), 124 Python, 2 end-to-end |
+| Tests | 212 unit/HTTP + 243 integration (TypeScript), 124 Python, 2 end-to-end |
 
 ## Known limitations
 

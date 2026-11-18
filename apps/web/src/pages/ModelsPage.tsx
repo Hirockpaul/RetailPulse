@@ -7,6 +7,7 @@ import { field, table } from '../components/table';
 import { useUser } from '../lib/auth';
 import { formatDateTime, formatPercent } from '../lib/format';
 import { canApprove } from '../lib/permissions';
+import { href } from '../lib/router';
 import { useAsync } from '../lib/useAsync';
 
 const STATUS_TONE: Record<ModelStatus, 'neutral' | 'good' | 'warn' | 'bad'> = {
@@ -70,6 +71,11 @@ export function ModelsPage() {
           <strong>ACTIVE</strong> model. An eligible candidate needs at least a 0.5 percentage-point
           validation WAPE improvement. Activation changes future runs only; existing forecasts and
           recommendations are never rewritten. Metrics shown here use synthetic data.
+        </p>
+        <p className="text-sm">
+          <a className={table.link} href={href.monitoring()}>
+            Model monitoring: drift, accuracy on new days and run health →
+          </a>
         </p>
       </div>
 
