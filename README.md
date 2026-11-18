@@ -172,6 +172,13 @@ manager; stock falls, some sales are rejected for no stock — that is expected)
 npm run sim:pos -- --sales=100 --concurrency=4
 ```
 
+Simulate unusual stock activity (one large write-off, repeated small corrections, many returns —
+all through the API) to see findings on the **Unusual activity** page:
+
+```bash
+npm run sim:suspicious
+```
+
 Or do the whole demo setup at once — migrate, seed, POS traffic, alert re-scan and, if the
 forecasting service is running, a forecast plus recommendations (all through the API):
 
@@ -296,7 +303,11 @@ npm run test:e2e
    purchase order is created — nothing moves yet.
 4. **Transfers** → dispatch and receive it: two ledger rows (`TRANSFER_OUT`, `TRANSFER_IN`), and
    the alert for that store resolves on its own (event worker).
-5. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+5. **Unusual activity** lists sales spikes and stops (found by each forecast run) and unusual
+   write-offs, adjustments and returns (found after stock movements), high first, each with the
+   numbers behind it and how much to trust it. Open one, investigate, confirm or dismiss with a
+   note; the history records who decided what. Reviewing never changes stock.
+6. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
 
 ## Measured numbers
 
@@ -313,7 +324,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 124 unit/HTTP + 206 integration (TypeScript), 94 Python, 1 end-to-end |
+| Tests | 130 unit/HTTP + 218 integration (TypeScript), 94 Python, 2 end-to-end |
 
 ## Known limitations
 

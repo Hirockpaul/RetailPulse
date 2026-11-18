@@ -9,6 +9,8 @@ export type Route =
   | { name: 'product'; id: string }
   | { name: 'stock'; locationId?: string }
   | { name: 'alerts' }
+  | { name: 'anomalies' }
+  | { name: 'anomaly'; id: string }
   | { name: 'replenishment' }
   | { name: 'recommendation'; id: string }
   | { name: 'purchaseOrders' }
@@ -27,6 +29,8 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'products' && parts.length === 2) return { name: 'product', id: parts[1] };
   if (parts[0] === 'stock' && parts.length <= 2) return { name: 'stock', locationId: parts[1] };
   if (parts[0] === 'alerts' && parts.length === 1) return { name: 'alerts' };
+  if (parts[0] === 'anomalies' && parts.length === 1) return { name: 'anomalies' };
+  if (parts[0] === 'anomalies' && parts.length === 2) return { name: 'anomaly', id: parts[1] };
   if (parts[0] === 'replenishment' && parts.length === 1) return { name: 'replenishment' };
   if (parts[0] === 'replenishment' && parts.length === 2)
     return { name: 'recommendation', id: parts[1] };
@@ -45,6 +49,8 @@ export const href = {
   product: (id: string) => `#/products/${id}`,
   stock: (locationId?: string) => (locationId ? `#/stock/${locationId}` : '#/stock'),
   alerts: () => '#/alerts',
+  anomalies: () => '#/anomalies',
+  anomaly: (id: string) => `#/anomalies/${id}`,
   replenishment: () => '#/replenishment',
   recommendation: (id: string) => `#/replenishment/${id}`,
   purchaseOrders: () => '#/purchase-orders',

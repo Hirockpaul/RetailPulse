@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1d and 1e-1 built** (see §9);
-waiting for approval of step 1e-2.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1 (steps 1a–1e) built** (see §9);
+waiting for approval of step 2a.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -446,7 +446,7 @@ severity and the comparison methods are unchanged.
 **seed 99**: ship v2 if its spike precision is higher than v1's there and its recall is at most
 10 points lower; otherwise ship v1 and say so. Numbers for 42 and 7 are reported as development data.
 
-### Step 1e-1 — result ✅ (2026-11-17, not committed yet)
+### Step 1e-1 — result ✅ (2026-11-17, commit ac217d8)
 
 - **v2 failed its held-out check** on seed 99: spike precision 3.7 % vs v1's 4.2 % (it flagged
   more days: trimming the largest value lowered the baseline again). As written in advance,
@@ -461,4 +461,23 @@ severity and the comparison methods are unchanged.
   forecast run (never rewritten; a later run skips known ones — tested). Detection takes 0.6 s
   (the IQR comparison's quartiles, 15 s, are only computed when that method is measured).
 - Tests: Python 85 → 94; TypeScript suites unchanged and green.
+
+### Step 1e-2 — review workflow and operational anomalies ✅ (2026-11-18, not committed yet)
+
+- Migration `0011_anomaly_reviews.sql`: `operational_anomalies`; `anomaly_reviews` with a transition
+  trigger (only the allowed steps; DISMISSED and RESOLVED final); append-only
+  `anomaly_review_events`; view `anomaly_findings` over sales and operational findings.
+- API module `anomalies`: `GET /anomalies` (filters, HIGH first, store-scoped), `GET /anomalies/:id`
+  (history + allowed next steps), `POST /anomalies/:id/review` (note required to confirm, dismiss or
+  resolve). Event consumer `operational-anomalies` with three plain rules (pure, unit-tested).
+- UI: **Unusual activity** page (filters; numbers in words; status) and a detail page (explanation,
+  how much to trust it, review buttons with a note, history). Fits a phone screen.
+- `npm run sim:suspicious` (also part of `npm run demo`) creates the three patterns through the API.
+- Verified end to end: the simulator's write-off, corrections and returns became 3 findings within
+  seconds; reviewed in the browser (new → investigating → confirmed, with note).
+- Two older event tests assumed one consumer; they now check the alerts consumer's own marks.
+- Tests: API unit 124 → 130, integration 206 → 218, e2e 1 → 2 (a write-off is found and
+  investigated through the UI); Python unchanged (94). All green.
+- Note for running two API versions: an older API's event worker on the same database would mark
+  new events done without the new consumer. The Docker demo was rebuilt with this code.
 

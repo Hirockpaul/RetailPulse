@@ -76,3 +76,38 @@ test('inventory manager: overview → receive → sell → transfer DC to store'
   }
   await expect(page.getByText('This transfer is finished.')).toBeVisible();
 });
+
+test('a large write-off becomes a finding that a manager can investigate', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Email').fill('inventory@retailpulse.test');
+  await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+
+  // Receive 30 of a product at STR-02, then write 25 of them off in one adjustment.
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('link', { name: 'Products' }).click();
+  await page.getByPlaceholder('Search SKU or name').fill('RP-00002');
+  await page.getByRole('button', { name: 'Search' }).click();
+  await page.getByRole('link', { name: 'RP-00002' }).click();
+  await record(page, 'RECEIVE', 'STR-02', '30');
+  const form = page.locator('form', { has: page.getByRole('button', { name: 'Record' }) });
+  await form.getByLabel('Action').selectOption('ADJUST');
+  await pick(form.getByLabel('Location'), 'STR-02');
+  await form.getByLabel('Change (+/−)').fill('-25');
+  await form.getByLabel('Reason (required)').fill('e2e: damaged in storage');
+  await form.getByRole('button', { name: 'Record' }).click();
+  await expect(form.getByRole('status')).toBeVisible();
+
+  // The event worker turns it into a finding within seconds.
+  await nav.getByRole('link', { name: 'Unusual activity' }).click();
+  const finding = page.getByRole('link', { name: 'Large write-off' });
+  await expect(async () => {
+    await page.reload();
+    await expect(finding.first()).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 20_000 });
+  await finding.first().click();
+  await expect(page.getByText('One adjustment removed 25 units at once')).toBeVisible();
+  await page.getByRole('button', { name: 'Start investigating' }).click();
+  await expect(page.getByText('new → investigating')).toBeVisible();
+});

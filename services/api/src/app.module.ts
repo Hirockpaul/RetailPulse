@@ -6,6 +6,7 @@ import { ENV, type Env } from './core/config/env';
 import { DatabaseModule } from './core/database/database.module';
 import { MetricsModule } from './core/metrics/metrics.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
+import { AnomaliesModule } from './modules/anomalies/anomalies.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { EventsModule } from './modules/events/events.module';
@@ -51,6 +52,7 @@ export class AppModule {
         ReplenishmentModule,
         OverviewModule,
         HousekeepingModule,
+        AnomaliesModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

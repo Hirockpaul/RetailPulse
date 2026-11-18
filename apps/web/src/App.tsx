@@ -3,6 +3,8 @@ import { AuthProvider, useAuth, useUser } from './lib/auth';
 import { ROLE_LABEL } from './lib/permissions';
 import { href, type Route, useRoute } from './lib/router';
 import { AlertsPage } from './pages/AlertsPage';
+import { AnomaliesPage } from './pages/AnomaliesPage';
+import { AnomalyDetailPage } from './pages/AnomalyDetailPage';
 import { HealthPage } from './pages/HealthPage';
 import { PurchaseOrderDetailPage } from './pages/PurchaseOrderDetailPage';
 import { PurchaseOrdersPage } from './pages/PurchaseOrdersPage';
@@ -40,6 +42,11 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     active: (r) => r.name === 'purchaseOrders' || r.name === 'purchaseOrder',
   },
   { label: 'Alerts', to: href.alerts(), active: (r) => r.name === 'alerts' },
+  {
+    label: 'Unusual activity',
+    to: href.anomalies(),
+    active: (r) => r.name === 'anomalies' || r.name === 'anomaly',
+  },
   { label: 'Health', to: href.health(), active: (r) => r.name === 'health' },
 ];
 
@@ -55,6 +62,10 @@ function Page({ route }: { route: Route }) {
       return <StockPage locationId={route.locationId} />;
     case 'alerts':
       return <AlertsPage />;
+    case 'anomalies':
+      return <AnomaliesPage />;
+    case 'anomaly':
+      return <AnomalyDetailPage key={route.id} id={route.id} />;
     case 'replenishment':
       return <ReplenishmentPage />;
     case 'recommendation':

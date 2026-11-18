@@ -13,6 +13,7 @@
     "db:migrate": "npm run migrate -w services/api",
     "db:seed": "npm run seed -w services/api --",
     "sim:pos": "node scripts/simulation/pos-sim.mjs",
+    "sim:suspicious": "node scripts/simulation/suspicious-sim.mjs",
     "demo": "npm run db:migrate && npm run db:seed && node scripts/simulation/demo.mjs",
     "measure": "node scripts/simulation/measure.mjs",
     "forecast:history": "cd services/forecasting && .venv/bin/python -m app.synthetic",

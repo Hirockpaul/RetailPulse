@@ -84,6 +84,7 @@ flowchart TB
   events --> database
   alerts --> events & inventory
   overview --> forecasts & events
+  anomalies --> events
   housekeeping --> events
 ```
 
@@ -187,6 +188,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
 | V2 1e-1 ✅ | `forecast.anomaly_detections` (unique per product, store, day, kind) |
 | V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
@@ -296,6 +298,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
 | `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
 
+| `GET /anomalies`                      | `status (… or OPEN), severity, source, kind, locationId, productId, sort (severity·day·score), page, pageSize` | unusual sales (forecasting service) and unusual adjustments/returns (event consumer), HIGH first; store-scoped |
+| `GET /anomalies/:id`                  | —                                              | the finding, its explanation, review history and the steps the caller may take |
+| `POST /anomalies/:id/review`          | body `{ status, note? }`                       | NEW → INVESTIGATING → CONFIRMED → RESOLVED, or → DISMISSED; note required to confirm, dismiss or resolve; guarded by status (409), no Idempotency-Key; admin, inventory mgr, store mgr (own store). Never changes stock |
 | `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; store managers: own stores |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
@@ -400,6 +405,22 @@ processing state (status, attempts, error) changes.
 the housekeeping job, in batches, in one statement per batch. Dead and pending events are never
 purged. The outbox backlog is exported to Prometheus as `retailpulse_outbox_events{state}` and
 `retailpulse_outbox_oldest_pending_seconds`.
+
+### Operational anomalies (the second consumer, V2 1e-2)
+
+The `operational-anomalies` consumer applies three fixed rules after each ADJUSTMENT and RETURN
+(thresholds in `modules/anomalies/anomalies.config.ts`, pure functions in `anomalies.rules.ts`):
+**large write-off** (one adjustment removing ≥ 20 units, or ≥ 50 % of ≥ 10 on hand; HIGH at ≥ 50 or
+≥ 80 %), **repeated adjustments** (≥ 3 stock-reducing adjustments of one product at one location in
+7 days; HIGH at 5), **many returns** (≥ 5 returns and ≥ 25 % of sale lines in 30 days; HIGH at 50 %).
+It counts from the ledger as it stands, and stores at most one finding per rule, product, location
+and window, so late, repeated or replayed events cannot create a second one (tested).
+
+Findings of both kinds are reviewed in the API: `anomaly_reviews` holds the current decision
+(no row = NEW), `anomaly_review_events` every step with who, when and why. A trigger allows only
+NEW → INVESTIGATING / CONFIRMED / DISMISSED, INVESTIGATING → CONFIRMED / DISMISSED, CONFIRMED →
+RESOLVED; five simultaneous first decisions record exactly one (tested). Reviewing never changes
+stock — a real problem is corrected with a normal adjustment.
 
 ### Low-stock alerts (the first consumer)
 
@@ -616,6 +637,7 @@ RetailPulse/
 │   │   │       ├── purchasing/ ✅   purchase orders (created by approving a recommendation)
 │   │   │       ├── replenishment/ ✅ calc (pure), recommendations, approve / reject
 │   │   │       ├── overview/ ✅     read model for the landing page (calc is pure)
+│   │   │       ├── anomalies/ ✅    findings list, review workflow, operational rules (pure) + event consumer
 │   │   │       └── housekeeping/ ✅ hourly cleanup of processed events and old idempotency keys
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
@@ -648,11 +670,12 @@ RetailPulse/
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
 │           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
-│           └── pages/ ✅            Overview (landing), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
+│           └── pages/ ✅            Overview (landing), Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
 └── scripts/simulation/ ✅
     ├── pos-sim.mjs                  POS traffic simulator (npm run sim:pos; signs in)
-    ├── demo.mjs                     npm run demo: POS traffic, alert re-scan, forecast, recommendations
+    ├── suspicious-sim.mjs           npm run sim:suspicious: a write-off, repeated corrections, many returns (via the API)
+    ├── demo.mjs                     npm run demo: POS traffic, alert re-scan, unusual activity, forecast, recommendations
     └── measure.mjs                  npm run measure: sequential read-latency percentiles
 ```
 
@@ -754,4 +777,6 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 52 | SHAP explanations only for the served ML model, only if they add up, shown as multiplying factors (V2 1c) | Exact for our tree model (verified per run, 1e-6); factors match how a Poisson model works (log scale) and are easy to read; refusing non-additive output prevents silently wrong explanations (tested with the Day-6 encoding) | Explains the first forecast day only; `tree_path_dependent` SHAP describes the model, not cause and effect; adds `shap` (~5 MB) to the service |
 | 53 | New model types must beat production by ≥ 0.5 WAPE points on validation, rule written before measuring (V2 1d) | Seed-to-seed noise is ~0.15 points; a smaller gain is not worth a second model; deciding on validation keeps the test window honest | A real but small improvement could be rejected; the Random Forest was 0.5 points worse, so no doubt this time |
 | 54 | Unusual sales: robust z on a same-weekday baseline, rules written before measuring, one held-out revision allowed (V2 1e-1) | Explainable in one sentence; promotions are a known cause; scored on labelled data, with a third dataset kept unseen until the revision was written | Low precision for MEDIUM findings is inherent at this base rate (0.02 %); the review page (1e-2) must say so and lead with HIGH |
+| 55 | Anomaly reviews belong to the API; findings stay facts (V2 1e-2) | The forecasting service writes only `forecast.*` and never decides anything; people's decisions get an audit trail and DB-enforced steps | Two finding tables joined by a view; reviews need one of two foreign keys (CHECK: exactly one) |
+| 56 | Operational anomalies are plain rules in an event consumer, not ML | Write-offs, repeated corrections and return rates are explainable as thresholds; no labelled history exists to learn from | Fixed thresholds suit the synthetic store sizes; they are not tuned and will need adjusting for real data |
 

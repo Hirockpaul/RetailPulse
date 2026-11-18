@@ -331,8 +331,12 @@ describe('low-stock alerts (consumer side)', () => {
     const eventId = low[0].details.eventId as string;
     expect((await eventRow(eventId)).status).toBe('PROCESSED');
     expect(
-      await count('SELECT COUNT(*)::int AS n FROM processed_events WHERE event_id = $1', [eventId]),
-    ).toBe(1);
+      await count(
+        `SELECT COUNT(*)::int AS n FROM processed_events
+          WHERE event_id = $1 AND consumer = 'low-stock-alerts'`,
+        [eventId],
+      ),
+    ).toBe(1); // other consumers (e.g. operational anomalies) add their own marks
 
     // Down to zero → LOW_STOCK is superseded by OUT_OF_STOCK (one open alert at a time)
     await sell(p.id, p.packSize - 1).expect(201);
@@ -417,11 +421,22 @@ describe('low-stock alerts (consumer side)', () => {
 
         expect(calls).toHaveLength(callsBefore); // neither consumer ran again
         expect((await eventRow(eventId)).status).toBe('PROCESSED');
+        // One row per consumer, never two for the same consumer (every registered consumer
+        // handles movement events, so count the two this test is about).
         expect(
-          await count('SELECT COUNT(*)::int AS n FROM processed_events WHERE event_id = $1', [
-            eventId,
-          ]),
-        ).toBe(2); // one row per consumer, never two for the same consumer
+          await count(
+            `SELECT COUNT(*)::int AS n FROM processed_events
+              WHERE event_id = $1 AND consumer IN ('low-stock-alerts', 'spy-replay')`,
+            [eventId],
+          ),
+        ).toBe(2);
+        expect(
+          await count(
+            `SELECT COUNT(*)::int AS n FROM (SELECT consumer FROM processed_events
+              WHERE event_id = $1 GROUP BY consumer HAVING COUNT(*) > 1) d`,
+            [eventId],
+          ),
+        ).toBe(0);
         const openAlerts = (await alertsFor(p.id, loc.str1)).filter((a) => a.status === 'OPEN');
         expect(openAlerts).toHaveLength(1);
       },

@@ -3,7 +3,8 @@
 // `npm run demo` first migrates and seeds the database (both safe to re-run), then this script:
 //   1. signs in as the synthetic inventory manager,
 //   2. sends simulated POS sales (scripts/simulation/pos-sim.mjs) — stock falls, alerts appear,
-//   3. re-scans alerts once (the seed's opening stock did not go through events),
+//   3. re-scans alerts once (the seed's opening stock did not go through events), and simulates
+//      some unusual stock activity (scripts/simulation/suspicious-sim.mjs) for the anomaly page,
 //   4. if the forecasting service is running: runs a forecast, waits for it, and generates
 //      replenishment recommendations (nothing is ordered — a manager approves in the UI).
 // Every step goes through the public API, exactly as a user would. Nothing edits the database.
@@ -74,10 +75,16 @@ const sim = spawnSync(
 if (sim.status !== 0) fail('The POS simulator reported errors (see above).');
 
 // ------------------------------------------------------------------ 3. alerts
-step(3, 'Re-scanning stock alerts …');
+step(3, 'Re-scanning stock alerts and simulating some unusual stock activity …');
 const rescan = await call('POST', '/alerts/rescan');
 if (rescan.status !== 200 && rescan.status !== 201) fail(`Re-scan failed (${rescan.status}).`);
 console.log(`  checked ${rescan.body.evaluated} stock positions.`);
+const unusual = spawnSync(
+  process.execPath,
+  [resolve(here, 'suspicious-sim.mjs'), `--api=${BASE}`],
+  { stdio: 'inherit' },
+);
+if (unusual.status !== 0) fail('The unusual-activity simulator failed (see above).');
 
 // ------------------------------------------------------------------ 4. forecast + recommendations
 step(4, 'Forecast and replenishment recommendations …');
