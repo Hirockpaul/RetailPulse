@@ -47,11 +47,19 @@ def main() -> None:
         action="store_true",
         help="compare candidate ML models (V2 step 1d) instead of feature configurations",
     )
+    parser.add_argument(
+        "--anomalies",
+        action="store_true",
+        help="score anomaly detection methods against the injected labels (V2 step 1e-1)",
+    )
     args = parser.parse_args()
 
     end = (datetime.now(UTC) - timedelta(days=1)).date()
     with connect(read_only=True) as conn:
         products, stores = read_catalog(conn)
+    if args.anomalies:
+        compare_anomaly_methods(products, stores, end, args)
+        return
     data = generate(products, stores, end, args.days, args.seed, anomaly_share=args.anomaly_share)
     pairs = pd.DataFrame(
         [
@@ -108,6 +116,39 @@ def main() -> None:
             if h["model"] == ml_name() and h["split"] == "test"
         ]
         print(f"{ml_name()} test WAPE by days ahead (1..7): {' '.join(by_h)}\n")
+
+
+def compare_anomaly_methods(products, stores, end, args) -> None:
+    from app.anomalies.evaluate import evaluate as score_anomalies
+
+    print("Anomaly detection vs the injected labels (rules: docs/V2-PLAN.md step 1e-1)\n")
+    for seed in (args.seed, 7, 99):
+        data = generate(products, stores, end, args.days, seed, anomaly_share=args.anomaly_share)
+        pairs = pd.DataFrame(
+            [
+                (p, s, c)
+                for p, c in zip(products.product_id, products.category, strict=True)
+                for s in stores.location_id
+            ],
+            columns=["product_id", "location_id", "category_id"],
+        )
+        hist = build_history(pairs, data.demand, {"SYNTHETIC"}, data.promotions)
+        role = "held out until rule v2 was written" if seed == 99 else "development"
+        print(f"== dataset seed {seed} ({role})")
+        print(
+            f"{'rule / method':28} {'flagged':>8} {'correct':>8} {'labels':>7} "
+            f"{'precision':>9} {'recall':>7} {'F1':>6}"
+        )
+        for rule in ("v1", "v2"):
+            for name, r in score_anomalies(hist, data.anomalies, rule).items():
+                if rule == "v2" and name in ("spike:iqr", "spike:isolation_forest"):
+                    continue  # comparisons don't depend on the rule version beyond the inputs
+                print(
+                    f"{rule + ' ' + name:28} {r['predicted']:8d} {r['true_positive']:8d} "
+                    f"{r['actual']:7d} {pct(r['precision']):>9} {pct(r['recall']):>7} "
+                    f"{pct(r['f1']):>6}"
+                )
+        print()
 
 
 def compare_candidates(hist) -> None:

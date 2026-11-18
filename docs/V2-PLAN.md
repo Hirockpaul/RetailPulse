@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1d built** (see §9);
-waiting for approval of step 1e.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Steps 1a–1d and 1e-1 built** (see §9);
+waiting for approval of step 1e-2.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -382,7 +382,7 @@ noise and not worth a second model). The test window is reported but never used 
 If it does not pass, it is documented here and in ARCHITECTURE §7.3 and is **not** added to
 production; the comparison stays reproducible with `npm run forecast:measure -- --candidates`.
 
-### Step 1d — model comparison: result ✅ (2026-11-17, not committed yet)
+### Step 1d — model comparison: result ✅ (2026-11-17, commit 1bab93c)
 
 - `app/evaluation/compare.py`: candidates are scored on exactly the production protocol (a test
   proves gradient boosting scored here equals the pipeline's numbers); `decide()` applies the rule
@@ -392,4 +392,73 @@ production; the comparison stays reproducible with `npm run forecast:measure -- 
   it is 0.52 points worse on validation. Production is unchanged.
 - Tests: Python 77 → 85. Nothing in the API or UI changed (the accuracy card already shows WAPE,
   MAE, bias and range coverage per model and window).
+
+
+### Step 1e — split (decided 2026-11-17)
+
+1e is two pieces of work, built and approved separately:
+
+- **1e-1** sales-anomaly detection in the forecasting service: methods compared on the labelled
+  anomalies from 1a, precision/recall measured, detections stored with every forecast run.
+- **1e-2** the review workflow (API-owned statuses NEW → INVESTIGATING → CONFIRMED / DISMISSED →
+  RESOLVED), the Anomalies page, operational anomalies (adjustments, returns) and a simulator mode.
+
+### Step 1e-1 — detection rules (written 2026-11-17, BEFORE any measurement)
+
+Per product × store × day, the **expected** sales are the median of the same weekday over the
+previous 8 weeks (strictly before the day; promotion days excluded), multiplied by the day's planned
+promotion uplift (a promotion is a known cause, not an anomaly). Days with < 4 usable past values
+are not judged.
+
+- **Robust z (main candidate):** z = (actual − expected) / scale, scale = max(1.4826 × MAD of
+  those weeks, √expected, 1) — the √expected floor stops low-volume series from flagging every
+  extra unit. SPIKE if z ≥ **5**.
+- **IQR rule (comparison):** SPIKE if actual > Q3 + **3** × max(IQR, 1) of the same weeks.
+- **Isolation Forest (comparison):** scikit-learn, 200 trees, `contamination=0.001` (a generic
+  "rare" setting, not the true label rate), on [actual, expected, actual − expected, z, weekday].
+- **DROP (all methods):** 3 consecutive days of zero sales whose expected total is ≥ **7** units
+  (Poisson chance of three zero days ≤ e⁻⁷ ≈ 0.1 %).
+
+Severity: HIGH if z ≥ 10 (or a drop with expected total ≥ 14), else MEDIUM.
+
+Scoring: precision and recall against the injected labels on days with ≥ 8 weeks of history, on the
+dev data (seed 42) **and** a second dataset (seed 7) to check the result is not a fluke. Naturally
+rare sales that were not injected count as false positives — that is the honest cost of a
+threshold. **Choice rule:** ship the method with the highest F1 on seed 42 only if it also has the
+highest F1 on seed 7; otherwise ship the robust z (the simplest to explain). Thresholds are not
+changed after seeing results.
+
+### Step 1e-1 — result of rule v1, and rule v2 (written 2026-11-17, BEFORE measuring v2)
+
+**v1 measured** (`--anomalies`): recall was good (robust z 78 % / 83 % on seeds 42 / 7) but precision
+was 3.5 % — 1,276 flags for 58 real spikes. Isolation Forest had the best F1 on seed 42 but not on
+seed 7, so the v1 rule would ship robust z. Drops: F1 45 % / 32 %.
+**Diagnosis:** on the false-alarm days the true expected demand was 1.9× the baseline: the median of
+small counts sits below their mean, and √expected understates the spread of this over-dispersed data.
+A detector that knew the true demand would still raise 86 false alarms at z ≥ 5 (the floor of
+unavoidable randomness); the other ~1,145 came from the baseline.
+
+**v2 (one revision, no further tuning):** expected = mean of the past same-weekday values after
+dropping the single largest (so one past spike cannot inflate it), × the promotion uplift;
+scale = √max(expected, variance of those values), at least 1. Threshold (z ≥ 5), drop rule,
+severity and the comparison methods are unchanged.
+**Confirmation:** seeds 42 and 7 have now been looked at, so v2 is judged on a fresh dataset,
+**seed 99**: ship v2 if its spike precision is higher than v1's there and its recall is at most
+10 points lower; otherwise ship v1 and say so. Numbers for 42 and 7 are reported as development data.
+
+### Step 1e-1 — result ✅ (2026-11-17, not committed yet)
+
+- **v2 failed its held-out check** on seed 99: spike precision 3.7 % vs v1's 4.2 % (it flagged
+  more days: trimming the largest value lowered the baseline again). As written in advance,
+  **v1 ships**; no further revisions.
+- Shipped (v1), seed 99: spikes 4.2 % precision / 83.6 % recall overall; **HIGH spikes 47.4 % /
+  13.4 %** (dev seeds 57.9 % and 80.0 %); drops 19.7 % / 92.3 %. ~280 MEDIUM and 2–4 HIGH spike
+  findings per 90 days on the dev data.
+- Base rate: injected spikes are 0.02 % of product-days; a detector that knew the true demand would
+  still raise 86 false alarms vs 58 real spikes (seed 42). So 1e-2 must lead with HIGH findings and
+  show the measured precision of each level.
+- Migration `0010_anomaly_detections.sql`; findings of the last 90 days are stored at the end of each
+  forecast run (never rewritten; a later run skips known ones — tested). Detection takes 0.6 s
+  (the IQR comparison's quartiles, 15 s, are only computed when that method is measured).
+- Tests: Python 85 → 94; TypeScript suites unchanged and green.
 

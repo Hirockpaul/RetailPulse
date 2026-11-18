@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app import repository
+from app.anomalies.detect import detect as detect_anomalies
 from app.config import (
     EVAL_HORIZON_DAYS,
     MIN_HISTORY_DAYS,
@@ -259,8 +260,10 @@ def run_forecast(run_id: str, horizon: int, seed: int = 42) -> None:
         with connect(read_only=True) as conn:
             hist = load_history(conn)
         outcome = compute(hist, horizon, seed)
+        findings = detect_anomalies(hist)
         with connect() as conn:
             repository.save_results(conn, run_id, hist, outcome)
+            repository.save_anomalies(conn, run_id, hist, findings)
             conn.commit()
     except Exception as exc:
         with connect() as conn:

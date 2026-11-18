@@ -160,6 +160,14 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
             assert status == "NOT_ML" and explained == 0 and importance == 0
         assert on_fallback == 0
 
+        # V2 step 1e-1: unusual sales of the last 90 days are stored with the run.
+        found = conn.execute(
+            """SELECT count(*), count(DISTINCT run_id), bool_and(rule = 'v1'),
+                      bool_and(day > current_date - 92)
+                 FROM forecast.anomaly_detections"""
+        ).fetchone()
+        assert found[0] > 0 and found[1] == 1 and found[2] and found[3]
+
         kinds = dict(conn.execute("SELECT name, kind FROM forecast.model_versions").fetchall())
         assert kinds["hgb_direct"] == "ML" and kinds["category_average"] == "FALLBACK"
 
@@ -298,3 +306,21 @@ def test_real_sales_override_synthetic_rows_for_the_same_day(catalog: dict) -> N
             (product, store),
         ).fetchone()
     assert (units, source) == (9, "LEDGER")
+
+
+def test_a_second_run_does_not_duplicate_or_rewrite_anomaly_findings(catalog: dict) -> None:
+    url = catalog["url"]
+    load_history(url)
+    first = new_run()
+    pipeline.run_forecast(first, 7)
+    with psycopg.connect(url) as conn:
+        before = conn.execute(
+            "SELECT id, run_id, detected_at FROM forecast.anomaly_detections ORDER BY id"
+        ).fetchall()
+    second = new_run()
+    pipeline.run_forecast(second, 7)
+    with psycopg.connect(url) as conn:
+        after = conn.execute(
+            "SELECT id, run_id, detected_at FROM forecast.anomaly_detections ORDER BY id"
+        ).fetchall()
+    assert before and after == before  # same findings, still credited to the first run

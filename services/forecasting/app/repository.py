@@ -328,6 +328,40 @@ def _save_explanations(cur: psycopg.Cursor, run_id: str, hist: History, outcome:
         )
 
 
+def save_anomalies(
+    conn: psycopg.Connection, run_id: str, hist: History, findings: list[dict]
+) -> int:
+    """Store new unusual-sales findings; ones already found by an earlier run are skipped, so a
+    finding (and the review a person attached to it) is never rewritten. Returns how many are new."""
+    from app.anomalies.detect import RULE
+
+    new = 0
+    with conn.cursor() as cur:
+        for f in findings:
+            cur.execute(
+                """INSERT INTO forecast.anomaly_detections
+                     (product_id, location_id, day, kind, severity, score, observed, expected,
+                      method, rule, explanation, run_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'robust_z', %s, %s, %s)
+                   ON CONFLICT (product_id, location_id, day, kind) DO NOTHING""",
+                (
+                    hist.product_ids[f["series"]],
+                    hist.location_ids[f["series"]],
+                    f["day"].astype("datetime64[D]").item(),
+                    f["kind"],
+                    f["severity"],
+                    f["score"],
+                    f["observed"],
+                    f["expected"],
+                    RULE,
+                    f["explanation"],
+                    run_id,
+                ),
+            )
+            new += cur.rowcount
+    return new
+
+
 def prune_runs(conn: psycopg.Connection, keep: int = KEEP_RUNS) -> None:
     """Keep the newest `keep` finished runs (their points are cascade-deleted with them)."""
     conn.execute(

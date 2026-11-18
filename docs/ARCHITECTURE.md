@@ -187,6 +187,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 1e-1 ✅ | `forecast.anomaly_detections` (unique per product, store, day, kind) |
 | V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
 
@@ -454,6 +455,7 @@ flowchart LR
 | Metrics | MAE, RMSE, WAPE (total error ÷ total units sold) and **bias** (Σ(forecast − actual) ÷ Σ actual), pooled over series with enough history, for every model on validation and test; the same per horizon day in `forecast.horizon_metrics`; and the 80 % range's **coverage and width** on the test window, built from validation errors only. All persisted per run. |
 | Selection | The best baseline is chosen on **validation**. The ML model is served only if its WAPE beats that baseline on **both** validation and the untouched test window; otherwise the baseline is served and the run says so. |
 | Explanations | When the ML model is served, every run explains the **first forecast day** of each product × store with SHAP (`TreeExplainer`, `app/models/explain.py`): the model's log forecast = starting point + one contribution per input, so `forecast = exp(start) × Π exp(contribution)` — each input is a multiplying factor. The run checks that the parts add up (≤ 1e-6) and stores nothing otherwise (`runs.explanation_status` = OK / NOT_ML / FAILED_CHECK). Global importance = mean \|contribution\| over days 1–7 (`forecast.feature_importance`). Season's sine and cosine columns are shown as one "time of year" factor. Worded as contributions to the model's forecast, never as causes of demand. |
+| Unusual sales | At the end of every run, `app/anomalies/detect.py` scans the last 90 days (V2 1e-1). Expected = median of the same weekday over the previous 8 weeks (promotion days left out) × the planned promotion uplift; SPIKE if z = (actual − expected) / max(1.4826·MAD, √expected, 1) ≥ 5; DROP = 3 zero-sales days in a row with ≥ 7 units expected. HIGH if z ≥ 10 or ≥ 14 units expected. Findings go to `forecast.anomaly_detections` (never rewritten; a later run skips known ones) with a plain-language explanation. Nothing changes stock. Measured precision/recall below. |
 | Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
 | Uncertainty | **80 % and 95 % ranges from measured errors** (split conformal, V2 1b, `evaluation/intervals.py`): residuals (actual − forecast) of the served model are grouped by forecast level (0–0.5, 0.5–1, 1–2, 2–4, 4–8, 8+ units/day) and their 10/90 % (2.5/97.5 %) quantiles are added to the forecast, never below 0 and always containing the forecast. Coverage is checked honestly — calibrated on validation, scored on test — overall and per level group (`forecast.interval_calibration`); live ranges use both windows. Replaces the Day-6 ± 1.28 σ band, which held 91 % for slow sellers and 78 % for fast ones. The UI states the range in words with its measured reliability. |
 | Persistence | `forecast.runs` (windows, served model version, selection reason, data label), `model_versions`, `model_metrics`, `series`, `points`. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
@@ -533,6 +535,25 @@ Bias is close to zero. Since step 1b the 80 % and 95 % ranges hold their level w
 overall and in every sales-level group except the slowest (see above). A run takes ~35–40 s for 1,000 series
 on a laptop (Day 6 encoding: ~30 s). Re-measure whenever the models or the generator change.
 
+**Unusual-sales detection (V2 1e-1)** — `npm run forecast:measure -- --anomalies`, scored against
+the injected labels on days with ≥ 8 weeks of history; rules and the choice rule were written
+before measuring (docs/V2-PLAN.md):
+
+| Seed 99 (never used during design) | Flagged | Correct | Precision | Recall |
+| ---------------------------------- | ------: | ------: | --------: | -----: |
+| Spikes, robust z (shipped), all | 1,319 | 56 / 67 | 4.2 % | 83.6 % |
+| Spikes, robust z, HIGH only | 19 | 9 | 47.4 % | 13.4 % |
+| Spikes, IQR rule (comparison) | 4,209 | 60 | 1.4 % | 89.6 % |
+| Spikes, Isolation Forest (comparison) | 310 | 22 | 7.1 % | 32.8 % |
+| Drops (3 zero days) | 61 | 12 / 13 | 19.7 % | 92.3 % |
+
+HIGH spikes on the two development seeds: 57.9 % and 80.0 % precision. Reading it: real spikes
+are 0.02 % of product-days, so even a detector that knew the true demand would raise more false
+alarms than real finds at z ≥ 5 (measured: 86 unavoidable false alarms vs 58 real spikes on seed
+42). **HIGH findings are worth acting on; MEDIUM ones are "have a look" and mostly normal
+variation.** One revision (v2: trimmed mean + variance scale) was tried and failed its held-out
+check (precision 3.7 % vs 4.2 %), so v1 ships. Detection adds ~0.6 s to a run.
+
 Two honest caveats about the promotion feature: (1) promotions are synthetic and their effect is a
 known ×1.6, so the gain is easier here than with real promotions; (2) no promotions are planned for
 the forecast horizon, so live forecasts never use it — it mainly keeps promotion spikes from
@@ -607,10 +628,11 @@ RetailPulse/
 │       │   ├── repository.py ✅     every SQL statement; writes only to `forecast.*`
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
+│       │   ├── anomalies/ ✅        detect.py (unusual sales), evaluate.py (precision/recall vs labels)
 │       │   ├── models/ ✅           baselines.py, ml.py, explain.py (SHAP)
 │       │   ├── evaluation/ ✅       backtest.py (windows, selection, horizon + range scoring), intervals.py (conformal ranges), compare.py (candidate models), metrics.py, report.py (npm run forecast:measure)
 │       │   └── synthetic/ ✅        generator.py, load.py, __main__.py (npm run forecast:history)
-│       ├── tests/ ✅                85 tests: leakage, windows, selection, DB run, write guard, API
+│       ├── tests/ ✅                94 tests: leakage, windows, selection, DB run, write guard, API
 │       ├── Dockerfile ✅            multi-stage: virtualenv → runtime (non-root)
 │       ├── pyproject.toml ✅        ruff + pytest config
 │       └── requirements*.txt ✅     pinned
@@ -731,4 +753,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 51 | Forecast ranges by split conformal, grouped by forecast level (V2 1b) | Uses the model's real errors, no normal assumption; skewed counts get asymmetric ranges; coverage is checked on data the calibration never saw | Assumes the coming weeks resemble the calibration weeks; days 8–14 reuse the 1–7-day quantiles; the daily ranges cannot be summed into a range for a total |
 | 52 | SHAP explanations only for the served ML model, only if they add up, shown as multiplying factors (V2 1c) | Exact for our tree model (verified per run, 1e-6); factors match how a Poisson model works (log scale) and are easy to read; refusing non-additive output prevents silently wrong explanations (tested with the Day-6 encoding) | Explains the first forecast day only; `tree_path_dependent` SHAP describes the model, not cause and effect; adds `shap` (~5 MB) to the service |
 | 53 | New model types must beat production by ≥ 0.5 WAPE points on validation, rule written before measuring (V2 1d) | Seed-to-seed noise is ~0.15 points; a smaller gain is not worth a second model; deciding on validation keeps the test window honest | A real but small improvement could be rejected; the Random Forest was 0.5 points worse, so no doubt this time |
+| 54 | Unusual sales: robust z on a same-weekday baseline, rules written before measuring, one held-out revision allowed (V2 1e-1) | Explainable in one sentence; promotions are a known cause; scored on labelled data, with a third dataset kept unseen until the revision was written | Low precision for MEDIUM findings is inherent at this base rate (0.02 %); the review page (1e-2) must say so and lead with HIGH |
 

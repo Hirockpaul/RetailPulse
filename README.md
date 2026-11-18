@@ -226,6 +226,12 @@ Compare other model types against the production model on the same protocol (V2 
 npm run forecast:measure -- --candidates
 ```
 
+Score unusual-sales detection against the injected labels on three datasets (V2 step 1e-1; ~2 minutes):
+
+```bash
+npm run forecast:measure -- --anomalies
+```
+
 ### Useful endpoints
 
 | URL                                   | What                                  |
@@ -307,7 +313,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 124 unit/HTTP + 206 integration (TypeScript), 85 Python, 1 end-to-end |
+| Tests | 124 unit/HTTP + 206 integration (TypeScript), 94 Python, 1 end-to-end |
 
 ## Known limitations
 
