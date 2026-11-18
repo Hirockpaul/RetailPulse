@@ -1,7 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 and step 4a (Control Tower) are built** (see §9); next is 4b, what-if scenarios.
+Phase 3, step 4a and step 4b-1 are built** (see §9); next is 4b-2, the Scenarios page with
+side-by-side comparison.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1175,4 +1176,85 @@ checked by eye for clipped labels; keyboard: Tab reaches every menu item and cha
   and 390; keyboard: Escape → focus on the menu button, Enter / Tab / Enter navigates, a focused chart
   mark shows its value; e2e updated to open menus and still green (2). API unit 215, integration
   251, Python 124 unchanged. Light theme only (the app has no dark mode). Docker web rebuilt.
+
+
+### Step 4b — split (decided 2026-11-18)
+
+- **4b-1** scenarios data and API: stored scenario parameters, a run that recomputes the
+  replenishment batch in memory for a baseline and the scenario, a stored summary, proof that
+  nothing else is written.
+- **4b-2** the Scenarios page: create, run, and compare 2–3 scenarios side by side.
+
+### Step 4b-1 — what-if scenarios: rules (written 2026-11-18, BEFORE building or measuring)
+
+**One calculation.** Replenishment generation is split into *load inputs → compute the batch in
+memory → write*. A scenario run is *load inputs → adjust them → compute the batch twice (baseline
+with the unadjusted inputs, scenario with the adjusted ones) → store one summary row*. The same pure
+functions decide every quantity (safety stock, sources, excess, review flags, stockout dates);
+there is no second implementation. Both computations use the same loaded snapshot, so their
+difference is caused by the parameters only.
+
+**Parameters** (stored, never edited — a different idea is a new scenario):
+- `demandPct` −50 … +200: every forecast value × (1 + p/100); the forecast error σe is scaled by the
+  same factor (errors grow with the level, measured in step 1b).
+- `supplierLeadTimeDays` 0 … 30: added to every supplier's promised lead time (measured delays still
+  apply on top); transfer lead time unchanged.
+- `dcAvailabilityPct` 0 … 100: DC stock usable for transfers reduced by this share (rounded down).
+
+**Summary stored per run** (baseline and scenario, same shape): recommendations by action and risk,
+flagged for review, units per action, purchase-order value at cost, needs covered from store excess,
+positions out of stock now / running out within 7 and 14 days (expected stockout date with the
+adjusted forecast), and how long the run took.
+
+**Tables** (migration 0021): `scenarios` (name, description, the three parameters, who / when) and
+`scenario_results` (scenario, forecast run used, who / when, baseline and scenario summaries as JSON,
+duration). Both immutable.
+
+**API:** `POST /scenarios` and `POST /scenarios/:id/run` for admins / inventory managers;
+`GET /scenarios` (with each latest result) and `GET /scenarios/:id` (all results) for admins,
+inventory managers and analysts. **Store managers: 403** — results are network-wide and would show
+other stores' needs.
+
+**Checks:**
+1. A test proves running scenarios writes nothing outside `scenario_results`: inventory ledger and
+   balances, outbox, transfers, purchase orders, recommendations, alerts unchanged (row counts and
+   a checksum of balances).
+2. A zero scenario (0 / 0 / 0) gives a summary identical to its baseline; running the same scenario
+   twice on unchanged data gives identical summaries.
+3. Directional sanity on the dev data, fixed now: +20 % demand → at least as many recommendations and
+   units as baseline; +5 supplier days → purchase-order units at least baseline; DC −100 % → zero
+   transfers from DCs and at least as many purchase orders. Exact numbers reported as found.
+4. Hand-checked unit tests for the input adjustments.
+
+### Step 4b-1 — what-if scenarios ✅ (2026-11-18)
+
+- Replenishment generation refactored to *load → `computeBatch` (pure) → write*; the existing 81
+  unit and 40 integration replenishment tests passed unchanged after the refactor. New pure
+  `applyScenario` / `summarizeBatch` (`replenishment.scenario.ts`), module `scenarios`
+  (`scenarios → replenishment`), migration `0021_scenarios.sql` (immutable tables).
+- **Pre-registered checks:** (1) writes nothing — integration test (row counts + an MD5 over every
+  balance) and on the dev data: ledger, all balances, recommendations, transfers, purchase orders and
+  outbox byte-identical after five scenario runs; (2) a zero scenario equals its baseline and two runs
+  are identical — passed; (3) directions on the dev data — +20 % demand more recommendations and units
+  (passed), DC −100 % zero DC transfers and more purchase orders (passed), +5 supplier days purchase
+  orders ≥ baseline — **passed only trivially (0 ≥ 0)**: on this data DCs cover every need, so no
+  purchase order exists for a longer lead time to affect (the integration fixture, which has an order,
+  shows the effect).
+- Measured on the dev data (1,000 positions; baseline = 294 recommendations: 269 transfers, 25 excess
+  moves — identical to the last real generation; 239 run out within 7 days — identical to the Control
+  Tower):
+
+  | Scenario | Recs | Transfers (units) | Purchase orders (units, at cost) | Excess moves | Critical | Out ≤ 7 d / ≤ 14 d | ms |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | No change | 294 | 269 (10,494) | 0 | 25 | 194 | 239 / 443 | 348 (cold) |
+  | Demand +20 % | 302 | 294 (13,435) | 0 | 8 | 212 | 288 / 517 | 80 |
+  | Suppliers +5 days | 294 | 269 (10,494) | 0 | 25 | 194 | 239 / 443 | 86 |
+  | DC stock unavailable | 421 | 5 (66, from store excess) | 391 (26,204; 81,346.88) | 25 | 286 | 239 / 443 | 116 |
+  | Holiday rush (+30 %, +3 d, DC −50 %) | 314 | 292 (13,295) | 17 (3,223; 8,325.41) | 5 | 226 | 307 / 538 | 82 |
+
+  "DC stock unavailable" raises recommendations by 127: the supplier lead time is longer than a
+  transfer's, so more positions fall below their reorder point.
+- Tests: API unit 215 → 218, integration 251 → 258 (no forecast → 409; zero = baseline; identical
+  reruns; writes nothing; directions; list / detail; roles incl. store managers 403; validation;
+  immutability). Python 124 and e2e unchanged. Docker API rebuilt.
 

@@ -83,6 +83,7 @@ flowchart TB
   forecasts --> database
   ml --> database & forecasts
   replenishment --> forecasts & purchasing & transfers & suppliers & classifications
+  scenarios --> replenishment
   events --> database
   alerts --> events & inventory
   overview --> forecasts & events & suppliers
@@ -199,6 +200,7 @@ erDiagram
 | V2 3c-2 ✅ | — (API and page only; run health is computed on request) |
 | V2 4a-1 ✅ | — (read model only) |
 | V2 4a-2 ✅ | — (web only) |
+| V2 4b-1 ✅ | `scenarios`, `scenario_results` (both immutable) |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -327,6 +329,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `POST /classifications/recalculate`   | —                                              | admin / inventory manager; also daily (background jobs) and in `npm run demo`. Changes no stock |
 | `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; plus `controlTower` (V2 4a-1): KPIs (units, value at cost, open transfers, open anomalies, excess value), risk panel (at risk 7 / 14 d, excess, delayed transfers, overdue orders, anomalies, suppliers scoring < 75) and chart series; store managers: own stores. Writes nothing; p95 122.5 ms on the dev data |
 | `GET /overview/locations`             | —                                              | one row per location in scope: units, value at cost, out / at-risk / excess counts (stores; DCs null), pending recommendations, open alerts and anomalies, open transfers in / out; p95 29.5 ms |
+| `POST /scenarios`                     | body `{ name, description?, demandPct (−50…200), supplierLeadTimeDays (0…30), dcAvailabilityPct (0…100) }` | admin / inventory manager; stored, never edited (V2 4b-1) |
+| `POST /scenarios/:id/run`             | —                                              | admin / inventory manager; recomputes the replenishment batch in memory for a baseline and the scenario from one snapshot and stores one summary; writes nothing else (tested: ledger, balances checksum, outbox, transfers, orders, recommendations, alerts) |
+| `GET /scenarios`, `GET /scenarios/:id` | —                                             | each scenario with its latest result / all results; admin, inventory manager, analyst — **store managers 403** (results are network-wide) |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
 **Overview rules** (`modules/overview/overview.calc.ts`, unit-tested): `position = available + inbound`
@@ -571,6 +576,10 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   a category-average fallback forecast, or Z-class (erratic) demand at the store. It is calculated
   like any other, but approving it requires the manager's quantity and a note; every approval
   stores `approved_quantity`. A flag, not a third action: the suggestion still needs a source.
+- **What-if scenarios (V2 4b-1):** generation is *load inputs → `computeBatch` (pure, in memory)
+  → write*. A scenario run loads the same inputs once, applies its parameters (`replenishment.scenario.ts`:
+  forecast and σe × (1 + demand %), supplier lead time + days, DC stock × (1 − %)), computes the
+  batch for the baseline and the scenario and stores only a summary in `scenario_results`.
 - **"No action required"** is not stored: the product page asks `GET /replenishment/status`, which
   runs the same `plan()` for that product's stores now (DC stock is not shared out between stores
   there, unlike in a generation batch). Measured on the dev data: for all 1,000 pairs it agreed
@@ -930,3 +939,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 65 | Run health (stale / failed forecasts, missed monitoring) is computed on request, not stored or alerted on a timer (V2 3c-2) | It is about runs that did *not* happen, so no run can write it; computing from the latest rows is always current and needs no scheduler | Nobody is notified until someone opens the page; a notification channel is a later decision |
 | 66 | The Control Tower extends the Overview read model instead of adding a new module, and reuses every existing definition (V2 4a-1) | One landing page, one scope rule, no second meaning of "at risk", "excess", "open anomaly" or "supplier risk"; the old Overview numbers are unchanged (checked on the dev data) | `/overview` now does ~10 queries in parallel (p95 122.5 ms); a materialized summary would be needed at much larger scale |
 | 67 | Control Tower charts are hand-written SVG / HTML with a palette validated by script, not a chart library (V2 4a-2) | Four simple forms (segmented bars, bars, one line); the app already draws its forecast chart this way; no dependency to keep updated; full control of accessibility (focusable marks, table view, keyboard crosshair) | More code per chart; anything richer (zoom, many series) would justify a library |
+| 68 | Scenarios reuse the replenishment batch in memory instead of a separate simulator, and store summaries only (V2 4b-1) | One calculation means a scenario can never disagree with what generation would do; baseline and scenario from one snapshot isolate the parameters' effect; summaries are small and immutable | Results are not per pair (only totals); a parameter that the batch does not use (e.g. lead time when DCs cover everything) shows no effect — reported, not hidden |

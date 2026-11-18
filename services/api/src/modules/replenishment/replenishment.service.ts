@@ -33,6 +33,12 @@ import {
 } from './replenishment.calc';
 import { REPLENISHMENT } from './replenishment.config';
 import { ReplenishmentRepository } from './replenishment.repository';
+import {
+  applyScenario,
+  type BatchSummary,
+  type ScenarioAdjustments,
+  summarizeBatch,
+} from './replenishment.scenario';
 import type {
   ApproveBody,
   DecisionBody,
@@ -60,6 +66,25 @@ export interface GenerateResult {
 }
 
 /** What generation and the status view both need besides the pair itself. */
+/** Inputs of one batch, loaded once (V2 4b-1: also the snapshot a scenario adjusts). */
+export interface BatchInputs {
+  run: { id: string; historyEnd: string | null };
+  pairs: PairRow[];
+  dcByProduct: Map<string, DcStock[]>;
+  delays: Map<string, SupplierDelay>;
+  classified: { runId: string | null; classes: Map<string, string> };
+  dcLocations: { id: string; code: string }[];
+}
+
+/** Positions by expected stockout (every evaluated pair, not only those with a recommendation). */
+export interface BatchStats {
+  outOfStockNow: number;
+  /** Runs out on forecast day 1-7 (not already out). */
+  stockoutWithin7: number;
+  /** Runs out on forecast day 1-14 (not already out). */
+  stockoutWithin14: number;
+}
+
 interface EvalContext {
   delays: Map<string, SupplierDelay>;
   classes: Map<string, string>;
@@ -188,6 +213,267 @@ function storeExcessOf(pair: PairRow, ctx: EvalContext): StoreExcessInfo | null 
 }
 
 /**
+ * The whole replenishment batch, computed in memory from loaded inputs (no I/O, no writes):
+ * 0. stores with excess, 1. needs most urgent first, 2. leftover excess back to a DC.
+ * Used by generation (which then writes it) and by what-if scenarios (which only summarize it).
+ */
+export function computeBatch(inputs: BatchInputs): {
+  recommendations: NewRecommendation[];
+  result: GenerateResult;
+  stats: BatchStats;
+} {
+  const { run, pairs, dcByProduct, delays, classified, dcLocations } = inputs;
+  const stats: BatchStats = { outOfStockNow: 0, stockoutWithin7: 0, stockoutWithin14: 0 };
+  // Most urgent first, so scarce distribution-centre stock goes to the stores that need it most.
+  const urgency = (p: PairRow) => {
+    const daily = mean(p.yhat);
+    return daily > 0 ? (p.onHand - p.reserved + p.inbound) / daily : Number.POSITIVE_INFINITY;
+  };
+  const ordered = [...pairs].sort((a, b) => urgency(a) - urgency(b) || a.sku.localeCompare(b.sku));
+
+  const remaining = new Map<string, DcStock[]>();
+  for (const [productId, dcs] of dcByProduct)
+    remaining.set(
+      productId,
+      dcs.map((d) => ({ ...d })),
+    );
+
+  const recommendations: NewRecommendation[] = [];
+  const result: GenerateResult = {
+    forecastRunId: run.id,
+    forecastHistoryEnd: run.historyEnd,
+    evaluated: pairs.length,
+    created: 0,
+    expired: 0,
+    byAction: { TRANSFER: 0, PURCHASE_ORDER: 0, REDISTRIBUTE_EXCESS: 0 },
+    byRisk: { CRITICAL: 0, HIGH: 0 },
+    fromStoreExcess: 0,
+    skipped: { noNeed: 0, noSource: 0 },
+  };
+
+  const ctx: EvalContext = {
+    delays,
+    classes: classified.classes,
+    historyEnd: run.historyEnd,
+  };
+
+  // 0. Which stores have excess they could give away (V2 2d-2)?
+  const excess = new Map<string, StoreExcessInfo[]>(); // by product
+  for (const pair of pairs) {
+    const x = storeExcessOf(pair, ctx);
+    if (x) excess.set(pair.productId, [...(excess.get(pair.productId) ?? []), x]);
+  }
+  const otherStoresExcess = (pair: PairRow): DcStock[] =>
+    (excess.get(pair.productId) ?? [])
+      .filter((x) => x.pair.locationId !== pair.locationId)
+      .map((x) => ({
+        locationId: x.pair.locationId,
+        code: x.pair.locationCode,
+        availableNet: x.movable,
+      }));
+
+  // 1. Needs, most urgent first; sources: another store's excess, a DC, the supplier.
+  for (const pair of ordered) {
+    const { outcome, available, cls, serviceLevel, z, review, stockout } = evaluatePair(
+      pair,
+      remaining.get(pair.productId) ?? [],
+      ctx,
+      otherStoresExcess(pair),
+    );
+    if (stockout.day === 0) stats.outOfStockNow++;
+    else if (stockout.day !== null && stockout.day <= 7) stats.stockoutWithin7++;
+    if (stockout.day !== null && stockout.day > 0 && stockout.day <= 14) stats.stockoutWithin14++;
+    if ('skip' in outcome) {
+      if (outcome.skip === 'NO_NEED') result.skipped.noNeed++;
+      else result.skipped.noSource++;
+      continue;
+    }
+    const p = outcome.plan;
+    // Take the stock out of what later stores may use in this batch.
+    if (p.action === 'TRANSFER' && p.source?.kind === 'DC') {
+      const dc = (remaining.get(pair.productId) ?? []).find(
+        (d) => d.locationId === p.source!.locationId,
+      );
+      if (dc) dc.availableNet -= p.quantity;
+    } else if (p.action === 'TRANSFER' && p.source?.kind === 'STORE') {
+      const giver = (excess.get(pair.productId) ?? []).find(
+        (x) => x.pair.locationId === p.source!.locationId,
+      );
+      if (giver) giver.movable -= p.quantity;
+      result.fromStoreExcess++;
+    }
+
+    recommendations.push({
+      forecastRunId: run.id,
+      productId: pair.productId,
+      locationId: pair.locationId,
+      action: p.action,
+      sourceLocationId: p.source?.locationId ?? null,
+      supplierId: p.supplier?.id ?? null,
+      destinationLocationId: null,
+      quantity: p.quantity,
+      risk: p.risk,
+      daysOfCover: p.daysOfCover,
+      expectedStockoutOn: stockout.date,
+      reviewReason: review,
+      explanation: explain(p, {
+        sku: pair.sku,
+        locationCode: pair.locationCode,
+        model: pair.model,
+        isFallback: pair.isFallback,
+        sigmaError: pair.sigmaError,
+        cls,
+        serviceLevel,
+        serviceLevelZ: z,
+        reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
+        packSize: pair.packSize,
+        available,
+        inbound: pair.inbound,
+        stockout,
+        review,
+      }),
+      inputs: {
+        forecast: {
+          runId: run.id,
+          model: pair.model,
+          isFallback: pair.isFallback,
+          historyDays: pair.historyDays,
+          testWape: pair.testWape,
+          demandDuringLead: p.demandDuringLead,
+          demandDuringCover: p.demandDuringCover,
+          avgDailyDemand: p.avgDailyDemand,
+          sigmaError: pair.sigmaError,
+        },
+        parameters: {
+          serviceLevel,
+          classification: { cls, runId: classified.runId },
+          serviceLevelZ: z,
+          reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
+          leadTimeDays: p.leadTimeDays,
+          leadTimeSource: p.leadTimeSource,
+          leadTimeStdDays: p.leadTimeStdDays,
+          leadTimeBasis: p.leadTimeBasis,
+          supplierDeliveries: p.leadTimeDeliveries,
+          packSize: pair.packSize,
+          minOrderQty: p.supplier?.minOrderQty ?? null,
+        },
+        stock: {
+          onHand: pair.onHand,
+          reserved: pair.reserved,
+          available,
+          inbound: pair.inbound,
+          position: p.position,
+        },
+        calculation: {
+          safetyStock: p.safetyStock,
+          safetyStockParts: p.safetyStockParts,
+          reorderPoint: p.reorderPoint,
+          orderUpTo: p.orderUpTo,
+          rawQuantity: p.rawQuantity,
+          quantity: p.quantity,
+          daysOfCover: p.daysOfCover,
+        },
+        stockout,
+        review,
+        source: p.source
+          ? { code: p.source.code, availableNet: p.source.availableNet, kind: p.source.kind }
+          : null,
+        supplier: p.supplier,
+        dcShortfall: p.dcShortfall,
+      },
+    });
+    result.created++;
+    result.byAction[p.action]++;
+    result.byRisk[p.risk]++;
+  }
+
+  // 2. Excess no store needed → back to the DC holding the least of that product.
+  const dcHeld = new Map<string, number>(); // product:dc → available, updated as we allocate
+  for (const xs of excess.values()) {
+    for (const x of xs) {
+      if (x.movable <= 0) continue;
+      const { pair } = x;
+      const candidates = dcLocations.map((l) => {
+        const key = `${pair.productId}:${l.id}`;
+        const fromStock =
+          (remaining.get(pair.productId) ?? []).find((d) => d.locationId === l.id)?.availableNet ??
+          0;
+        return { ...l, key, available: dcHeld.get(key) ?? fromStock };
+      });
+      const dc = chooseDc(candidates);
+      if (!dc) continue;
+      dcHeld.set(dc.key, dc.available + x.movable);
+      const available = pair.onHand - pair.reserved;
+      const avgKeep = x.demandKeep / REPLENISHMENT.excessKeepDays;
+      const explainInput = {
+        sku: pair.sku,
+        locationCode: pair.locationCode,
+        keepDays: REPLENISHMENT.excessKeepDays,
+        demandKeep: x.demandKeep,
+        reorderPoint: x.reorderPoint,
+        available,
+        inbound: pair.inbound,
+        promisedOut: pair.promisedOut,
+        packSize: pair.packSize,
+        keep: x.keep,
+        excess: x.excess,
+        movable: x.movable,
+        destinationCode: dc.code,
+        destinationAvailable: dc.available,
+      };
+      recommendations.push({
+        forecastRunId: run.id,
+        productId: pair.productId,
+        locationId: pair.locationId,
+        action: 'REDISTRIBUTE_EXCESS',
+        sourceLocationId: null,
+        supplierId: null,
+        destinationLocationId: dc.id,
+        quantity: x.movable,
+        risk: null,
+        daysOfCover: avgKeep > 0 ? (available + pair.inbound) / avgKeep : null,
+        expectedStockoutOn: null,
+        reviewReason: null,
+        explanation: explainExcess(explainInput),
+        inputs: {
+          kind: 'EXCESS',
+          forecast: {
+            runId: run.id,
+            model: pair.model,
+            isFallback: pair.isFallback,
+            historyDays: pair.historyDays,
+            testWape: pair.testWape,
+            avgDailyDemand: avgKeep,
+          },
+          stock: {
+            onHand: pair.onHand,
+            reserved: pair.reserved,
+            available,
+            inbound: pair.inbound,
+            position: available + pair.inbound,
+            promisedOut: pair.promisedOut,
+          },
+          excess: {
+            keepDays: REPLENISHMENT.excessKeepDays,
+            demandKeep: x.demandKeep,
+            reorderPoint: x.reorderPoint,
+            keep: x.keep,
+            excess: x.excess,
+            movable: x.movable,
+            packSize: pair.packSize,
+          },
+          destination: { code: dc.code, available: dc.available },
+        },
+      });
+      result.created++;
+      result.byAction.REDISTRIBUTE_EXCESS++;
+    }
+  }
+
+  return { recommendations, result, stats };
+}
+
+/**
  * Turns the latest forecast into recommendations for a manager. Generating NEVER creates a
  * transfer or purchase order and never moves stock: only a person approving one does.
  */
@@ -204,6 +490,39 @@ export class ReplenishmentService {
   ) {}
 
   async generate(): Promise<GenerateResult> {
+    const inputs = await this.loadBatchInputs();
+    const { recommendations, result } = computeBatch(inputs);
+    result.expired = await this.db.transaction(async (client) => {
+      await this.repo.lockGeneration(client);
+      const expired = await this.repo.expirePending(client);
+      for (const r of recommendations) await this.repo.insert(client, r);
+      return expired;
+    });
+    return result;
+  }
+
+  /**
+   * What-if (V2 4b-1): the same batch computed in memory twice from one loaded snapshot — as is,
+   * and with the scenario's adjustments. Writes nothing.
+   */
+  async simulate(adjust: ScenarioAdjustments): Promise<{
+    forecastRunId: string;
+    forecastHistoryEnd: string | null;
+    baseline: BatchSummary;
+    scenario: BatchSummary;
+  }> {
+    const inputs = await this.loadBatchInputs();
+    const adjusted = applyScenario(inputs, adjust);
+    return {
+      forecastRunId: inputs.run.id,
+      forecastHistoryEnd: inputs.run.historyEnd,
+      baseline: summarizeBatch(computeBatch(inputs), inputs.pairs),
+      scenario: summarizeBatch(computeBatch(adjusted), adjusted.pairs),
+    };
+  }
+
+  /** Everything a batch needs, read once (the latest forecast run, stock, terms, classes). */
+  private async loadBatchInputs(): Promise<BatchInputs> {
     const run = await this.forecasts.latestSucceededRun();
     if (!run) {
       throw new ConflictException({
@@ -218,259 +537,14 @@ export class ReplenishmentService {
       this.classifications.latestStoreClasses(),
       this.repo.dcLocations(),
     ]);
-
-    // Most urgent first, so scarce distribution-centre stock goes to the stores that need it most.
-    const urgency = (p: PairRow) => {
-      const daily = mean(p.yhat);
-      return daily > 0 ? (p.onHand - p.reserved + p.inbound) / daily : Number.POSITIVE_INFINITY;
-    };
-    const ordered = [...pairs].sort(
-      (a, b) => urgency(a) - urgency(b) || a.sku.localeCompare(b.sku),
-    );
-
-    const remaining = new Map<string, DcStock[]>();
-    for (const [productId, dcs] of dcByProduct)
-      remaining.set(
-        productId,
-        dcs.map((d) => ({ ...d })),
-      );
-
-    const recommendations: NewRecommendation[] = [];
-    const result: GenerateResult = {
-      forecastRunId: run.id,
-      forecastHistoryEnd: run.historyEnd,
-      evaluated: pairs.length,
-      created: 0,
-      expired: 0,
-      byAction: { TRANSFER: 0, PURCHASE_ORDER: 0, REDISTRIBUTE_EXCESS: 0 },
-      byRisk: { CRITICAL: 0, HIGH: 0 },
-      fromStoreExcess: 0,
-      skipped: { noNeed: 0, noSource: 0 },
-    };
-
-    const ctx: EvalContext = {
+    return {
+      run: { id: run.id, historyEnd: run.historyEnd },
+      pairs,
+      dcByProduct,
       delays,
-      classes: classified.classes,
-      historyEnd: run.historyEnd,
+      classified,
+      dcLocations,
     };
-
-    // 0. Which stores have excess they could give away (V2 2d-2)?
-    const excess = new Map<string, StoreExcessInfo[]>(); // by product
-    for (const pair of pairs) {
-      const x = storeExcessOf(pair, ctx);
-      if (x) excess.set(pair.productId, [...(excess.get(pair.productId) ?? []), x]);
-    }
-    const otherStoresExcess = (pair: PairRow): DcStock[] =>
-      (excess.get(pair.productId) ?? [])
-        .filter((x) => x.pair.locationId !== pair.locationId)
-        .map((x) => ({
-          locationId: x.pair.locationId,
-          code: x.pair.locationCode,
-          availableNet: x.movable,
-        }));
-
-    // 1. Needs, most urgent first; sources: another store's excess, a DC, the supplier.
-    for (const pair of ordered) {
-      const { outcome, available, cls, serviceLevel, z, review, stockout } = evaluatePair(
-        pair,
-        remaining.get(pair.productId) ?? [],
-        ctx,
-        otherStoresExcess(pair),
-      );
-      if ('skip' in outcome) {
-        if (outcome.skip === 'NO_NEED') result.skipped.noNeed++;
-        else result.skipped.noSource++;
-        continue;
-      }
-      const p = outcome.plan;
-      // Take the stock out of what later stores may use in this batch.
-      if (p.action === 'TRANSFER' && p.source?.kind === 'DC') {
-        const dc = (remaining.get(pair.productId) ?? []).find(
-          (d) => d.locationId === p.source!.locationId,
-        );
-        if (dc) dc.availableNet -= p.quantity;
-      } else if (p.action === 'TRANSFER' && p.source?.kind === 'STORE') {
-        const giver = (excess.get(pair.productId) ?? []).find(
-          (x) => x.pair.locationId === p.source!.locationId,
-        );
-        if (giver) giver.movable -= p.quantity;
-        result.fromStoreExcess++;
-      }
-
-      recommendations.push({
-        forecastRunId: run.id,
-        productId: pair.productId,
-        locationId: pair.locationId,
-        action: p.action,
-        sourceLocationId: p.source?.locationId ?? null,
-        supplierId: p.supplier?.id ?? null,
-        destinationLocationId: null,
-        quantity: p.quantity,
-        risk: p.risk,
-        daysOfCover: p.daysOfCover,
-        expectedStockoutOn: stockout.date,
-        reviewReason: review,
-        explanation: explain(p, {
-          sku: pair.sku,
-          locationCode: pair.locationCode,
-          model: pair.model,
-          isFallback: pair.isFallback,
-          sigmaError: pair.sigmaError,
-          cls,
-          serviceLevel,
-          serviceLevelZ: z,
-          reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
-          packSize: pair.packSize,
-          available,
-          inbound: pair.inbound,
-          stockout,
-          review,
-        }),
-        inputs: {
-          forecast: {
-            runId: run.id,
-            model: pair.model,
-            isFallback: pair.isFallback,
-            historyDays: pair.historyDays,
-            testWape: pair.testWape,
-            demandDuringLead: p.demandDuringLead,
-            demandDuringCover: p.demandDuringCover,
-            avgDailyDemand: p.avgDailyDemand,
-            sigmaError: pair.sigmaError,
-          },
-          parameters: {
-            serviceLevel,
-            classification: { cls, runId: classified.runId },
-            serviceLevelZ: z,
-            reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
-            leadTimeDays: p.leadTimeDays,
-            leadTimeSource: p.leadTimeSource,
-            leadTimeStdDays: p.leadTimeStdDays,
-            leadTimeBasis: p.leadTimeBasis,
-            supplierDeliveries: p.leadTimeDeliveries,
-            packSize: pair.packSize,
-            minOrderQty: p.supplier?.minOrderQty ?? null,
-          },
-          stock: {
-            onHand: pair.onHand,
-            reserved: pair.reserved,
-            available,
-            inbound: pair.inbound,
-            position: p.position,
-          },
-          calculation: {
-            safetyStock: p.safetyStock,
-            safetyStockParts: p.safetyStockParts,
-            reorderPoint: p.reorderPoint,
-            orderUpTo: p.orderUpTo,
-            rawQuantity: p.rawQuantity,
-            quantity: p.quantity,
-            daysOfCover: p.daysOfCover,
-          },
-          stockout,
-          review,
-          source: p.source
-            ? { code: p.source.code, availableNet: p.source.availableNet, kind: p.source.kind }
-            : null,
-          supplier: p.supplier,
-          dcShortfall: p.dcShortfall,
-        },
-      });
-      result.created++;
-      result.byAction[p.action]++;
-      result.byRisk[p.risk]++;
-    }
-
-    // 2. Excess no store needed → back to the DC holding the least of that product.
-    const dcHeld = new Map<string, number>(); // product:dc → available, updated as we allocate
-    for (const xs of excess.values()) {
-      for (const x of xs) {
-        if (x.movable <= 0) continue;
-        const { pair } = x;
-        const candidates = dcLocations.map((l) => {
-          const key = `${pair.productId}:${l.id}`;
-          const fromStock =
-            (remaining.get(pair.productId) ?? []).find((d) => d.locationId === l.id)
-              ?.availableNet ?? 0;
-          return { ...l, key, available: dcHeld.get(key) ?? fromStock };
-        });
-        const dc = chooseDc(candidates);
-        if (!dc) continue;
-        dcHeld.set(dc.key, dc.available + x.movable);
-        const available = pair.onHand - pair.reserved;
-        const avgKeep = x.demandKeep / REPLENISHMENT.excessKeepDays;
-        const explainInput = {
-          sku: pair.sku,
-          locationCode: pair.locationCode,
-          keepDays: REPLENISHMENT.excessKeepDays,
-          demandKeep: x.demandKeep,
-          reorderPoint: x.reorderPoint,
-          available,
-          inbound: pair.inbound,
-          promisedOut: pair.promisedOut,
-          packSize: pair.packSize,
-          keep: x.keep,
-          excess: x.excess,
-          movable: x.movable,
-          destinationCode: dc.code,
-          destinationAvailable: dc.available,
-        };
-        recommendations.push({
-          forecastRunId: run.id,
-          productId: pair.productId,
-          locationId: pair.locationId,
-          action: 'REDISTRIBUTE_EXCESS',
-          sourceLocationId: null,
-          supplierId: null,
-          destinationLocationId: dc.id,
-          quantity: x.movable,
-          risk: null,
-          daysOfCover: avgKeep > 0 ? (available + pair.inbound) / avgKeep : null,
-          expectedStockoutOn: null,
-          reviewReason: null,
-          explanation: explainExcess(explainInput),
-          inputs: {
-            kind: 'EXCESS',
-            forecast: {
-              runId: run.id,
-              model: pair.model,
-              isFallback: pair.isFallback,
-              historyDays: pair.historyDays,
-              testWape: pair.testWape,
-              avgDailyDemand: avgKeep,
-            },
-            stock: {
-              onHand: pair.onHand,
-              reserved: pair.reserved,
-              available,
-              inbound: pair.inbound,
-              position: available + pair.inbound,
-              promisedOut: pair.promisedOut,
-            },
-            excess: {
-              keepDays: REPLENISHMENT.excessKeepDays,
-              demandKeep: x.demandKeep,
-              reorderPoint: x.reorderPoint,
-              keep: x.keep,
-              excess: x.excess,
-              movable: x.movable,
-              packSize: pair.packSize,
-            },
-            destination: { code: dc.code, available: dc.available },
-          },
-        });
-        result.created++;
-        result.byAction.REDISTRIBUTE_EXCESS++;
-      }
-    }
-
-    result.expired = await this.db.transaction(async (client) => {
-      await this.repo.lockGeneration(client);
-      const expired = await this.repo.expirePending(client);
-      for (const r of recommendations) await this.repo.insert(client, r);
-      return expired;
-    });
-    return result;
   }
 
   /**

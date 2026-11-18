@@ -18,5 +18,6 @@ import { ReplenishmentService } from './replenishment.service';
   ],
   controllers: [ReplenishmentController],
   providers: [ReplenishmentService, ReplenishmentRepository],
+  exports: [ReplenishmentService],
 })
 export class ReplenishmentModule {}
