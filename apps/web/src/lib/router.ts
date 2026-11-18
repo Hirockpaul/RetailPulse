@@ -14,6 +14,8 @@ export type Route =
   | { name: 'models' }
   | { name: 'monitoring' }
   | { name: 'scenarios' }
+  | { name: 'reports' }
+  | { name: 'report'; id: string }
   | { name: 'suppliers' }
   | { name: 'supplier'; id: string }
   | { name: 'anomaly'; id: string }
@@ -40,6 +42,8 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'models' && parts.length === 1) return { name: 'models' };
   if (parts[0] === 'monitoring' && parts.length === 1) return { name: 'monitoring' };
   if (parts[0] === 'scenarios' && parts.length === 1) return { name: 'scenarios' };
+  if (parts[0] === 'reports' && parts.length === 1) return { name: 'reports' };
+  if (parts[0] === 'reports' && parts.length === 2) return { name: 'report', id: parts[1] };
   if (parts[0] === 'suppliers' && parts.length === 1) return { name: 'suppliers' };
   if (parts[0] === 'suppliers' && parts.length === 2) return { name: 'supplier', id: parts[1] };
   if (parts[0] === 'anomalies' && parts.length === 2) return { name: 'anomaly', id: parts[1] };
@@ -66,6 +70,8 @@ export const href = {
   models: () => '#/models',
   monitoring: () => '#/monitoring',
   scenarios: () => '#/scenarios',
+  reports: () => '#/reports',
+  report: (id: string) => `#/reports/${id}`,
   suppliers: () => '#/suppliers',
   supplier: (id: string) => `#/suppliers/${id}`,
   anomaly: (id: string) => `#/anomalies/${id}`,

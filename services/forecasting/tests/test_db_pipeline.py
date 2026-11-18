@@ -187,9 +187,12 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
                  FROM forecast.model_activations"""
         ).fetchall()
         assert activation == [("BOOTSTRAP", True, True)]
-        assert conn.execute(
-            "SELECT mlflow_status::text FROM forecast.runs WHERE id = %s", (run_id,)
-        ).fetchone()[0] == "DISABLED"
+        assert (
+            conn.execute(
+                "SELECT mlflow_status::text FROM forecast.runs WHERE id = %s", (run_id,)
+            ).fetchone()[0]
+            == "DISABLED"
+        )
 
         first_day = conn.execute(
             "SELECT min(target_day) FROM forecast.points WHERE run_id = %s", (run_id,)

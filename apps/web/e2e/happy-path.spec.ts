@@ -142,3 +142,38 @@ test('a manager saves a what-if scenario; without a forecast, running it says so
   await row.getByRole('button', { name: 'Run' }).click();
   await expect(page.getByRole('alert')).toContainText('There is no forecast yet');
 });
+
+test('a manager generates a report, sees its period and generation time, and can print it', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByLabel('Email').fill('inventory@retailpulse.test');
+  await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
+
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('button', { name: 'Intelligence' }).click();
+  await nav.getByRole('link', { name: 'Reports' }).click();
+  await expect(page.getByRole('heading', { name: 'Reports', exact: true })).toBeVisible();
+
+  const form = page.getByRole('form', { name: 'Generate a report' });
+  await form.getByLabel('Scope').selectOption({ label: 'STR-01 — Riverside Store' });
+  await form.getByRole('button', { name: 'Generate' }).click();
+
+  // The report page: period, scope and generation time up front; CSV and print available.
+  await expect(page.getByText('Daily report · STR-01 — Riverside Store')).toBeVisible();
+  await expect(page.getByText('(UTC days)')).toBeVisible();
+  await expect(page.getByText(/by Imani Inventory$/)).toBeVisible();
+  const csv = page.getByRole('link', { name: 'Download CSV' });
+  await expect(csv).toHaveAttribute('href', /\/api\/v1\/reports\/[0-9a-f-]+\/export\.csv$/);
+  const download = await page.request.get((await csv.getAttribute('href'))!);
+  expect(download.status()).toBe(200);
+  expect((await download.text()).split('\r\n')[0]).toBe('section,metric,location,product,value');
+
+  // Printing hides the navigation and the buttons, keeps the period.
+  await page.emulateMedia({ media: 'print' });
+  await expect(page.getByRole('navigation', { name: 'Main' })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Print / save as PDF' })).toBeHidden();
+  await expect(page.getByText('(UTC days)')).toBeVisible();
+});

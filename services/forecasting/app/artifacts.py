@@ -71,7 +71,9 @@ def _safe_path(relative_path: str, *, must_exist: bool) -> Path:
         resolved = candidate.resolve(strict=must_exist)
         resolved.relative_to(root)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        raise ArtifactError("Artifact path does not resolve to a file under MODEL_ARTIFACT_DIR.") from exc
+        raise ArtifactError(
+            "Artifact path does not resolve to a file under MODEL_ARTIFACT_DIR."
+        ) from exc
     if must_exist and not resolved.is_file():
         raise ArtifactError("Artifact path must identify a regular, non-symlink file.")
     return resolved
@@ -159,7 +161,9 @@ def load_artifact(
         "kind": identity.kind,
         "pipelineVersion": PIPELINE_VERSION,
     }
-    if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in expected.items()):
+    if not isinstance(payload, dict) or any(
+        payload.get(key) != value for key, value in expected.items()
+    ):
         raise ArtifactError("Artifact identity or pipeline metadata does not match the registry.")
     names = payload.get("featureNames")
     max_horizon = payload.get("maxHorizon")

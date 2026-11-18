@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3, steps 4a–4b and 4c-1 are built** (see §9); next is 4c-2, the Reports page and print layout.
+Phase 3 and steps 4a–4c are built** (see §9); next is 4d, Grafana business dashboards.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1381,4 +1381,42 @@ writes nothing outside `report_runs`. Measured on the dev data: generation time 
   the network DAILY report for 2026-11-17 on its own (`SCHEDULED`, 706 ms); no WEEKLY, because
   2026-11-18 is a Wednesday.
 - Tests: API unit 218 → 225, integration 258 → 266; Python 124 and e2e 3 unchanged.
+
+
+### Step 4c-2 — Reports page and print layout: rules (written 2026-11-18, BEFORE building)
+
+**Pages** (every signed-in role; menu **Intelligence → Reports**):
+- `#/reports` — generate form (kind, scope: network or one location — store managers only see their
+  own stores and no "network" choice — and an optional period end, latest yesterday), and the list of
+  reports (kind, period, scope, scheduled or by whom, generated at), newest period first, paginated.
+- `#/reports/:id` — the snapshot in words and tables: header with **period, scope and generated-at**
+  always visible, sales (totals, per store, top products), movements, work done, stock at generation
+  time (labelled as such), and the stated limits (current prices; stock at generation, not period
+  end; synthetic data). **Download CSV** (the API export) and **Print** buttons.
+
+**Print** (decision D7: the browser's "Save as PDF", no PDF service): a print stylesheet hides the
+navigation, buttons and other screen-only chrome, keeps tables whole where possible, prints in
+black on white, and keeps the period, scope and generated-at at the top of page 1.
+
+**Checks:** e2e — generate a network report through the menu, open it, see period and generated-at,
+the CSV link points at the export, and in print media the navigation and buttons are hidden; browser
+check on the demo data at 1280 / 768 / 390 / 320 px (0 px overflow) plus a print-to-PDF of one report
+looked at page by page; store manager sees only own-store scopes.
+
+### Step 4c-2 — Reports page and print layout ✅ (2026-11-18, not committed yet)
+
+- **Intelligence → Reports** (`#/reports`): generate form (kind, scope — store managers see only
+  their stores and no network choice — optional last day), list of reports (period, kind, scope,
+  scheduled or by whom, generated at). `#/reports/:id`: header with period, scope, generated at and
+  by whom; sales, movements, work, stock at generation time (labelled), sales per store, top
+  products, the stated limits; *Download CSV* and *Print / save as PDF*.
+- **Print:** the app header, back link and buttons are `print:hidden`, the page prints on white,
+  sections avoid page breaks inside. A Chromium A4 print of the demo's network report: two pages,
+  period / scope / generation line at the top of page 1, every table whole, numbers identical to the
+  API (2,845 units; STR-01 647).
+- **Checks:** e2e 3 → 4 (generate through the menu, see period and generated-at, the CSV link
+  downloads a file with the right header, print media hides navigation and buttons); 0 px overflow
+  on both pages at 1280 / 768 / 390 / 320; store manager: only "STR-01" offered, only STR-01 reports
+  listed, a network report refused with "Store managers can only use reports for their own stores."
+  API unit 225 and integration 266 unchanged (no API change); Docker web rebuilt.
 

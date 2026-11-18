@@ -28,9 +28,7 @@ def admin_url() -> str:
 
 
 @pytest.fixture()
-def test_db(
-    admin_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[str]:
+def test_db(admin_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[str]:
     """A fresh database with all migrations applied; DATABASE_URL points at it during the test."""
     name = f"rp_fc_{int(time.time())}_{secrets.token_hex(3)}"
     with psycopg.connect(admin_url, autocommit=True) as admin:

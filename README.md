@@ -350,9 +350,12 @@ npm run test:e2e
    extra supplier days, DC stock unavailable %), press *Run*, tick up to three and compare them
    against the baseline. Nothing is ordered or moved — it is the replenishment calculation, run in
    memory.
-9. **Models → Model monitoring** shows run health and drift; press *Run monitoring now* (it says
+9. **Intelligence → Reports**: generate a daily or weekly report for the network or one location
+   (store managers: their own stores), open it, *Download CSV* or *Print / save as PDF*.
+   Yesterday's network report is created automatically every day, last week's every Monday.
+10. **Models → Model monitoring** shows run health and drift; press *Run monitoring now* (it says
    “not enough data” until 7 days of sales exist after the model's training).
-10. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+11. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
 
 ## Measured numbers
 
@@ -369,7 +372,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 225 unit/HTTP + 266 integration (TypeScript), 124 Python, 3 end-to-end |
+| Tests | 225 unit/HTTP + 266 integration (TypeScript), 124 Python, 4 end-to-end |
 
 ## Known limitations
 

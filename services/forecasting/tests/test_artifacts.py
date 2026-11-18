@@ -32,10 +32,18 @@ def test_artifact_round_trip_is_content_addressed_and_deterministic(
     monkeypatch.setenv("MODEL_ARTIFACT_DIR", str(tmp_path))
     model = fitted_model()
     first = artifacts.write_artifact(
-        identity(), params={"loss": "poisson"}, feature_names=["a", "b"], max_horizon=14, model=model
+        identity(),
+        params={"loss": "poisson"},
+        feature_names=["a", "b"],
+        max_horizon=14,
+        model=model,
     )
     second = artifacts.write_artifact(
-        identity(), params={"loss": "poisson"}, feature_names=["a", "b"], max_horizon=14, model=model
+        identity(),
+        params={"loss": "poisson"},
+        feature_names=["a", "b"],
+        max_horizon=14,
+        model=model,
     )
     assert first == second
     loaded = artifacts.load_artifact(

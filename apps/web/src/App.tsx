@@ -14,6 +14,7 @@ import { RecommendationDetailPage } from './pages/RecommendationDetailPage';
 import { ReplenishmentPage } from './pages/ReplenishmentPage';
 import { LoginPage } from './pages/LoginPage';
 import { ModelsPage } from './pages/ModelsPage';
+import { ReportDetailPage, ReportsPage } from './pages/ReportsPage';
 import { ScenariosPage } from './pages/ScenariosPage';
 import { MonitoringPage } from './pages/MonitoringPage';
 import { OverviewPage } from './pages/OverviewPage';
@@ -83,6 +84,11 @@ const NAV: NavEntry[] = [
         to: href.models(),
         active: (r) => r.name === 'models' || r.name === 'monitoring',
       },
+      {
+        label: 'Reports',
+        to: href.reports(),
+        active: (r) => r.name === 'reports' || r.name === 'report',
+      },
     ],
   },
   { label: 'Health', to: href.health(), active: (r) => r.name === 'health' },
@@ -110,6 +116,10 @@ function Page({ route }: { route: Route }) {
       return <MonitoringPage />;
     case 'scenarios':
       return <ScenariosPage />;
+    case 'reports':
+      return <ReportsPage />;
+    case 'report':
+      return <ReportDetailPage key={route.id} id={route.id} />;
     case 'suppliers':
       return <SuppliersPage />;
     case 'supplier':
@@ -168,8 +178,8 @@ function Shell() {
   const signedIn = state.status === 'authenticated';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b bg-white">
+    <div className="min-h-screen bg-slate-50 text-slate-900 print:bg-white">
+      <header className="border-b bg-white print:hidden">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-6">
             <h1 className="text-lg font-semibold">RetailPulse</h1>

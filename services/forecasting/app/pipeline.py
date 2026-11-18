@@ -147,7 +147,9 @@ def compute(
     }
     automatic_selection = select_model(scores)
     if active_model is not None and active_model not in predictions:
-        raise ValueError(f"ACTIVE model {active_model!r} is not evaluated by this pipeline version.")
+        raise ValueError(
+            f"ACTIVE model {active_model!r} is not evaluated by this pipeline version."
+        )
     selection = (
         Selection(
             active_model,
