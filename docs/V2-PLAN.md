@@ -1,6 +1,6 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1 and step 2a built** (see §9);
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a and 2c built** (see §9);
 waiting for approval of step 2b.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
@@ -503,7 +503,7 @@ whole network (per product) and each store (per product at that store).
 - Recalculated on demand (admins / inventory managers), by `npm run demo`, and once a day by the
   API's background timer. Every run is stored with its window, so results are reproducible.
 
-### Step 2a — ABC/XYZ classification ✅ (2026-11-18, not committed yet)
+### Step 2a — ABC/XYZ classification ✅ (2026-11-18, commit f979b0a)
 
 - Rules as written above, implemented as pure functions (`classifications.calc.ts`, 9 unit tests
   with hand-checked numbers). One edge found by the tests: a share of exactly 80 % was misread
@@ -518,4 +518,46 @@ whole network (per product) and each store (per product at that store).
   but AZ and BZ. The synthetic data has almost no erratic demand (documented as a limitation).
 - Tests: API unit 130 → 139, integration 218 → 223; all checks and e2e green. Navigation now wraps
   to two lines on desktop (11 items) — to be reorganised with the Control Tower (4a).
+
+
+### Step 2c — supplier performance rules (written 2026-11-18, BEFORE generating or measuring)
+
+Order: the user approved doing 2c before 2b, so safety stock (2b) can use measured lead-time
+variation instead of assuming none.
+
+**Data.** There is no delivery history yet (no purchase orders exist). So:
+- `supplier_deliveries` holds one row per delivery: supplier, product, store, ordered on, promised
+  lead time, received on, ordered and received quantity, and `source` = `SYNTHETIC` or `ORDER`.
+- `npm run db:seed` fills **12 months of SYNTHETIC deliveries** (labelled, deterministic) for every
+  primary supplier-product pair, about one order every 4 weeks to a random store. Each supplier has a
+  fixed, documented profile — the "truth" the statistics must recover:
+  Greenfield Fresh: almost always on time (delay 0 in 90 %, else +1 day), 2 % short shipments;
+  Harbor Provisions: usually on time (75 % on time, else +1–3 days), 5 % short;
+  Summit Household: often late (50 % on time, else +1–6 days), 10 % short (60–95 % of the order).
+- A **real** purchase order adds a row (`ORDER`) when it is received. Synthetic history never
+  creates purchase orders or stock movements — it is history, not stock.
+
+**Statistics** (per supplier, and per supplier × product; plain arithmetic, no ML — decision D6):
+deliveries; lead time mean / median / standard deviation (days from order to receipt); on-time rate
+(received no later than ordered + promised days); late rate; average days late when late; fill rate
+(received ÷ ordered units). **Reliability score** (0–100) = 50 × on-time rate + 30 × fill rate +
+20 × (1 − min(lead-time CV, 1)). Fewer than 5 deliveries → shown, but marked "too few to judge".
+
+**Check:** the measured on-time rates must put the suppliers in the profile order (Greenfield >
+Harbor > Summit), and each supplier's measured on-time rate must be within 10 points of its profile.
+
+### Step 2c — supplier performance ✅ (2026-11-18, not committed yet)
+
+- Migration `0013_supplier_deliveries.sql` (immutable rows; SYNTHETIC or ORDER). The seed adds 2,601
+  synthetic deliveries once, from its own random stream (catalog and stock unchanged; re-seeding adds
+  nothing — tested). Receiving a purchase order adds one ORDER row per line, in the same transaction.
+- API module `suppliers`: `GET /suppliers/performance`, `GET /suppliers/:id/performance`
+  (statistics in SQL; reliability score pure and unit-tested).
+- UI: **Suppliers** page and detail page (per product, latest deliveries); fits a phone screen.
+- **Pre-registered check passed:** measured on-time 89.7 / 75.7 / 52.8 % vs profiles 90 / 75 / 50 %,
+  ranked correctly. Scores 86 / 81 / 69.
+- Finding for 2b: per-product statistics from 12–15 deliveries are noisy (23–86 % on time for one
+  50 % supplier) — use the supplier-level lead-time spread unless a product has many deliveries.
+- Tests: API unit 139 → 143, integration 223 → 227; all checks and e2e green. One lint false
+  positive (a pipe used only in a decorator) fixed by inlining it like the other controllers.
 

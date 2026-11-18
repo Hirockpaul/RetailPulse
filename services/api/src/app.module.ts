@@ -21,6 +21,7 @@ import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { ReplenishmentModule } from './modules/replenishment/replenishment.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
 import { SalesModule } from './modules/sales/sales.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
 
 /**
@@ -55,6 +56,7 @@ export class AppModule {
         HousekeepingModule,
         AnomaliesModule,
         ClassificationsModule,
+        SuppliersModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

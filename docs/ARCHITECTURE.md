@@ -78,7 +78,8 @@ flowchart TB
   inventory --> catalog & locations & events
   sales --> inventory
   transfers --> inventory & locations
-  purchasing --> inventory
+  purchasing --> inventory & suppliers
+  suppliers --> database
   forecasts --> database
   replenishment --> forecasts & purchasing & transfers
   events --> database
@@ -189,6 +190,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
 | V2 1e-1 ✅ | `forecast.anomaly_detections` (unique per product, store, day, kind) |
@@ -303,6 +305,8 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /anomalies`                      | `status (… or OPEN), severity, source, kind, locationId, productId, sort (severity·day·score), page, pageSize` | unusual sales (forecasting service) and unusual adjustments/returns (event consumer), HIGH first; store-scoped |
 | `GET /anomalies/:id`                  | —                                              | the finding, its explanation, review history and the steps the caller may take |
 | `POST /anomalies/:id/review`          | body `{ status, note? }`                       | NEW → INVESTIGATING → CONFIRMED → RESOLVED, or → DISMISSED; note required to confirm, dismiss or resolve; guarded by status (409), no Idempotency-Key; admin, inventory mgr, store mgr (own store). Never changes stock |
+| `GET /suppliers/performance`          | —                                              | per supplier: deliveries, lead time mean / median / spread, on-time, late, days late, fill rate, reliability score (or "too few to judge" under 5 deliveries); every role |
+| `GET /suppliers/:id/performance`      | —                                              | the same per product, plus the 20 latest deliveries (store managers: their stores only) |
 | `GET /classifications`                | `locationId (none = network), cls, q, sort (value·sku·cv·units), page, pageSize` | ABC/XYZ class of each product with units, value at cost, shares, weekly mean, variation (CV) and ADI; store scope for store managers' own stores |
 | `GET /classifications/summary`        | `locationId`                                   | the 3 × 3 matrix (count and value share per class, plus NEW), the run's data window, the rules and the suggested policy per class |
 | `POST /classifications/recalculate`   | —                                              | admin / inventory manager; also daily (background jobs) and in `npm run demo`. Changes no stock |
@@ -607,6 +611,27 @@ CY 13, CZ 3, NEW 10. **Limitation:** the synthetic generator has no erratic or l
 more evenly than a typical 80/20 assortment; the method is tested on hand-made histories that do
 produce every class.
 
+### 7.5 Supplier performance (V2 2c)
+
+Every delivered order line is a row in `supplier_deliveries`: ordered on, promised lead time,
+received on, ordered and received units. `npm run db:seed` adds 12 months of **synthetic** history
+(2,601 rows; no purchase orders or stock movements are created — it is history only) from a
+documented profile per supplier; receiving a real purchase order adds `ORDER` rows in the same
+transaction. Statistics are SQL aggregates; the reliability score is
+50 × on-time rate + 30 × fill rate + 20 × (1 − min(lead-time CV, 1)), not scored under 5 deliveries.
+
+Measured (the pre-registered check: rank and within 10 points of each profile — passed):
+
+| Supplier | Profile on time | Measured on time | Fill rate | Lead time (days) | Score |
+| -------- | --------------: | ---------------: | --------: | ---------------: | ----: |
+| Greenfield Fresh | 90 % | 89.7 % | 99.3 % | 2.0 ± 0.8 | 86 |
+| Harbor Provisions | 75 % | 75.7 % | 98.9 % | 5.5 ± 1.8 | 81 |
+| Summit Household | 50 % | 52.8 % | 97.7 % | 11.1 ± 3.8 | 69 |
+
+**Small samples are noisy:** per product (12–15 deliveries each) Summit's on-time rate ranges from
+23 % to 86 % although every product has the same 50 % profile. Safety stock (2b) should therefore
+use the supplier-level lead-time spread unless a product has many deliveries.
+
 ## 8. Folder structure
 
 Legend: ✅ exists now · `(Dn)` added on day n. Don't create folders before they're needed.
@@ -660,6 +685,7 @@ RetailPulse/
 │   │   │       ├── overview/ ✅     read model for the landing page (calc is pure)
 │   │   │       ├── anomalies/ ✅    findings list, review workflow, operational rules (pure) + event consumer
 │   │   │       ├── classifications/ ✅ ABC/XYZ: calc (pure), runs, matrix, daily recalculation
+│   │   │       ├── suppliers/ ✅    delivery statistics (SQL) + reliability score (pure)
 │   │   │       └── housekeeping/ ✅ hourly cleanup of processed events and old idempotency keys
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
@@ -692,7 +718,7 @@ RetailPulse/
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
 │           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
-│           └── pages/ ✅            Overview (landing), ABC/XYZ, Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
+│           └── pages/ ✅            Overview (landing), ABC/XYZ, Suppliers (+ detail), Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
 └── scripts/simulation/ ✅
     ├── pos-sim.mjs                  POS traffic simulator (npm run sim:pos; signs in)
@@ -802,4 +828,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 55 | Anomaly reviews belong to the API; findings stay facts (V2 1e-2) | The forecasting service writes only `forecast.*` and never decides anything; people's decisions get an audit trail and DB-enforced steps | Two finding tables joined by a view; reviews need one of two foreign keys (CHECK: exactly one) |
 | 56 | Operational anomalies are plain rules in an event consumer, not ML | Write-offs, repeated corrections and return rates are explainable as thresholds; no labelled history exists to learn from | Fixed thresholds suit the synthetic store sizes; they are not tuned and will need adjusting for real data |
 | 57 | ABC/XYZ is computed in the API from `forecast.demand_daily`, read-only (V2 2a) | It is plain arithmetic over sales history and drives stocking policy (an API concern); no ML runtime needed | The API reads a table the forecasting service writes; the read is isolated in one repository |
+| 58 | Supplier performance from a delivery table, with synthetic history in the seed (V2 2c) | Lead-time statistics need history that does not exist yet; history rows never create orders or stock, and real receipts are added automatically | Synthetic profiles are simple (independent delays); no partial receipts yet, so real ORDER rows always have fill rate 100 % |
 

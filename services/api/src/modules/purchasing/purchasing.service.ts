@@ -6,6 +6,7 @@ import { DatabaseService } from '../../core/database/database.service';
 import type { Page } from '../../core/http/query';
 import type { RequestContext } from '../../core/http/request-context';
 import { InventoryService, sortByProduct } from '../inventory/inventory.service';
+import { SuppliersService } from '../suppliers/suppliers.service';
 import { PurchasingRepository } from './purchasing.repository';
 import type {
   ListPurchaseOrdersQuery,
@@ -24,6 +25,7 @@ export class PurchasingService {
     private readonly repo: PurchasingRepository,
     private readonly inventory: InventoryService,
     private readonly db: DatabaseService,
+    private readonly suppliers: SuppliersService,
   ) {}
 
   /** Create an APPROVED purchase order inside the caller's transaction. */
@@ -65,6 +67,8 @@ export class PurchasingService {
         });
       }
       await this.repo.transition(client, id, 'RECEIVED', ctx.user.id);
+      // The delivery becomes part of the supplier's performance history (V2 step 2c).
+      await this.suppliers.recordOrderDelivery(client, id);
       return this.reload(client, id);
     });
   }

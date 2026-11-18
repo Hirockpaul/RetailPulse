@@ -16,6 +16,7 @@ import { OverviewPage } from './pages/OverviewPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { StockPage } from './pages/StockPage';
+import { SupplierDetailPage, SuppliersPage } from './pages/SuppliersPage';
 import { TransferDetailPage } from './pages/TransferDetailPage';
 import { TransfersPage } from './pages/TransfersPage';
 
@@ -38,6 +39,11 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
   },
   { label: 'ABC/XYZ', to: href.classification(), active: (r) => r.name === 'classification' },
+  {
+    label: 'Suppliers',
+    to: href.suppliers(),
+    active: (r) => r.name === 'suppliers' || r.name === 'supplier',
+  },
   {
     label: 'Purchase orders',
     to: href.purchaseOrders(),
@@ -68,6 +74,10 @@ function Page({ route }: { route: Route }) {
       return <AnomaliesPage />;
     case 'classification':
       return <ClassificationPage />;
+    case 'suppliers':
+      return <SuppliersPage />;
+    case 'supplier':
+      return <SupplierDetailPage key={route.id} id={route.id} />;
     case 'anomaly':
       return <AnomalyDetailPage key={route.id} id={route.id} />;
     case 'replenishment':

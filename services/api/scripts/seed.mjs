@@ -8,6 +8,7 @@
 //        npm run db:seed -- --reset --products=500
 //
 // Opening stock is written as RECEIPT ledger rows, so balances are traceable from day one.
+// 12 months of fictional supplier deliveries (history only: no orders, no stock) are added once.
 //
 // Demo accounts (one per role, fictional @retailpulse.test addresses) are created or refreshed
 // on every run. Their shared password comes from DEMO_PASSWORD in .env, never from this file.
@@ -123,6 +124,90 @@ function shuffle(arr) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+// ------------------------------------------------------------ supplier delivery history
+// 12 months of FICTIONAL deliveries per primary supplier-product pair (docs/V2-PLAN.md step 2c).
+// Each supplier has a fixed profile — the "truth" the supplier statistics should recover.
+// Own RNG, so adding this history changes nothing else the seed produces.
+const DELIVERY_PROFILES = {
+  'SUP-GREEN': { onTime: 0.9, maxDelay: 1, shortShare: 0.02 },
+  'SUP-HARBOR': { onTime: 0.75, maxDelay: 3, shortShare: 0.05 },
+  'SUP-SUMMIT': { onTime: 0.5, maxDelay: 6, shortShare: 0.1 },
+};
+
+async function ensureDeliveryHistory(db) {
+  const existing = await db.query(
+    "SELECT COUNT(*)::int AS n FROM supplier_deliveries WHERE source = 'SYNTHETIC'",
+  );
+  if (existing.rows[0].n > 0) return 0;
+  let s = 20261118;
+  const r = () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const ri = (min, max) => min + Math.floor(r() * (max - min + 1));
+  const terms = (
+    await db.query(
+      `SELECT sp.supplier_id, sp.product_id, sp.lead_time_days, sp.min_order_qty, s.code::text AS code
+         FROM supplier_products sp JOIN suppliers s ON s.id = sp.supplier_id
+        WHERE sp.is_primary ORDER BY s.code, sp.product_id`,
+    )
+  ).rows;
+  const stores = (
+    await db.query("SELECT id FROM locations WHERE type = 'STORE' ORDER BY code")
+  ).rows.map((x) => x.id);
+  const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const day = (offset) =>
+    new Date(today.getTime() + offset * 86_400_000).toISOString().slice(0, 10);
+  const rows = {
+    supplier: [],
+    product: [],
+    location: [],
+    ordered: [],
+    promised: [],
+    received: [],
+    qty: [],
+    got: [],
+  };
+  for (const t of terms) {
+    const profile = DELIVERY_PROFILES[t.code] ?? DELIVERY_PROFILES['SUP-HARBOR'];
+    for (let ordered = -365 + ri(0, 20); ; ordered += ri(21, 35)) {
+      const delay = r() < profile.onTime ? 0 : ri(1, profile.maxDelay);
+      const arrives = ordered + t.lead_time_days + delay;
+      if (arrives > -1) break; // only deliveries that have already happened
+      const qty = t.min_order_qty * ri(1, 3);
+      const got =
+        r() < profile.shortShare ? Math.max(1, Math.round(qty * (0.6 + r() * 0.35))) : qty;
+      rows.supplier.push(t.supplier_id);
+      rows.product.push(t.product_id);
+      rows.location.push(stores[ri(0, stores.length - 1)]);
+      rows.ordered.push(day(ordered));
+      rows.promised.push(t.lead_time_days);
+      rows.received.push(day(arrives));
+      rows.qty.push(qty);
+      rows.got.push(got);
+    }
+  }
+  await db.query(
+    `INSERT INTO supplier_deliveries (supplier_id, product_id, location_id, ordered_on, promised_days,
+        received_on, ordered_qty, received_qty, source)
+     SELECT *, 'SYNTHETIC' FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::date[], $5::int[],
+        $6::date[], $7::int[], $8::int[])`,
+    [
+      rows.supplier,
+      rows.product,
+      rows.location,
+      rows.ordered,
+      rows.promised,
+      rows.received,
+      rows.qty,
+      rows.got,
+    ],
+  );
+  return rows.qty.length;
 }
 
 // ------------------------------------------------------------ fictional reference data
@@ -275,10 +360,12 @@ try {
     const { rows } = await client.query('SELECT COUNT(*)::int AS n FROM products');
     if (rows[0].n > 0) {
       const users = await ensureDemoUsers(client);
+      const deliveries = await ensureDeliveryHistory(client);
       await client.query('COMMIT');
       console.log(
-        `Catalog already seeded (${rows[0].n} products); refreshed ${users} demo accounts. ` +
-          'Use --reset to recreate everything.',
+        `Catalog already seeded (${rows[0].n} products); refreshed ${users} demo accounts` +
+          (deliveries ? `; added ${deliveries} synthetic supplier deliveries` : '') +
+          '. Use --reset to recreate everything.',
       );
       process.exit(0);
     }
@@ -369,12 +456,14 @@ try {
   );
 
   const demoUsers = await ensureDemoUsers(client);
+  const deliveries = await ensureDeliveryHistory(client);
 
   await client.query('COMMIT');
   console.log(
     `Seeded synthetic data: ${CATEGORIES.length} categories, ${SUPPLIERS.length} suppliers, ` +
       `${LOCATIONS.length} locations, ${products.length} products, ${sp.length} supplier terms, ` +
-      `${receipts.qty.length} opening-stock receipts, ${demoUsers} demo accounts.`,
+      `${receipts.qty.length} opening-stock receipts, ${deliveries} supplier deliveries, ` +
+      `${demoUsers} demo accounts.`,
   );
 } catch (err) {
   await client.query('ROLLBACK').catch(() => {});
