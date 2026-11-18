@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1 (steps 1a–1e) built** (see §9);
-waiting for approval of step 2a.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1 and step 2a built** (see §9);
+waiting for approval of step 2b.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -462,7 +462,7 @@ severity and the comparison methods are unchanged.
   (the IQR comparison's quartiles, 15 s, are only computed when that method is measured).
 - Tests: Python 85 → 94; TypeScript suites unchanged and green.
 
-### Step 1e-2 — review workflow and operational anomalies ✅ (2026-11-18, not committed yet)
+### Step 1e-2 — review workflow and operational anomalies ✅ (2026-11-18, commit b0a8559)
 
 - Migration `0011_anomaly_reviews.sql`: `operational_anomalies`; `anomaly_reviews` with a transition
   trigger (only the allowed steps; DISMISSED and RESOLVED final); append-only
@@ -480,4 +480,42 @@ severity and the comparison methods are unchanged.
   investigated through the UI); Python unchanged (94). All green.
 - Note for running two API versions: an older API's event worker on the same database would mark
   new events done without the new consumer. The Docker demo was rebuilt with this code.
+
+
+### Step 2a — ABC/XYZ rules (written 2026-11-18, BEFORE any calculation)
+
+Data: `forecast.demand_daily` (units sold per product × store × day; synthetic history plus real
+ledger sales), the last **52 full weeks** ending on the latest day with data. Two scopes: the
+whole network (per product) and each store (per product at that store).
+
+- **ABC — value.** Consumption value = units sold × the primary supplier's unit cost (what the
+  stock costs us; selling price only if a product had no cost — none has today). Sort by value,
+  highest first; **A** = the products that make up the first **80 %** of total value, **B** = the next
+  **15 %** (up to 95 %), **C** = the rest, including products that sold nothing. A product is A if the
+  cumulative share *before* it is below 80 % (so the product that crosses the line is A).
+- **XYZ — predictability**, from weekly units (weeks remove the weekday pattern):
+  coefficient of variation CV = standard deviation ÷ mean of the weekly units, and the average
+  demand interval ADI = weeks ÷ weeks with any sale. **X** CV ≤ 0.5, **Y** 0.5 < CV ≤ 1.0, **Z** CV > 1.0;
+  intermittent demand (ADI > 1.32, the Syntetos–Boylan cut-off) or no sales at all is always **Z**.
+- **NEW** — fewer than **13 weeks** of history: not classified (too little data to judge).
+- Policies per class are documented text in a config file and shown on the page; service levels
+  per class are decided in step 2b, not here.
+- Recalculated on demand (admins / inventory managers), by `npm run demo`, and once a day by the
+  API's background timer. Every run is stored with its window, so results are reproducible.
+
+### Step 2a — ABC/XYZ classification ✅ (2026-11-18, not committed yet)
+
+- Rules as written above, implemented as pure functions (`classifications.calc.ts`, 9 unit tests
+  with hand-checked numbers). One edge found by the tests: a share of exactly 80 % was misread
+  through float rounding; the comparison now has a 1e-9 tolerance.
+- Migration `0012_classifications.sql`: `classification_runs`, `inventory_classifications`
+  (class must equal ABC + XYZ, or NEW — enforced by the database).
+- API: `GET /classifications`, `GET /classifications/summary`, `POST /classifications/recalculate`
+  (approvers); daily background run; part of `npm run demo`.
+- UI: **ABC/XYZ** page — 3 × 3 matrix (count and value share), click a cell for its products and
+  the suggested policy; network or one store; fits a phone screen.
+- Measured on the dev data: network AX 104 / BX 50 / CX 34 / CY 2 / NEW 10; STR-01 shows all classes
+  but AZ and BZ. The synthetic data has almost no erratic demand (documented as a limitation).
+- Tests: API unit 130 → 139, integration 218 → 223; all checks and e2e green. Navigation now wraps
+  to two lines on desktop (11 items) — to be reorganised with the Control Tower (4a).
 

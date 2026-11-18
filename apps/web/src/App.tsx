@@ -5,6 +5,7 @@ import { href, type Route, useRoute } from './lib/router';
 import { AlertsPage } from './pages/AlertsPage';
 import { AnomaliesPage } from './pages/AnomaliesPage';
 import { AnomalyDetailPage } from './pages/AnomalyDetailPage';
+import { ClassificationPage } from './pages/ClassificationPage';
 import { HealthPage } from './pages/HealthPage';
 import { PurchaseOrderDetailPage } from './pages/PurchaseOrderDetailPage';
 import { PurchaseOrdersPage } from './pages/PurchaseOrdersPage';
@@ -36,6 +37,7 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     to: href.replenishment(),
     active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
   },
+  { label: 'ABC/XYZ', to: href.classification(), active: (r) => r.name === 'classification' },
   {
     label: 'Purchase orders',
     to: href.purchaseOrders(),
@@ -64,6 +66,8 @@ function Page({ route }: { route: Route }) {
       return <AlertsPage />;
     case 'anomalies':
       return <AnomaliesPage />;
+    case 'classification':
+      return <ClassificationPage />;
     case 'anomaly':
       return <AnomalyDetailPage key={route.id} id={route.id} />;
     case 'replenishment':

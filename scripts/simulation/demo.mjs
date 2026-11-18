@@ -6,7 +6,8 @@
 //   3. re-scans alerts once (the seed's opening stock did not go through events), and simulates
 //      some unusual stock activity (scripts/simulation/suspicious-sim.mjs) for the anomaly page,
 //   4. if the forecasting service is running: runs a forecast, waits for it, and generates
-//      replenishment recommendations (nothing is ordered — a manager approves in the UI).
+//      replenishment recommendations (nothing is ordered — a manager approves in the UI);
+//      then classifies the products ABC/XYZ from the sales history.
 // Every step goes through the public API, exactly as a user would. Nothing edits the database.
 //
 // Usage: npm run demo -- [--api=http://localhost:3000] [--sales=200]
@@ -117,6 +118,15 @@ if (started.status === 503) {
       `${g.byAction.TRANSFER} transfers, ${g.byAction.PURCHASE_ORDER} purchase orders — ` +
       'waiting for a manager to approve.',
   );
+}
+
+// ABC/XYZ classification from the sales history (does not need the forecasting service).
+const classes = await call('POST', '/classifications/recalculate');
+if (classes.status === 200) {
+  const cells = classes.body.cells.filter((c) => c.cls !== 'NEW').sort((a, b) => b.count - a.count);
+  console.log(`  ABC/XYZ (whole network): ${cells.map((c) => `${c.cls} ${c.count}`).join(', ')}.`);
+} else {
+  console.log(`  ABC/XYZ skipped (${classes.status} ${classes.body.error?.code ?? ''}).`);
 }
 
 console.log('\n✓ Demo data ready (synthetic). Open the web app and start at Overview.');

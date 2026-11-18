@@ -9,6 +9,7 @@ import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnomaliesModule } from './modules/anomalies/anomalies.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { ClassificationsModule } from './modules/classifications/classifications.module';
 import { EventsModule } from './modules/events/events.module';
 import { ForecastsModule } from './modules/forecasts/forecasts.module';
 import { HealthModule } from './modules/health/health.module';
@@ -53,6 +54,7 @@ export class AppModule {
         OverviewModule,
         HousekeepingModule,
         AnomaliesModule,
+        ClassificationsModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

@@ -85,6 +85,7 @@ flowchart TB
   alerts --> events & inventory
   overview --> forecasts & events
   anomalies --> events
+  classifications --> database
   housekeeping --> events
 ```
 
@@ -188,6 +189,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
 | V2 1e-1 ✅ | `forecast.anomaly_detections` (unique per product, store, day, kind) |
 | V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
@@ -301,6 +303,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /anomalies`                      | `status (… or OPEN), severity, source, kind, locationId, productId, sort (severity·day·score), page, pageSize` | unusual sales (forecasting service) and unusual adjustments/returns (event consumer), HIGH first; store-scoped |
 | `GET /anomalies/:id`                  | —                                              | the finding, its explanation, review history and the steps the caller may take |
 | `POST /anomalies/:id/review`          | body `{ status, note? }`                       | NEW → INVESTIGATING → CONFIRMED → RESOLVED, or → DISMISSED; note required to confirm, dismiss or resolve; guarded by status (409), no Idempotency-Key; admin, inventory mgr, store mgr (own store). Never changes stock |
+| `GET /classifications`                | `locationId (none = network), cls, q, sort (value·sku·cv·units), page, pageSize` | ABC/XYZ class of each product with units, value at cost, shares, weekly mean, variation (CV) and ADI; store scope for store managers' own stores |
+| `GET /classifications/summary`        | `locationId`                                   | the 3 × 3 matrix (count and value share per class, plus NEW), the run's data window, the rules and the suggested policy per class |
+| `POST /classifications/recalculate`   | —                                              | admin / inventory manager; also daily (background jobs) and in `npm run demo`. Changes no stock |
 | `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; store managers: own stores |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
@@ -586,6 +591,22 @@ authentication; recommendations assume the primary supplier and one lead time pe
 
 ---
 
+### 7.4 ABC/XYZ classification (V2 2a)
+
+`modules/classifications` classifies every product network-wide and per store from the last 52
+weeks of `forecast.demand_daily`: **ABC** by consumption value (units × primary supplier cost; A =
+first 80 % of value, B the next 15 %, C the rest), **XYZ** by the coefficient of variation of
+weekly units (X ≤ 0.5, Y ≤ 1.0, Z above, or intermittent: ADI > 1.32); fewer than 13 weeks = NEW.
+Rules were fixed before calculating (docs/V2-PLAN.md) and live in `classifications.config.ts`
+with the suggested policy per class. Each run stores its data window; the newest 5 are kept.
+
+Measured on the dev data (1,200 results in ~1.1 s): network — AX 104 products (80.3 % of value),
+BX 50 (14.8 %), CX 34 (4.9 %), CY 2, NEW 10; store STR-01 — AX 99, AY 4, BX 40, BY 11, CX 20,
+CY 13, CZ 3, NEW 10. **Limitation:** the synthetic generator has no erratic or lumpy products
+(weekly CV ≈ 0.26–0.70 from its noise model), so the network is almost all X and value is spread
+more evenly than a typical 80/20 assortment; the method is tested on hand-made histories that do
+produce every class.
+
 ## 8. Folder structure
 
 Legend: ✅ exists now · `(Dn)` added on day n. Don't create folders before they're needed.
@@ -638,6 +659,7 @@ RetailPulse/
 │   │   │       ├── replenishment/ ✅ calc (pure), recommendations, approve / reject
 │   │   │       ├── overview/ ✅     read model for the landing page (calc is pure)
 │   │   │       ├── anomalies/ ✅    findings list, review workflow, operational rules (pure) + event consumer
+│   │   │       ├── classifications/ ✅ ABC/XYZ: calc (pure), runs, matrix, daily recalculation
 │   │   │       └── housekeeping/ ✅ hourly cleanup of processed events and old idempotency keys
 │   │   └── test/
 │   │       ├── app.spec.ts ✅       HTTP tests with a mocked DB
@@ -670,7 +692,7 @@ RetailPulse/
 │           ├── api/ ✅              client.ts (fetch + error handling), types per domain
 │           ├── components/ ✅       Badge, Status (loading/error/empty/asOf), Pagination, table.ts
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
-│           └── pages/ ✅            Overview (landing), Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
+│           └── pages/ ✅            Overview (landing), ABC/XYZ, Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
 └── scripts/simulation/ ✅
     ├── pos-sim.mjs                  POS traffic simulator (npm run sim:pos; signs in)
@@ -779,4 +801,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 54 | Unusual sales: robust z on a same-weekday baseline, rules written before measuring, one held-out revision allowed (V2 1e-1) | Explainable in one sentence; promotions are a known cause; scored on labelled data, with a third dataset kept unseen until the revision was written | Low precision for MEDIUM findings is inherent at this base rate (0.02 %); the review page (1e-2) must say so and lead with HIGH |
 | 55 | Anomaly reviews belong to the API; findings stay facts (V2 1e-2) | The forecasting service writes only `forecast.*` and never decides anything; people's decisions get an audit trail and DB-enforced steps | Two finding tables joined by a view; reviews need one of two foreign keys (CHECK: exactly one) |
 | 56 | Operational anomalies are plain rules in an event consumer, not ML | Write-offs, repeated corrections and return rates are explainable as thresholds; no labelled history exists to learn from | Fixed thresholds suit the synthetic store sizes; they are not tuned and will need adjusting for real data |
+| 57 | ABC/XYZ is computed in the API from `forecast.demand_daily`, read-only (V2 2a) | It is plain arithmetic over sales history and drives stocking policy (an API concern); no ML runtime needed | The API reads a table the forecasting service writes; the read is isolated in one repository |
 

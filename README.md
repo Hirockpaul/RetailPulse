@@ -307,7 +307,10 @@ npm run test:e2e
    write-offs, adjustments and returns (found after stock movements), high first, each with the
    numbers behind it and how much to trust it. Open one, investigate, confirm or dismiss with a
    note; the history records who decided what. Reviewing never changes stock.
-6. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+6. **ABC/XYZ** shows which products carry the value and how predictable their demand is, as a
+   3 × 3 matrix for the whole network or one store; click a cell for its products and the
+   suggested stocking policy.
+7. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
 
 ## Measured numbers
 
@@ -324,7 +327,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 130 unit/HTTP + 218 integration (TypeScript), 94 Python, 2 end-to-end |
+| Tests | 139 unit/HTTP + 223 integration (TypeScript), 94 Python, 2 end-to-end |
 
 ## Known limitations
 
