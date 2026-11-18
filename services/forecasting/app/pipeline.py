@@ -11,12 +11,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+from sklearn.ensemble import HistGradientBoostingRegressor
 
-from app import repository
+from app import artifacts, mlflow_mirror, repository
 from app.anomalies.detect import detect as detect_anomalies
 from app.config import (
+    DEFAULT_HORIZON_DAYS,
     EVAL_HORIZON_DAYS,
     MIN_HISTORY_DAYS,
+    mlflow_tracking_uri,
 )
 from app.data import History, load_history
 from app.db import connect
@@ -53,6 +56,9 @@ class Outcome:
     metrics: dict[str, dict[str, dict]]
     horizon_metrics: list[dict]  # {model, split, horizon_day, mae, wape, bias, n_points}
     feature_names: list[str]
+    # What the accuracy gate would choose automatically; used only to classify candidates.
+    automatic_selection: Selection
+    # What was actually served: ACTIVE registry model, or automatic_selection during bootstrap.
     selection: Selection
     model_names: list[str]  # per series
     is_fallback: np.ndarray
@@ -69,6 +75,8 @@ class Outcome:
     std_daily_90: np.ndarray
     sigma: np.ndarray
     test_wape: np.ndarray
+    # Fresh fit used only to create a write-once artifact for an unmaterialized ML registry row.
+    candidate_model: object
 
 
 def _recent_stats(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -100,7 +108,12 @@ def _fallback_values(
 
 
 def compute(
-    hist: History, horizon: int, seed: int = 42, config: ml.FeatureConfig | None = None
+    hist: History,
+    horizon: int,
+    seed: int = 42,
+    config: ml.FeatureConfig | None = None,
+    active_model: str | None = None,
+    active_estimator: object | None = None,
 ) -> Outcome:
     n = hist.n_days
     w = make_windows(n)
@@ -132,7 +145,19 @@ def compute(
         model: {split: score(actual[split], preds[split], eligible) for split in spans}
         for model, preds in predictions.items()
     }
-    selection = select_model(scores)
+    automatic_selection = select_model(scores)
+    if active_model is not None and active_model not in predictions:
+        raise ValueError(f"ACTIVE model {active_model!r} is not evaluated by this pipeline version.")
+    selection = (
+        Selection(
+            active_model,
+            automatic_selection.ml_beat_baseline,
+            f"{active_model} served because it is ACTIVE in the model registry; "
+            f"automatic evaluation preferred {automatic_selection.model}.",
+        )
+        if active_model is not None
+        else automatic_selection
+    )
     served_model = selection.model
 
     # Range quality, measured honestly: ranges for the TEST window are calibrated on the
@@ -156,10 +181,16 @@ def compute(
         for row in score_by_horizon(actual[split], preds[split], eligible, s, e)
     ]
 
+    # This fresh full-history fit is a candidate artifact, not an automatic production switch.
+    candidate_model = ml.train(builder, n - 1, max(horizon, DEFAULT_HORIZON_DAYS), seed)
     explanations: Explanations | None = None
     explanation_status = "NOT_ML"
     if served_model == ML_MODEL:
-        final = ml.train(builder, n - 1, horizon, seed)
+        if active_estimator is not None and not isinstance(
+            active_estimator, HistGradientBoostingRegressor
+        ):
+            raise ValueError("ACTIVE ML artifact has an unexpected estimator type.")
+        final = active_estimator if active_estimator is not None else candidate_model
         base_forecast = ml.predict(final, builder, n - 1, horizon)
         try:
             explanations, explanation_status = explain(final, builder, n - 1), "OK"
@@ -233,6 +264,7 @@ def compute(
         metrics=flat_metrics,
         horizon_metrics=horizon_metrics,
         feature_names=builder.feature_names,
+        automatic_selection=automatic_selection,
         selection=selection,
         model_names=names,
         is_fallback=~served,
@@ -248,6 +280,7 @@ def compute(
         std_daily_90=std90,
         sigma=sigma,
         test_wape=test_wape,
+        candidate_model=candidate_model,
     )
 
 
@@ -259,12 +292,45 @@ def run_forecast(run_id: str, horizon: int, seed: int = 42) -> None:
             conn.commit()
         with connect(read_only=True) as conn:
             hist = load_history(conn)
-        outcome = compute(hist, horizon, seed)
+            active = repository.active_model(conn)
+        active_estimator = None
+        if active is not None and active.artifact_path is not None:
+            feature_names = ml.FeatureBuilder(hist).feature_names
+            active_estimator = artifacts.load_artifact(
+                active, feature_names=feature_names, horizon=horizon
+            ).model
+        outcome = compute(
+            hist,
+            horizon,
+            seed,
+            active_model=active.name if active else None,
+            active_estimator=active_estimator,
+        )
         findings = detect_anomalies(hist)
         with connect() as conn:
             repository.save_results(conn, run_id, hist, outcome)
             repository.save_anomalies(conn, run_id, hist, findings)
             conn.commit()
+        uri = mlflow_tracking_uri()
+        if uri:
+            try:
+                with connect() as conn:
+                    repository.set_mlflow_status(conn, run_id, "PENDING")
+                    conn.commit()
+                result = mlflow_mirror.mirror(run_id, uri)
+                with connect() as conn:
+                    repository.set_mlflow_status(
+                        conn,
+                        run_id,
+                        "MIRRORED" if result.run_id else "FAILED",
+                        mlflow_run_id=result.run_id,
+                        error=result.error,
+                    )
+                    conn.commit()
+            except Exception:
+                # Mirroring is deliberately outside the forecast transaction and never changes its
+                # SUCCEEDED state. A database outage here may leave PENDING for later inspection.
+                pass
     except Exception as exc:
         with connect() as conn:
             repository.fail_run(conn, run_id, f"{type(exc).__name__}: {exc}"[:500])

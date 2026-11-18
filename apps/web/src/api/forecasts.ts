@@ -21,6 +21,9 @@ export interface ForecastRun {
   selectionReason: string | null;
   mlBeatBaseline: boolean | null;
   error: string | null;
+  mlflowStatus: 'DISABLED' | 'PENDING' | 'MIRRORED' | 'FAILED';
+  mlflowRunId: string | null;
+  mlflowError: string | null;
 }
 
 export interface ModelMetric {

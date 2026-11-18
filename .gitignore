@@ -8,5 +8,6 @@ coverage/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.artifacts/
 test-results/
 playwright-report/

@@ -13,6 +13,7 @@ EVAL_HORIZON_DAYS = 7  # accuracy is measured 1-7 days ahead, from rolling origi
 MIN_HISTORY_DAYS = 56  # fewer observed days than this -> category-average fallback
 DEFAULT_HORIZON_DAYS = 14
 INTERVAL_Z = 1.2816  # Day-6 normal 80% band; only used to compare (ranges: evaluation/intervals.py)
+ACTIVATION_WAPE_GAIN = 0.005  # candidate must improve validation WAPE by 0.5 percentage points
 
 
 def _load_dotenv() -> None:
@@ -38,3 +39,17 @@ def database_url() -> str:
     if not url:
         raise RuntimeError("DATABASE_URL is not set (copy .env.example to .env).")
     return url
+
+
+def model_artifact_dir() -> Path:
+    _load_dotenv()
+    configured = os.environ.get("MODEL_ARTIFACT_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path(__file__).resolve().parents[1] / ".artifacts" / "models").resolve()
+
+
+def mlflow_tracking_uri() -> str | None:
+    _load_dotenv()
+    value = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    return value or None

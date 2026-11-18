@@ -48,6 +48,19 @@ def test_the_served_model_follows_the_selection_rule(outcome) -> None:
     assert outcome.selection.reason
 
 
+def test_an_active_registry_model_overrides_automatic_selection(hist: History) -> None:
+    active = "seasonal_naive_7"
+    out = compute(hist, horizon=7, seed=5, active_model=active)
+    assert out.selection.model == active
+    assert out.automatic_selection.model in out.metrics
+    assert "ACTIVE in the model registry" in out.selection.reason
+
+
+def test_an_unknown_active_model_fails_instead_of_silently_switching(hist: History) -> None:
+    with pytest.raises(ValueError, match="ACTIVE model.*not evaluated"):
+        compute(hist, horizon=7, seed=5, active_model="missing-model")
+
+
 def test_short_history_series_use_the_flagged_category_average(hist: History, outcome) -> None:
     short = hist.history_days < 56
     assert short.any() and (~short).any()

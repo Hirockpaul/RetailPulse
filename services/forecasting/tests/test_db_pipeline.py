@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
+from mlflow import MlflowClient
 
 from app import pipeline, repository
 from app.db import connect
@@ -170,6 +171,25 @@ def test_a_run_persists_forecasts_metrics_and_model_versions(catalog: dict) -> N
 
         kinds = dict(conn.execute("SELECT name, kind FROM forecast.model_versions").fetchall())
         assert kinds["hgb_direct"] == "ML" and kinds["category_average"] == "FALLBACK"
+        registry = conn.execute(
+            """SELECT count(*) FILTER (WHERE status = 'ACTIVE'),
+                      count(*) FILTER (WHERE kind = 'FALLBACK' AND status = 'REJECTED'),
+                      bool_and(latest_run_id = %s AND evaluated_at IS NOT NULL),
+                      count(*) FILTER (WHERE kind <> 'FALLBACK' AND artifact_path IS NOT NULL
+                        AND artifact_sha256 ~ '^[0-9a-f]{64}$' AND artifact_schema_version = 1
+                        AND artifact_created_at IS NOT NULL)
+                 FROM forecast.model_versions""",
+            (run_id,),
+        ).fetchone()
+        assert registry == (1, 1, True, 3)
+        activation = conn.execute(
+            """SELECT action::text, from_model_id IS NULL, actor_id IS NULL
+                 FROM forecast.model_activations"""
+        ).fetchall()
+        assert activation == [("BOOTSTRAP", True, True)]
+        assert conn.execute(
+            "SELECT mlflow_status::text FROM forecast.runs WHERE id = %s", (run_id,)
+        ).fetchone()[0] == "DISABLED"
 
         first_day = conn.execute(
             "SELECT min(target_day) FROM forecast.points WHERE run_id = %s", (run_id,)
@@ -324,3 +344,73 @@ def test_a_second_run_does_not_duplicate_or_rewrite_anomaly_findings(catalog: di
             "SELECT id, run_id, detected_at FROM forecast.anomaly_detections ORDER BY id"
         ).fetchall()
     assert before and after == before  # same findings, still credited to the first run
+
+
+def test_a_second_run_loads_the_same_active_artifact(
+    catalog: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    load_history(catalog["url"])
+    first = new_run()
+    pipeline.run_forecast(first, 7)
+    with psycopg.connect(catalog["url"]) as conn:
+        before = conn.execute(
+            """SELECT artifact_path, artifact_sha256 FROM forecast.model_versions
+                WHERE status = 'ACTIVE'"""
+        ).fetchone()
+    loaded = []
+    real_load = pipeline.artifacts.load_artifact
+
+    def observed_load(*args, **kwargs):
+        result = real_load(*args, **kwargs)
+        loaded.append((args[0].id, result.local_path))
+        return result
+
+    monkeypatch.setattr(pipeline.artifacts, "load_artifact", observed_load)
+    second = new_run()
+    pipeline.run_forecast(second, 7)
+    with psycopg.connect(catalog["url"]) as conn:
+        after = conn.execute(
+            """SELECT artifact_path, artifact_sha256 FROM forecast.model_versions
+                WHERE status = 'ACTIVE'"""
+        ).fetchone()
+    assert loaded and after == before
+
+
+def test_mlflow_mirror_success_records_metrics_params_and_artifact(
+    catalog: dict, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    load_history(catalog["url"])
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    run_id = new_run()
+    pipeline.run_forecast(run_id, 7)
+    with psycopg.connect(catalog["url"]) as conn:
+        status, mirrored_id, error = conn.execute(
+            """SELECT mlflow_status::text, mlflow_run_id, mlflow_error
+                 FROM forecast.runs WHERE id = %s""",
+            (run_id,),
+        ).fetchone()
+    assert status == "MIRRORED" and mirrored_id and error is None, (status, mirrored_id, error)
+    client = MlflowClient(tracking_uri=tracking_uri)
+    mirrored = client.get_run(mirrored_id)
+    assert mirrored.data.params["forecast_run_id"] == run_id
+    assert "test.hgb_direct.wape" in mirrored.data.metrics
+    assert client.list_artifacts(mirrored_id, "model")
+
+
+def test_unavailable_mlflow_never_fails_the_forecast(
+    catalog: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    load_history(catalog["url"])
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:1")
+    run_id = new_run()
+    pipeline.run_forecast(run_id, 7)
+    with psycopg.connect(catalog["url"]) as conn:
+        status, mirror_status, error = conn.execute(
+            """SELECT status::text, mlflow_status::text, mlflow_error
+                 FROM forecast.runs WHERE id = %s""",
+            (run_id,),
+        ).fetchone()
+    assert status == "SUCCEEDED" and mirror_status == "FAILED"
+    assert error and "Connection" in error

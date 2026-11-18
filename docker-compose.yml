@@ -6,6 +6,8 @@
 #   observability  Prometheus (:9090) + Grafana (:3001) with one dashboard. Scrapes the API in the
 #                  `full` profile, or a dev API on the host (npm run dev:api).
 #                                                        docker compose --profile observability up
+#   mlops          MLflow mirror (:5000), SQLite + local artifacts. To mirror full-profile runs:
+#                  MLFLOW_TRACKING_URI=http://mlflow:5000 docker compose --profile full --profile mlops up
 # All published ports are bound to 127.0.0.1: this is a local demo, not a deployment.
 
 x-database-url: &database-url postgresql://${POSTGRES_USER:-retailpulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-retailpulse}
@@ -56,6 +58,14 @@ services:
       setup: { condition: service_completed_successfully }
     restart: 'no'
 
+  forecast-artifacts-init:
+    profiles: [full]
+    image: alpine:3.23
+    command: ['sh', '-c', 'chown -R 10001:10001 /models']
+    volumes:
+      - model_artifacts:/models
+    restart: 'no'
+
   # Internal only (no login of its own): reachable from the API, never published.
   forecasting:
     profiles: [full]
@@ -63,8 +73,13 @@ services:
     image: retailpulse/forecasting:local
     environment:
       DATABASE_URL: *database-url
+      MODEL_ARTIFACT_DIR: /var/lib/retailpulse/models
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+    volumes:
+      - model_artifacts:/var/lib/retailpulse/models
     depends_on:
       forecast-history: { condition: service_completed_successfully }
+      forecast-artifacts-init: { condition: service_completed_successfully }
     restart: unless-stopped
 
   api:
@@ -119,5 +134,39 @@ services:
     depends_on: [prometheus]
     restart: unless-stopped
 
+  # ---------------------------------------------------------------- profile: mlops
+  # Optional mirror only. PostgreSQL and the forecasting model_artifacts volume are authoritative.
+  mlflow:
+    profiles: [mlops]
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - '5000'
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --artifacts-destination
+      - /mlflow/artifacts
+      - --serve-artifacts
+      - --allowed-hosts
+      - localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000
+      - --workers
+      - '1'
+    environment:
+      # MLflow 3.x otherwise starts ~8 background job workers (~150 MB each) for GenAI
+      # features this project doesn't use; together they exhausted WSL's RAM.
+      MLFLOW_SERVER_ENABLE_JOB_EXECUTION: 'false'
+    mem_limit: 768m
+    volumes:
+      - mlflow_data:/mlflow
+    ports:
+      - '127.0.0.1:5000:5000'
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  model_artifacts:
+  mlflow_data:

@@ -37,6 +37,9 @@ export interface ForecastRun {
   error: string | null;
   /** V2 1c: OK, NOT_ML, FAILED_CHECK; null for runs made before explanations existed. */
   explanationStatus: 'OK' | 'NOT_ML' | 'FAILED_CHECK' | null;
+  mlflowStatus: 'DISABLED' | 'PENDING' | 'MIRRORED' | 'FAILED';
+  mlflowRunId: string | null;
+  mlflowError: string | null;
 }
 
 export interface ModelMetric {

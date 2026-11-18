@@ -12,7 +12,8 @@ const RUN_SELECT = `
          r.series_count AS "seriesCount", r.fallback_count AS "fallbackCount",
          m.name AS "servedModel", m.kind AS "servedModelKind",
          r.selection_reason AS "selectionReason", r.ml_beat_baseline AS "mlBeatBaseline", r.error,
-         r.explanation_status AS "explanationStatus"
+         r.explanation_status AS "explanationStatus", r.mlflow_status AS "mlflowStatus",
+         r.mlflow_run_id AS "mlflowRunId", r.mlflow_error AS "mlflowError"
     FROM forecast.runs r
     LEFT JOIN forecast.model_versions m ON m.id = r.served_model_version_id`;
 

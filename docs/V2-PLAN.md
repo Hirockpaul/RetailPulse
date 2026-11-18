@@ -1,7 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c, 2b and 2d built**
-(see §9); ready to write the next step's rules before building it.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
+Phase 3 steps 3a–3b are built** (see §9); the next slice is step 3c, drift and performance
+monitoring.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -793,3 +794,121 @@ only, exclusions).
 - Tests: API unit 194; integration 232 → 233 (including the new exclusion case); Python unchanged
   at 94. Formatting, lint, typecheck, both builds and the browser e2e are green; API and web Docker
   images rebuilt.
+
+### Step 3a — model registry and manager activation rules (written 2026-11-18, BEFORE building)
+
+This is the first ML-lifecycle slice. Trained artifact persistence, drift/performance monitoring and
+optional MLflow are separate later slices; this step makes the model policy real and auditable.
+
+- Registry states: `CANDIDATE`, `ELIGIBLE`, `ACTIVE`, `RETIRED`, `REJECTED`. Exactly one model may
+  be ACTIVE. Fallback (`category_average`) is per-series policy and cannot be activated globally.
+- Forecast runs still evaluate every production candidate on the same time-ordered windows, but
+  **serve the ACTIVE model**. They never switch because a new run measured a better candidate.
+  If an ACTIVE model is not among the evaluated production models, the run fails visibly.
+- The only automatic activation is bootstrap: when no active model exists, the first successful
+  run activates the model selected by the existing honest backtest. This is recorded as
+  `BOOTSTRAP`, with no user. After that, a non-active model becomes ELIGIBLE only when its
+  validation WAPE is at least **0.005 lower** (0.5 percentage points) than ACTIVE on the same run;
+  otherwise it is REJECTED. This reuses step 1d's pre-registered material-improvement threshold.
+- `POST /ml/models/:id/activate`: admin / inventory manager, ELIGIBLE only, non-empty reason. The
+  previous ACTIVE model becomes RETIRED and one immutable activation-history row records who,
+  when, from, to and why. Five simultaneous requests produce one activation.
+- `POST /ml/models/:id/rollback`: same roles and reason; the target must be the immediately previous
+  ACTIVE model from the latest activation/rollback. The current model becomes RETIRED, the target
+  becomes ACTIVE, and the history records `ROLLBACK`. It changes policy for the **next** run; it
+  never rewrites an existing forecast or recommendation.
+- Read roles can see the registry, latest validation/test metrics and activation history. The web
+  page labels synthetic metrics and states that activation affects future runs only.
+- Schema includes nullable artifact path / SHA-256 and feature/training metadata now so later
+  artifact persistence needs no lifecycle redesign. This step does not claim an artifact exists.
+- Checks: state/unique constraints; bootstrap, gate and ACTIVE-serving Python tests; API auth,
+  validation, concurrency and rollback integration tests; activating/rolling back writes no stock,
+  ledger, transfer, order, recommendation or outbox row.
+
+### Step 3a — model registry and manager activation ✅ (2026-11-18)
+
+- Migrations `0017_model_registry.sql` and `0018_model_registry_backfill.sql` add the constrained
+  lifecycle states, exactly-one-active enforcement, artifact/training/feature metadata, and an
+  immutable append-only activation history. Existing successful runs bootstrap one active model;
+  older pre-registry rows are labelled honestly instead of appearing eligible without evidence.
+- Forecasting now evaluates all production candidates but serves the registered ACTIVE algorithm.
+  A missing/unknown ACTIVE model fails the run visibly. Candidate eligibility uses the documented
+  validation-WAPE improvement gate, and the category-average fallback cannot become globally active.
+- The API exposes registry/history reads and manager/admin activation and rollback. Decisions require
+  a reason, transaction-level serialization makes five simultaneous activations produce exactly one,
+  and rollback is restricted to the immediately previous active model. Tests also prove these policy
+  changes do not write inventory, transfers, purchase orders, recommendations, outbox or ledger data.
+- The Models page shows lifecycle state, synthetic validation/test metrics, training metadata and
+  decision history. It explicitly says activation affects future runs and that artifacts are not yet
+  persisted, so the UI does not overstate step 3a.
+- Verification: API unit **194**, forecasting **98**, API integration **236**, browser e2e **2**;
+  formatting, lint, typecheck, production builds and fresh-database migrations are green. API, web and
+  forecasting Docker images build successfully. The only Python warning is the existing Starlette
+  TestClient deprecation warning.
+- Remaining for the next slice: persist and checksum the trained artifact, load that exact artifact
+  for serving/rollback, and mirror runs to optional MLflow without making it a runtime dependency.
+
+### Step 3b — artifact persistence and optional MLflow rules (written 2026-11-18, BEFORE building)
+
+- Every activatable registry version gets one immutable, service-owned joblib artifact. The stored
+  bundle includes a schema version, model identity, pipeline version, feature order, maximum horizon,
+  parameters and (for ML) the fitted estimator. Baseline bundles contain their exact named policy and
+  parameters; the category-average per-series fallback remains non-activatable.
+- The database stores a path relative to `MODEL_ARTIFACT_DIR`, SHA-256, schema version and creation
+  time as one all-or-nothing set. Once present, those fields cannot be changed or cleared. Artifact
+  filenames include their content digest, so a database rollback can leave at most an unreferenced
+  file and can never cause later bytes to overwrite a registry artifact.
+- Before any deserialization, forecasting resolves the relative path under its configured artifact
+  root, rejects traversal/symlinks/non-files, hashes the bytes and compares the digest. It then checks
+  bundle schema, model id/name/version, pipeline version, features and requested horizon. A missing,
+  corrupt or incompatible ACTIVE artifact fails the forecast visibly; it never falls back or retrains
+  silently.
+- Legacy rows from step 3a have no artifact. Their first successful 3b run is the one explicit
+  migration bridge: it trains, writes, hashes, reload-verifies and attaches artifacts once. From the
+  following run onward, the ACTIVE artifact is loaded and used for live points and explanations.
+  Candidate artifacts are also attached once so a later activation or rollback already has bytes.
+- Activation and rollback require artifact metadata. The database activation remains the policy
+  switch; the next forecast loads the target row's verified artifact, so rollback restores the exact
+  prior bytes without rewriting historical forecasts.
+- MLflow is a mirror, never the source of truth. When `MLFLOW_TRACKING_URI` is absent the run records
+  `DISABLED`. When present, the service mirrors run parameters, evaluation metrics and the served
+  artifact after the PostgreSQL transaction commits. Success records the MLflow run id; any client,
+  server or upload error records `FAILED` while the forecast remains `SUCCEEDED` and usable.
+- Compose adds a localhost-only optional `mlops` profile with MLflow, SQLite metadata and local
+  artifacts. PostgreSQL plus the service-owned artifact volume remain authoritative; deleting or
+  stopping MLflow cannot prevent forecasts, activation or rollback.
+- Checks: artifact round-trip and deterministic digest; traversal, tamper and metadata mismatch
+  rejection before load; second forecast proves the ACTIVE estimator is loaded rather than retrained;
+  rollback loads the previous digest; activation without an artifact is denied; MLflow disabled,
+  success and unavailable paths; forecasting still writes only the `forecast` schema.
+
+### Step 3b — artifact persistence and optional MLflow ✅ (2026-11-18)
+
+- Migration `0019_model_artifacts_mlflow.sql` completes the all-or-nothing artifact metadata,
+  prevents registered bytes from being changed or cleared, and records `DISABLED`, `PENDING`,
+  `MIRRORED` or `FAILED` independently of the forecast run status.
+- `artifacts.py` writes content-addressed joblib bundles atomically under the configured private root.
+  Loading rejects absolute/traversal/symlink paths, non-files, digest tampering, schema/identity/
+  pipeline/feature mismatches and unsupported horizons before an estimator is used. Activatable
+  baselines have policy bundles; the ML bundle contains the fitted estimator; fallback stays a policy.
+- The step-3a legacy bridge materializes the three current production registry rows once. Later runs load the
+  ACTIVE bundle for live points and explanations while still training evaluation candidates. Neither
+  a later run nor activation can overwrite an artifact. Activation and rollback now require artifact
+  metadata; rollback returns to the previous row and therefore its previous digest.
+- `mlflow_mirror.py` mirrors committed run/model parameters, every validation/test metric and the
+  verified served artifact. It is disabled without a URI and catches server/client/upload failures;
+  the PostgreSQL forecast remains `SUCCEEDED`. The optional `mlops` profile runs MLflow 3.18 with
+  SQLite/local artifacts on localhost, and its allowed-host policy accepts only the local UI and the
+  Compose `mlflow` service name.
+- Compose owns model bytes in a dedicated volume initialized for the non-root forecasting user.
+  The volume was verified writable as UID 10001; a forecasting-image client successfully queried the
+  live MLflow server over the Compose network. API, web and forecasting images all rebuilt.
+- Verification: API unit **194**, forecasting **104**, API integration **236**, browser e2e **2**;
+  formatting, lint, typecheck, production builds, fresh migrations, artifact tamper checks, MLflow
+  success and MLflow-unavailable cases are green. The existing Starlette TestClient deprecation and
+  Jest/Node experimental-module warnings remain non-failing.
+- The current synthetic dev database was bridged with successful 14-day run
+  `53a570db-c098-47ae-9bf1-f87094e53337`: ACTIVE `hgb_direct` v2 and both production baselines now
+  have schema-1 digests; MLflow correctly recorded `DISABLED` because no tracking URI was supplied.
+- Remaining for 3c: feature/prediction drift, realized WAPE/bias, stale/failed-run alerts and the
+  Model Monitoring page. There is still no automatic retraining.

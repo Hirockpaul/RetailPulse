@@ -12,6 +12,7 @@ import { PurchaseOrdersPage } from './pages/PurchaseOrdersPage';
 import { RecommendationDetailPage } from './pages/RecommendationDetailPage';
 import { ReplenishmentPage } from './pages/ReplenishmentPage';
 import { LoginPage } from './pages/LoginPage';
+import { ModelsPage } from './pages/ModelsPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
@@ -39,6 +40,7 @@ const NAV: { label: string; to: string; active: (r: Route) => boolean }[] = [
     active: (r) => r.name === 'replenishment' || r.name === 'recommendation',
   },
   { label: 'ABC/XYZ', to: href.classification(), active: (r) => r.name === 'classification' },
+  { label: 'Models', to: href.models(), active: (r) => r.name === 'models' },
   {
     label: 'Suppliers',
     to: href.suppliers(),
@@ -74,6 +76,8 @@ function Page({ route }: { route: Route }) {
       return <AnomaliesPage />;
     case 'classification':
       return <ClassificationPage />;
+    case 'models':
+      return <ModelsPage />;
     case 'suppliers':
       return <SuppliersPage />;
     case 'supplier':

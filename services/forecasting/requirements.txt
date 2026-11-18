@@ -4,5 +4,7 @@ pydantic==2.14.3
 pandas==3.1.1
 numpy==2.5.5
 scikit-learn==1.9.1
+joblib==1.6.0
 shap==0.54.1
 psycopg[binary]==3.3.9
+mlflow-skinny==3.18.0

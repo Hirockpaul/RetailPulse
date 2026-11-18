@@ -16,6 +16,7 @@ import { HealthModule } from './modules/health/health.module';
 import { HousekeepingModule } from './modules/housekeeping/housekeeping.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { LocationsModule } from './modules/locations/locations.module';
+import { MlModule } from './modules/ml/ml.module';
 import { OverviewModule } from './modules/overview/overview.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { ReplenishmentModule } from './modules/replenishment/replenishment.module';
@@ -57,6 +58,7 @@ export class AppModule {
         AnomaliesModule,
         ClassificationsModule,
         SuppliersModule,
+        MlModule,
       ],
       providers: [
         { provide: ENV, useValue: env },

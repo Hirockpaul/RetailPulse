@@ -81,6 +81,7 @@ flowchart TB
   purchasing --> inventory & suppliers
   suppliers --> database
   forecasts --> database
+  ml --> database
   replenishment --> forecasts & purchasing & transfers & suppliers & classifications
   events --> database
   alerts --> events & inventory
@@ -192,6 +193,8 @@ erDiagram
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
 | V2 2d-1 ✅ | `expected_stockout_on`, `review_reason`, `approved_quantity` on `replenishment_recommendations` |
 | V2 2d-2 ✅ | `REDISTRIBUTE_EXCESS`; `destination_location_id` on `replenishment_recommendations` |
+| V2 3a ✅ | lifecycle/artifact metadata on `forecast.model_versions`; immutable `forecast.model_activations` |
+| V2 3b ✅ | immutable artifact schema/digest/time on `forecast.model_versions`; MLflow mirror state on `forecast.runs` |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -297,6 +300,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics, ranges, importance }`: progress of the newest run, and the newest successful one with accuracy (WAPE, bias, range coverage) and range calibration per sales level |
 | `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + 80 % and 95 % ranges + the run's range calibration, for one product at one store |
 | `GET /forecasts/explanation`          | `productId, locationId`                        | why the first forecast day is what it is: starting point × factors (SHAP), or the reason there is none (`NOT_ML`, `FALLBACK`, `FAILED_CHECK`, `NOT_AVAILABLE`); plus the run's global importance. Store-scoped |
+| `GET /ml/models`                      | —                                              | registry states, latest synthetic validation/test WAPE, artifact/training metadata and activation history; every read role |
+| `POST /ml/models/:id/activate`        | body `{ reason }`                              | admin / inventory manager; ELIGIBLE only; affects the next run |
+| `POST /ml/models/:id/rollback`        | body `{ reason }`                              | admin / inventory manager; immediately previous ACTIVE model only |
 | `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
 | `GET /replenishment/recommendations`  | `status, action, risk, needsReview, locationId, productId, page, pageSize` | most urgent first; each with its expected stockout date and review flag; store managers: own stores |
 | `GET /replenishment/status`           | `productId`                                    | per store, evaluated now with the generation calculation: NO_ACTION_REQUIRED / NEEDS_STOCK / NO_SOURCE / EXCESS, position, reorder point, movable excess, expected stockout, review flag, pending recommendation. Writes nothing; store-scoped (V2 2d) |
@@ -335,6 +341,7 @@ guessed. Thresholds live in `overview.config.ts` and are returned with the respo
 | Receive a transfer                           | ✅    | ✅            | **at own store**       | —       |
 | Cancel a transfer                            | ✅    | ✅            | **touching own store** | —       |
 | Run forecasts, generate / approve / reject recommendations | ✅ | ✅ | — | — |
+| Read model registry / activate or roll back | ✅ / ✅ | ✅ / ✅ | ✅ / — | ✅ / — |
 | Read forecasts, recommendations, purchase orders | all | all | **own stores** | all |
 | Receive a purchase order                     | ✅    | ✅            | **at own store**       | —       |
 | Cancel a purchase order                      | ✅    | ✅            | —                      | —       |
@@ -492,7 +499,8 @@ flowchart LR
 | Unusual sales | At the end of every run, `app/anomalies/detect.py` scans the last 90 days (V2 1e-1). Expected = median of the same weekday over the previous 8 weeks (promotion days left out) × the planned promotion uplift; SPIKE if z = (actual − expected) / max(1.4826·MAD, √expected, 1) ≥ 5; DROP = 3 zero-sales days in a row with ≥ 7 units expected. HIGH if z ≥ 10 or ≥ 14 units expected. Findings go to `forecast.anomaly_detections` (never rewritten; a later run skips known ones) with a plain-language explanation. Nothing changes stock. Measured precision/recall below. |
 | Low history | Series with fewer than 56 observed days use the **category × store average**, flagged `is_fallback` (shown in the UI, never presented as a model forecast). |
 | Uncertainty | **80 % and 95 % ranges from measured errors** (split conformal, V2 1b, `evaluation/intervals.py`): residuals (actual − forecast) of the served model are grouped by forecast level (0–0.5, 0.5–1, 1–2, 2–4, 4–8, 8+ units/day) and their 10/90 % (2.5/97.5 %) quantiles are added to the forecast, never below 0 and always containing the forecast. Coverage is checked honestly — calibrated on validation, scored on test — overall and per level group (`forecast.interval_calibration`); live ranges use both windows. Replaces the Day-6 ± 1.28 σ band, which held 91 % for slow sellers and 78 % for fast ones. The UI states the range in words with its measured reliability. |
-| Persistence | `forecast.runs` (windows, served model version, selection reason, data label), `model_versions`, `model_metrics`, `series`, `points`. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
+| Persistence | `forecast.runs` (windows, served model version, selection reason, data label, MLflow mirror state), `model_versions`, `model_metrics`, `series`, `points`. Each activatable version has one immutable joblib bundle under `MODEL_ARTIFACT_DIR`: relative path + SHA-256 + schema version are stored together and checked before deserialization. The ACTIVE bundle supplies live points and explanations; a missing/tampered/incompatible bundle fails visibly. One run at a time (unique index); a run abandoned for 30 minutes is marked failed; the newest 5 runs are kept. |
+| MLflow mirror | Optional `MLFLOW_TRACKING_URI`. After PostgreSQL commits, `mlflow-skinny` mirrors parameters, all validation/test metrics and the served artifact. `DISABLED`, `MIRRORED` or `FAILED` is stored on the run; mirror failure never changes a successful forecast. Compose profile `mlops` runs MLflow 3.18 on localhost with SQLite/local artifacts. |
 | API | `POST /forecast/run` (202, runs in the background), `GET /forecast/runs/latest`, `GET /forecast/runs/{id}`, `GET /forecast/{sku}/{store}`. **No authentication of its own: run it on localhost / a private network only.** |
 
 ### 7.2 Replenishment (`modules/replenishment`, TypeScript, pure arithmetic)
@@ -568,6 +576,12 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   product; it has no stockout risk. Approval creates an approved store → DC transfer, and the normal
   transfer lifecycle moves the stock. On the synthetic dev data: 402 movable units versus 714
   Overview surplus units; 5 needs used store excess and 25 remainder moves returned 336 units.
+- **Model activation (V2 3a):** every run evaluates the production candidates on the same ordered
+  windows, but serves the single `ACTIVE` registry model. A candidate is `ELIGIBLE` only at a
+  validation-WAPE gain of at least 0.005 over ACTIVE; otherwise it is `REJECTED`. The first
+  successful run is the recorded `BOOTSTRAP` exception. Later activation/rollback requires a
+  manager, reason and immutable history row, and affects only future runs. Registry changes write
+  no inventory/order/event rows. Artifact path/SHA fields exist but remain null until step 3b.
 
 ### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
 
@@ -692,7 +706,7 @@ RetailPulse/
 ├── README.md                        what it is + quick start
 ├── docs/
 │   └── ARCHITECTURE.md ✅           this file
-├── docker-compose.yml ✅            postgres; profiles `full` (whole app) and `observability`
+├── docker-compose.yml ✅            postgres; profiles `full`, `observability`, optional `mlops`
 ├── .dockerignore ✅
 ├── ops/observability/ ✅           prometheus.yml, grafana/ (datasource + one dashboard JSON)
 ├── .env.example ✅
@@ -746,6 +760,8 @@ RetailPulse/
 │       │   ├── main.py ✅           FastAPI app + routes (runs in a background thread)
 │       │   ├── pipeline.py ✅       compute() (pure) + run_forecast() (DB)
 │       │   ├── repository.py ✅     every SQL statement; writes only to `forecast.*`
+│       │   ├── artifacts.py ✅      write-once bundles; contained path + SHA + metadata verification
+│       │   ├── mlflow_mirror.py ✅  best-effort post-commit params/metrics/artifact mirror
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
 │       │   ├── anomalies/ ✅        detect.py (unusual sales), evaluate.py (precision/recall vs labels)
@@ -882,3 +898,5 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 59 | Safety stock from forecast error, measured supplier delay and a service level per ABC/XYZ class (V2 2b) | The forecast's error is the uncertainty left after forecasting (demand spread double-counts it); late suppliers need both a longer expected lead time and a cushion for its spread; value and predictability decide how much a stock-out is worth avoiding | Assumes independent, roughly normal daily errors; supplier-level delay ignores product differences; raises total safety stock by 48 % on the dev data, mostly through the 99 % level for A items — a policy choice, visible in config |
 | 60 | Manual review is a flag with a manager-entered quantity, and "no action required" is computed on request (V2 2d-1) | A reviewed suggestion still needs a source, so a third action type would break the transfer/order rules; computing status with the same pure `plan()` avoids storing 1,000 "nothing to do" rows that go stale with every sale | The status view and a generation batch can differ when several stores compete for scarce DC stock; quantities on flagged items are a person's judgement, not checked against the formula |
 | 61 | Store excess covers whole needs before DC stock; unused movable excess becomes `REDISTRIBUTE_EXCESS` to the least-stocked DC (V2 2d-2) | Reuses stock already in the network without splitting one need across documents; the keep level, pack rounding and exclusions are explainable and tested | Greedy per generation batch, not a transport optimizer; store transfers assume the same 2-day lead time as DC transfers; eligible movable stock (402 units measured) is intentionally below Overview surplus (714) |
+| 62 | One ACTIVE model; validation gain ≥ 0.005 makes a candidate ELIGIBLE; managers activate/roll back with immutable history (V2 3a) | Prevents a fresh run from silently changing production policy while preserving honest comparison on the same windows | Activation affects the next run rather than rewriting stored forecasts |
+| 63 | One immutable, content-addressed local artifact per activatable registry version; optional MLflow is a post-commit mirror (V2 3b) | Rollback restores exact verified bytes; path containment and SHA checks happen before joblib load; forecasts stay available when MLflow is stopped | Existing 3a rows are materialized once by their first 3b run; local artifacts need filesystem backup; MLflow has no authentication and is localhost-only |

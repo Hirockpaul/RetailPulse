@@ -15,6 +15,7 @@ append-only ledger, forecasts demand, and suggests replenishment that a manager 
 - How much will each store **need** over the coming days?
 - Should a manager **transfer** stock or **reorder** from a supplier — and on what inputs?
 - How **accurate** are the forecasts?
+- Which forecast model is **active**, and who activated or rolled it back?
 
 ## Stack
 
@@ -217,6 +218,22 @@ approve or reject. Suggestions can transfer stock from a DC, use another store's
 a supplier, or return remaining excess to a DC. Approving creates the transfer or purchase order;
 stock moves only when those are dispatched/received. A forecast never moves or orders anything by
 itself.
+
+The **Models** page shows the registry and immutable activation history. Forecast runs evaluate all
+production candidates but serve only the ACTIVE model. Admins and inventory managers may activate
+an ELIGIBLE candidate or roll back to the immediately previous model; the decision affects the next
+run and never rewrites an existing forecast. Every activatable version has a write-once local
+artifact whose SHA-256 is verified before loading; the page shows its schema and digest prefix.
+
+Optional MLflow is a mirror of committed PostgreSQL runs, never a dependency or source of truth.
+To start it with the full Docker demo and mirror future forecast runs:
+
+```bash
+MLFLOW_TRACKING_URI=http://mlflow:5000 docker compose --profile full --profile mlops up --build -d --wait
+```
+
+Open MLflow at http://localhost:5000. Without `MLFLOW_TRACKING_URI`, mirroring is disabled. If the
+configured server is unavailable, the forecast still succeeds and records the mirror failure.
 
 ```bash
 npm run forecast:test
