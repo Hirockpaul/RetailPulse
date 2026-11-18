@@ -40,7 +40,11 @@ export class OverviewService {
       recommendations: {
         pending: recs.pending,
         byRisk: { CRITICAL: recs.critical, HIGH: recs.high },
-        byAction: { TRANSFER: recs.transfer, PURCHASE_ORDER: recs.purchaseOrder },
+        byAction: {
+          TRANSFER: recs.transfer,
+          PURCHASE_ORDER: recs.purchaseOrder,
+          REDISTRIBUTE_EXCESS: recs.redistributeExcess,
+        },
         lastGeneratedAt: recs.lastGeneratedAt,
       },
       alerts: {

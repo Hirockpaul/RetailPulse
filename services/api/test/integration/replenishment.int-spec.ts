@@ -280,8 +280,8 @@ describe('recommendations from a forecast', () => {
     await setOnHand(B.id, loc.str1, 20);
     await setOnHand(B.id, loc.dcN, 0);
     await setOnHand(B.id, loc.dcS, 0);
-    // C @STR-01: plenty of stock                                     → nothing
-    await setOnHand(C.id, loc.str1, 5000);
+    // C @STR-01: enough stock (above its reorder point, under 60 days) → nothing
+    await setOnHand(C.id, loc.str1, 400);
     // D: two stores need it, but DC-NORTH only has 100                → urgent store gets the DC stock
     await setOnHand(D.id, loc.str1, 20);
     await setOnHand(D.id, loc.str2, 5);
@@ -882,6 +882,145 @@ describe('recommendations from a forecast', () => {
     expect(t).toEqual([{ quantity: 24 }]);
   });
 
+  it('V2 2d-2: fallback, Z-class and zero-demand stores are never excess sources', async () => {
+    const [fallback, erratic, noDemand] = await Promise.all(
+      ['RP-00135', 'RP-00136', 'RP-00137'].map(product),
+    );
+    for (const p of [fallback, erratic, noDemand]) await setOnHand(p.id, loc.str2, 2000);
+    const classRun = (
+      await db.query(
+        `INSERT INTO classification_runs (window_start, window_end, data_label, item_count)
+         VALUES (current_date - 364, current_date - 1, 'SYNTHETIC', 1) RETURNING id`,
+      )
+    ).rows[0].id as string;
+    await db.query(
+      `INSERT INTO inventory_classifications (run_id, product_id, location_id, weeks_observed, units,
+          value, value_share, cumulative_share, weekly_mean, cv, adi, abc, xyz, cls)
+       VALUES ($1, $2, $3, 52, 520, 100, 1, 1, 10, 2, 1, 'C', 'Z', 'CZ')`,
+      [classRun, erratic.id, loc.str2],
+    );
+    try {
+      await seedForecast([
+        { product: fallback.id, location: loc.str2, perDay: 10, fallback: true },
+        { product: erratic.id, location: loc.str2, perDay: 10 },
+        { product: noDemand.id, location: loc.str2, perDay: 0 },
+      ]);
+      const generated = (await inv().post('/replenishment/generate').expect(200)).body;
+      expect(generated).toMatchObject({ created: 0, fromStoreExcess: 0 });
+      for (const p of [fallback, erratic, noDemand]) {
+        const status = (await admin().get(`/replenishment/status?productId=${p.id}`).expect(200))
+          .body;
+        expect(status.stores[0]).toMatchObject({
+          outcome: 'NO_ACTION_REQUIRED',
+          movableExcess: null,
+          pending: null,
+        });
+      }
+    } finally {
+      await db.query('DELETE FROM classification_runs WHERE id = $1', [classRun]);
+    }
+  });
+
+  it('V2 2d-2: excess at one store covers another store first; the rest goes to the DC with least', async () => {
+    const X = await product('RP-00141');
+    await setOnHand(X.id, loc.str1, 5); // needs stock
+    await setOnHand(X.id, loc.str2, 2000); // 10 a day → keeps 600, 1,400 excess
+    await setOnHand(X.id, loc.dcN, 500);
+    await setOnHand(X.id, loc.dcS, 0);
+    await seedForecast([
+      { product: X.id, location: loc.str1, perDay: 10 },
+      { product: X.id, location: loc.str2, perDay: 10 },
+    ]);
+    const gen = (await inv().post('/replenishment/generate').expect(200)).body;
+    expect(gen).toMatchObject({
+      created: 2,
+      fromStoreExcess: 1,
+      byAction: { TRANSFER: 1, PURCHASE_ORDER: 0, REDISTRIBUTE_EXCESS: 1 },
+    });
+    const movable = Math.floor(1400 / X.packSize) * X.packSize;
+
+    // STR-01's need is covered from STR-02's excess, not from DC-NORTH's 500.
+    const need = await recFor(X.sku, loc.str1);
+    const q1 = orderQuantity({ perDay: 10, sigma: 3, lead: 2, position: 5, pack: X.packSize });
+    expect(need).toMatchObject({ action: 'TRANSFER', sourceCode: 'STR-02', quantity: q1 });
+    expect(need.inputs.source).toEqual({ code: 'STR-02', availableNet: movable, kind: 'STORE' });
+    expect(need.explanation).toContain("transfer from STR-02's excess");
+
+    // The rest of STR-02's excess goes to DC-SOUTH, which holds none (DC-NORTH has 500).
+    const move = await recFor(X.sku, loc.str2);
+    expect(move).toMatchObject({
+      action: 'REDISTRIBUTE_EXCESS',
+      destinationCode: 'DC-SOUTH',
+      quantity: movable - q1,
+      risk: null,
+      reviewReason: null,
+      sourceCode: null,
+      supplierName: null,
+    });
+    expect(move.inputs).toMatchObject({
+      kind: 'EXCESS',
+      excess: { keepDays: 60, keep: 600, excess: 1400, movable: movable - q1 },
+      destination: { code: 'DC-SOUTH', available: 0 },
+    });
+    // STR-02 is never planned below what it keeps.
+    expect(2000 - q1 - move.quantity).toBeGreaterThanOrEqual(600);
+
+    // The status view says the same, computed live (no batch: the full movable amount).
+    const status = (await admin().get(`/replenishment/status?productId=${X.id}`).expect(200)).body;
+    const s2 = status.stores.find((x: { locationId: string }) => x.locationId === loc.str2);
+    expect(s2).toMatchObject({
+      outcome: 'EXCESS',
+      movableExcess: movable,
+      pending: { id: move.id, action: 'REDISTRIBUTE_EXCESS' },
+    });
+
+    // The database refuses an excess move with a stockout risk, a source or no destination.
+    for (const change of [
+      `risk = 'HIGH'`,
+      `source_location_id = '${loc.dcN}'`,
+      `destination_location_id = NULL`,
+      `destination_location_id = location_id`,
+    ]) {
+      await db.query('BEGIN');
+      await expect(
+        db.query(`UPDATE replenishment_recommendations SET ${change} WHERE id = $1`, [move.id]),
+      ).rejects.toMatchObject({ code: '23514' });
+      await db.query('ROLLBACK');
+    }
+
+    // Approving: five at once → one APPROVED transfer STR-02 → DC-SOUTH; no stock moves yet.
+    const stockBefore = await stockRow(X.id, loc.str2);
+    const transfersBefore = await count('SELECT COUNT(*)::int AS n FROM stock_transfers');
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        inv().post(`/replenishment/recommendations/${move.id}/approve`, { note: 'move it' }),
+      ),
+    );
+    expect(results.map((x) => x.status).sort()).toEqual([200, 409, 409, 409, 409]);
+    expect(await count('SELECT COUNT(*)::int AS n FROM stock_transfers')).toBe(transfersBefore + 1);
+    const approved = (await admin().get(`/replenishment/recommendations/${move.id}`).expect(200))
+      .body;
+    expect(approved).toMatchObject({ status: 'APPROVED', approvedQuantity: movable - q1 });
+    const t = (
+      await db.query(
+        `SELECT t.status, t.source_location_id AS src, t.destination_location_id AS dst, l.quantity
+           FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id
+          WHERE t.id = $1`,
+        [approved.transferId],
+      )
+    ).rows;
+    expect(t).toEqual([
+      { status: 'APPROVED', src: loc.str2, dst: loc.dcS, quantity: movable - q1 },
+    ]);
+    expect(await stockRow(X.id, loc.str2)).toEqual(stockBefore);
+
+    // The store-to-store transfer is approved like any other; nothing is left pending.
+    await inv().post(`/replenishment/recommendations/${need.id}/approve`).expect(200);
+    expect(
+      (await admin().get('/replenishment/recommendations?status=PENDING').expect(200)).body.total,
+    ).toBe(0);
+  });
+
   it('regenerating replaces the pending recommendations (old ones expire) and counts inbound stock', async () => {
     // Everything has been decided by now, so nothing is pending any more.
     expect(
@@ -1189,8 +1328,10 @@ describe('database guarantees', () => {
     await expect(
       db.query(
         `INSERT INTO replenishment_recommendations
-           (forecast_run_id, product_id, location_id, action, supplier_id, quantity, risk, inputs, explanation)
-         SELECT forecast_run_id, product_id, location_id, action, supplier_id, quantity, risk, inputs, explanation
+           (forecast_run_id, product_id, location_id, action, source_location_id, supplier_id,
+            destination_location_id, quantity, risk, inputs, explanation)
+         SELECT forecast_run_id, product_id, location_id, action, source_location_id, supplier_id,
+                destination_location_id, quantity, risk, inputs, explanation
            FROM replenishment_recommendations WHERE id = $1`,
         [r.id],
       ),

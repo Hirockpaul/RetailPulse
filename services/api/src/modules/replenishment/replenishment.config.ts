@@ -14,6 +14,11 @@ export const REPLENISHMENT = {
   defaultServiceLevel: 0.95,
   /** Expected stockout dates further away than this are not shown (V2 2d-1). */
   stockoutHorizonDays: 90,
+  /**
+   * A store keeps this many days of forecast demand (at least its reorder point); more is excess
+   * that may move to another store or a DC (V2 2d-2). Same as OVERVIEW.excessCoverDays (tested).
+   */
+  excessKeepDays: 60,
 } as const;
 
 export type ServiceLevel = 0.9 | 0.95 | 0.97 | 0.99;

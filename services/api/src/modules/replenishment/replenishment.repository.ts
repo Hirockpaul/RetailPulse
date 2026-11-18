@@ -23,6 +23,7 @@ const SUMMARY_COLUMNS = `
   r.location_id AS "locationId", l.code::text AS "locationCode",
   r.source_location_id AS "sourceLocationId", sl.code::text AS "sourceCode",
   r.supplier_id AS "supplierId", s.name AS "supplierName",
+  r.destination_location_id AS "destinationLocationId", dl.code::text AS "destinationCode",
   du.display_name AS "decidedBy", r.decided_at AS "decidedAt", r.decision_note AS "decisionNote",
   r.transfer_id AS "transferId", r.purchase_order_id AS "purchaseOrderId"`;
 
@@ -32,6 +33,7 @@ const FROM = `
   JOIN locations l ON l.id = r.location_id
   LEFT JOIN locations sl ON sl.id = r.source_location_id
   LEFT JOIN suppliers s ON s.id = r.supplier_id
+  LEFT JOIN locations dl ON dl.id = r.destination_location_id
   LEFT JOIN users du ON du.id = r.decided_by`;
 
 const FILTER = `
@@ -69,6 +71,10 @@ export class ReplenishmentRepository {
                              JOIN purchase_orders po ON po.id = pl.purchase_order_id
                             WHERE pl.product_id = s.product_id AND po.destination_location_id = s.location_id
                               AND po.status = 'APPROVED'), 0))::int AS inbound,
+              COALESCE((SELECT SUM(tl.quantity) FROM stock_transfer_lines tl
+                          JOIN stock_transfers t ON t.id = tl.transfer_id
+                         WHERE tl.product_id = s.product_id AND t.source_location_id = s.location_id
+                           AND t.status IN ('REQUESTED', 'APPROVED')), 0)::int AS "promisedOut",
               sp.supplier_id AS "supplierId", sup.name AS "supplierName",
               sp.lead_time_days AS "leadTimeDays", sp.min_order_qty AS "minOrderQty",
               sp.unit_cost::float8 AS "unitCost"
@@ -108,6 +114,15 @@ export class ReplenishmentRepository {
     return byProduct;
   }
 
+  /** All distribution centres (excess may go to one that holds none of the product yet). */
+  async dcLocations(): Promise<{ id: string; code: string }[]> {
+    const { rows } = await this.db.query<{ id: string; code: string }>(
+      `SELECT id, code::text AS code FROM locations
+        WHERE type = 'DISTRIBUTION_CENTER' ORDER BY code`,
+    );
+    return rows;
+  }
+
   /** Pending recommendations of one product, by store. */
   async pendingForProduct(productId: string): Promise<Map<string, PendingRef>> {
     const { rows } = await this.db.query<PendingRef & { locationId: string }>(
@@ -134,8 +149,9 @@ export class ReplenishmentRepository {
     await client.query(
       `INSERT INTO replenishment_recommendations
          (forecast_run_id, product_id, location_id, action, source_location_id, supplier_id,
-          quantity, risk, days_of_cover, inputs, explanation, expected_stockout_on, review_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          quantity, risk, days_of_cover, inputs, explanation, expected_stockout_on, review_reason,
+          destination_location_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         r.forecastRunId,
         r.productId,
@@ -150,6 +166,7 @@ export class ReplenishmentRepository {
         r.explanation,
         r.expectedStockoutOn,
         r.reviewReason,
+        r.destinationLocationId,
       ],
     );
   }
@@ -158,6 +175,7 @@ export class ReplenishmentRepository {
     const { rows } = await client.query<LockedRecommendation>(
       `SELECT status, action, product_id AS "productId", location_id AS "locationId",
               source_location_id AS "sourceLocationId", supplier_id AS "supplierId",
+              destination_location_id AS "destinationLocationId",
               quantity, review_reason AS "reviewReason", inputs
          FROM replenishment_recommendations WHERE id = $1 FOR UPDATE`,
       [id],
@@ -215,7 +233,8 @@ export class ReplenishmentRepository {
     const [rows, count] = await Promise.all([
       this.db.query<RecommendationSummary>(
         `SELECT ${SUMMARY_COLUMNS} ${FROM} ${FILTER}
-          ORDER BY (r.risk = 'CRITICAL') DESC, r.days_of_cover NULLS LAST, r.generated_at DESC, r.id
+          ORDER BY (r.risk = 'CRITICAL') DESC NULLS LAST, (r.action = 'REDISTRIBUTE_EXCESS'),
+                   r.days_of_cover NULLS LAST, r.generated_at DESC, r.id
           LIMIT $8 OFFSET $9`,
         [...filter, q.pageSize, offsetOf(q)],
       ),

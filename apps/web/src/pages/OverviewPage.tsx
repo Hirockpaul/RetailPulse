@@ -68,7 +68,9 @@ function OverviewBody({ o }: { o: Overview }) {
           tone={o.recommendations.byRisk.CRITICAL > 0 ? 'bad' : 'neutral'}
           note={`${formatInt(o.recommendations.byRisk.CRITICAL)} critical · ${formatInt(
             o.recommendations.byAction.TRANSFER,
-          )} transfers · ${formatInt(o.recommendations.byAction.PURCHASE_ORDER)} orders`}
+          )} transfers · ${formatInt(o.recommendations.byAction.PURCHASE_ORDER)} orders · ${formatInt(
+            o.recommendations.byAction.REDISTRIBUTE_EXCESS,
+          )} excess moves`}
           to={href.replenishment()}
         />
         <Tile

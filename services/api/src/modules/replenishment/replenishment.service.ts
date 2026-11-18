@@ -15,9 +15,13 @@ import { PurchasingService } from '../purchasing/purchasing.service';
 import { SuppliersService } from '../suppliers/suppliers.service';
 import { TransfersService } from '../transfers/transfers.service';
 import {
+  chooseDc,
   type DcStock,
   dayToDate,
+  demandOver,
+  excessAt,
   explain,
+  explainExcess,
   plan,
   type PlanResult,
   type ReviewReason,
@@ -48,8 +52,10 @@ export interface GenerateResult {
   evaluated: number;
   created: number;
   expired: number;
-  byAction: { TRANSFER: number; PURCHASE_ORDER: number };
+  byAction: { TRANSFER: number; PURCHASE_ORDER: number; REDISTRIBUTE_EXCESS: number };
   byRisk: { CRITICAL: number; HIGH: number };
+  /** Needs covered from another store's excess instead of a DC (V2 2d-2). */
+  fromStoreExcess: number;
   skipped: { noNeed: number; noSource: number };
 }
 
@@ -72,7 +78,12 @@ interface PairEvaluation {
   stockout: { day: number | null; date: string | null; beyondForecast: boolean };
 }
 
-function evaluatePair(pair: PairRow, dcs: DcStock[], ctx: EvalContext): PairEvaluation {
+function evaluatePair(
+  pair: PairRow,
+  dcs: DcStock[],
+  ctx: EvalContext,
+  storeExcess: DcStock[] = [],
+): PairEvaluation {
   const supplier =
     pair.supplierId &&
     pair.leadTimeDays !== null &&
@@ -98,6 +109,7 @@ function evaluatePair(pair: PairRow, dcs: DcStock[], ctx: EvalContext): PairEval
     supplier,
     supplierDelay: (pair.supplierId && ctx.delays.get(pair.supplierId)) || null,
     dcs,
+    storeExcess,
     serviceLevelZ: z,
     reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
     transferLeadTimeDays: REPLENISHMENT.transferLeadTimeDays,
@@ -126,6 +138,55 @@ function evaluatePair(pair: PairRow, dcs: DcStock[], ctx: EvalContext): PairEval
   };
 }
 
+/** A store's excess of one product: what it keeps and what it could give away (V2 2d-2). */
+interface StoreExcessInfo {
+  pair: PairRow;
+  demandKeep: number;
+  reorderPoint: number;
+  keep: number;
+  excess: number;
+  movable: number;
+}
+
+/**
+ * Excess of a product at a store, or null when the store cannot be a source: it needs stock
+ * itself (by either route), its forecast is flagged for review, or no demand is forecast.
+ * Its own reorder point is the larger of the DC and supplier routes, so giving stock away can
+ * never push it below the point where it would need stock again.
+ */
+function storeExcessOf(pair: PairRow, ctx: EvalContext): StoreExcessInfo | null {
+  const viaSupplier = evaluatePair(pair, [], ctx);
+  const viaDc = evaluatePair(
+    pair,
+    [{ locationId: 'any-dc', code: 'any-dc', availableNet: Number.MAX_SAFE_INTEGER }],
+    ctx,
+  );
+  if (viaSupplier.review || mean(pair.yhat) <= 0) return null;
+  const rops: number[] = [];
+  for (const o of [viaSupplier.outcome, viaDc.outcome]) {
+    if ('plan' in o) return null; // needs stock by this route
+    if (o.skip === 'NO_NEED') rops.push(o.reorderPoint);
+  }
+  if (rops.length === 0) return null;
+  const reorderPoint = Math.max(...rops);
+  const x = excessAt({
+    yhat: pair.yhat,
+    available: viaSupplier.available,
+    inbound: pair.inbound,
+    promisedOut: pair.promisedOut,
+    packSize: pair.packSize,
+    keepDays: REPLENISHMENT.excessKeepDays,
+    reorderPoint,
+  });
+  if (x.movable <= 0) return null;
+  return {
+    pair,
+    demandKeep: demandOver(pair.yhat, REPLENISHMENT.excessKeepDays),
+    reorderPoint,
+    ...x,
+  };
+}
+
 /**
  * Turns the latest forecast into recommendations for a manager. Generating NEVER creates a
  * transfer or purchase order and never moves stock: only a person approving one does.
@@ -150,11 +211,12 @@ export class ReplenishmentService {
         message: 'There is no forecast yet. Run a forecast first.',
       });
     }
-    const [pairs, dcByProduct, delays, classified] = await Promise.all([
+    const [pairs, dcByProduct, delays, classified, dcLocations] = await Promise.all([
       this.repo.loadPairs(run.id),
       this.repo.loadDcStock(),
       this.suppliers.delays(),
       this.classifications.latestStoreClasses(),
+      this.repo.dcLocations(),
     ]);
 
     // Most urgent first, so scarce distribution-centre stock goes to the stores that need it most.
@@ -180,8 +242,9 @@ export class ReplenishmentService {
       evaluated: pairs.length,
       created: 0,
       expired: 0,
-      byAction: { TRANSFER: 0, PURCHASE_ORDER: 0 },
+      byAction: { TRANSFER: 0, PURCHASE_ORDER: 0, REDISTRIBUTE_EXCESS: 0 },
       byRisk: { CRITICAL: 0, HIGH: 0 },
+      fromStoreExcess: 0,
       skipped: { noNeed: 0, noSource: 0 },
     };
 
@@ -190,11 +253,29 @@ export class ReplenishmentService {
       classes: classified.classes,
       historyEnd: run.historyEnd,
     };
+
+    // 0. Which stores have excess they could give away (V2 2d-2)?
+    const excess = new Map<string, StoreExcessInfo[]>(); // by product
+    for (const pair of pairs) {
+      const x = storeExcessOf(pair, ctx);
+      if (x) excess.set(pair.productId, [...(excess.get(pair.productId) ?? []), x]);
+    }
+    const otherStoresExcess = (pair: PairRow): DcStock[] =>
+      (excess.get(pair.productId) ?? [])
+        .filter((x) => x.pair.locationId !== pair.locationId)
+        .map((x) => ({
+          locationId: x.pair.locationId,
+          code: x.pair.locationCode,
+          availableNet: x.movable,
+        }));
+
+    // 1. Needs, most urgent first; sources: another store's excess, a DC, the supplier.
     for (const pair of ordered) {
       const { outcome, available, cls, serviceLevel, z, review, stockout } = evaluatePair(
         pair,
         remaining.get(pair.productId) ?? [],
         ctx,
+        otherStoresExcess(pair),
       );
       if ('skip' in outcome) {
         if (outcome.skip === 'NO_NEED') result.skipped.noNeed++;
@@ -202,12 +283,18 @@ export class ReplenishmentService {
         continue;
       }
       const p = outcome.plan;
-      if (p.action === 'TRANSFER' && p.sourceDc) {
-        // Reserve this stock in the batch so the next store does not count it again.
+      // Take the stock out of what later stores may use in this batch.
+      if (p.action === 'TRANSFER' && p.source?.kind === 'DC') {
         const dc = (remaining.get(pair.productId) ?? []).find(
-          (d) => d.locationId === p.sourceDc!.locationId,
+          (d) => d.locationId === p.source!.locationId,
         );
         if (dc) dc.availableNet -= p.quantity;
+      } else if (p.action === 'TRANSFER' && p.source?.kind === 'STORE') {
+        const giver = (excess.get(pair.productId) ?? []).find(
+          (x) => x.pair.locationId === p.source!.locationId,
+        );
+        if (giver) giver.movable -= p.quantity;
+        result.fromStoreExcess++;
       }
 
       recommendations.push({
@@ -215,8 +302,9 @@ export class ReplenishmentService {
         productId: pair.productId,
         locationId: pair.locationId,
         action: p.action,
-        sourceLocationId: p.sourceDc?.locationId ?? null,
+        sourceLocationId: p.source?.locationId ?? null,
         supplierId: p.supplier?.id ?? null,
+        destinationLocationId: null,
         quantity: p.quantity,
         risk: p.risk,
         daysOfCover: p.daysOfCover,
@@ -281,8 +369,8 @@ export class ReplenishmentService {
           },
           stockout,
           review,
-          source: p.sourceDc
-            ? { code: p.sourceDc.code, availableNet: p.sourceDc.availableNet }
+          source: p.source
+            ? { code: p.source.code, availableNet: p.source.availableNet, kind: p.source.kind }
             : null,
           supplier: p.supplier,
           dcShortfall: p.dcShortfall,
@@ -291,6 +379,89 @@ export class ReplenishmentService {
       result.created++;
       result.byAction[p.action]++;
       result.byRisk[p.risk]++;
+    }
+
+    // 2. Excess no store needed → back to the DC holding the least of that product.
+    const dcHeld = new Map<string, number>(); // product:dc → available, updated as we allocate
+    for (const xs of excess.values()) {
+      for (const x of xs) {
+        if (x.movable <= 0) continue;
+        const { pair } = x;
+        const candidates = dcLocations.map((l) => {
+          const key = `${pair.productId}:${l.id}`;
+          const fromStock =
+            (remaining.get(pair.productId) ?? []).find((d) => d.locationId === l.id)
+              ?.availableNet ?? 0;
+          return { ...l, key, available: dcHeld.get(key) ?? fromStock };
+        });
+        const dc = chooseDc(candidates);
+        if (!dc) continue;
+        dcHeld.set(dc.key, dc.available + x.movable);
+        const available = pair.onHand - pair.reserved;
+        const avgKeep = x.demandKeep / REPLENISHMENT.excessKeepDays;
+        const explainInput = {
+          sku: pair.sku,
+          locationCode: pair.locationCode,
+          keepDays: REPLENISHMENT.excessKeepDays,
+          demandKeep: x.demandKeep,
+          reorderPoint: x.reorderPoint,
+          available,
+          inbound: pair.inbound,
+          promisedOut: pair.promisedOut,
+          packSize: pair.packSize,
+          keep: x.keep,
+          excess: x.excess,
+          movable: x.movable,
+          destinationCode: dc.code,
+          destinationAvailable: dc.available,
+        };
+        recommendations.push({
+          forecastRunId: run.id,
+          productId: pair.productId,
+          locationId: pair.locationId,
+          action: 'REDISTRIBUTE_EXCESS',
+          sourceLocationId: null,
+          supplierId: null,
+          destinationLocationId: dc.id,
+          quantity: x.movable,
+          risk: null,
+          daysOfCover: avgKeep > 0 ? (available + pair.inbound) / avgKeep : null,
+          expectedStockoutOn: null,
+          reviewReason: null,
+          explanation: explainExcess(explainInput),
+          inputs: {
+            kind: 'EXCESS',
+            forecast: {
+              runId: run.id,
+              model: pair.model,
+              isFallback: pair.isFallback,
+              historyDays: pair.historyDays,
+              testWape: pair.testWape,
+              avgDailyDemand: avgKeep,
+            },
+            stock: {
+              onHand: pair.onHand,
+              reserved: pair.reserved,
+              available,
+              inbound: pair.inbound,
+              position: available + pair.inbound,
+              promisedOut: pair.promisedOut,
+            },
+            excess: {
+              keepDays: REPLENISHMENT.excessKeepDays,
+              demandKeep: x.demandKeep,
+              reorderPoint: x.reorderPoint,
+              keep: x.keep,
+              excess: x.excess,
+              movable: x.movable,
+              packSize: pair.packSize,
+            },
+            destination: { code: dc.code, available: dc.available },
+          },
+        });
+        result.created++;
+        result.byAction.REDISTRIBUTE_EXCESS++;
+      }
     }
 
     result.expired = await this.db.transaction(async (client) => {
@@ -325,6 +496,7 @@ export class ReplenishmentService {
       .map((pair) => {
         const e = evaluatePair(pair, dcByProduct.get(productId) ?? [], ctx);
         const o = e.outcome;
+        const surplus = 'skip' in o && o.skip === 'NO_NEED' ? storeExcessOf(pair, ctx) : null;
         return {
           locationId: pair.locationId,
           locationCode: pair.locationCode,
@@ -334,9 +506,12 @@ export class ReplenishmentService {
           outcome:
             'plan' in o
               ? ('NEEDS_STOCK' as const)
-              : o.skip === 'NO_NEED'
-                ? ('NO_ACTION_REQUIRED' as const)
-                : ('NO_SOURCE' as const),
+              : surplus
+                ? ('EXCESS' as const)
+                : o.skip === 'NO_NEED'
+                  ? ('NO_ACTION_REQUIRED' as const)
+                  : ('NO_SOURCE' as const),
+          movableExcess: surplus?.movable ?? null,
           reorderPoint:
             'plan' in o ? o.plan.reorderPoint : o.skip === 'NO_NEED' ? o.reorderPoint : null,
           suggestedQuantity: 'plan' in o ? o.plan.quantity : null,
@@ -384,7 +559,20 @@ export class ReplenishmentService {
       const quantity = approvedQuantity(rec.reviewReason, rec.quantity, body);
 
       let links: { transferId?: string; purchaseOrderId?: string };
-      if (rec.action === 'TRANSFER' && rec.sourceLocationId) {
+      if (rec.action === 'REDISTRIBUTE_EXCESS' && rec.destinationLocationId) {
+        links = {
+          transferId: await this.transfers.createApproved(
+            client,
+            {
+              sourceLocationId: rec.locationId,
+              destinationLocationId: rec.destinationLocationId,
+              notes: `Excess redistribution, recommendation ${id}`,
+              lines: [{ productId: rec.productId, quantity }],
+            },
+            ctx.user.id,
+          ),
+        };
+      } else if (rec.action === 'TRANSFER' && rec.sourceLocationId) {
         links = {
           transferId: await this.transfers.createApproved(
             client,
@@ -397,7 +585,7 @@ export class ReplenishmentService {
             ctx.user.id,
           ),
         };
-      } else if (rec.supplierId && rec.inputs.supplier) {
+      } else if (rec.supplierId && 'supplier' in rec.inputs && rec.inputs.supplier) {
         links = {
           purchaseOrderId: await this.purchasing.createApproved(
             client,

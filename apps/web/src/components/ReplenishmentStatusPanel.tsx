@@ -8,10 +8,14 @@ import { REVIEW_REASON_TEXT, ReviewBadge } from './RecommendationBadges';
 import { Empty, ErrorMessage, Loading } from './Status';
 import { table } from './table';
 
-const OUTCOME: Record<StoreStatus['outcome'], { tone: 'good' | 'warn' | 'bad'; label: string }> = {
+const OUTCOME: Record<
+  StoreStatus['outcome'],
+  { tone: 'neutral' | 'good' | 'warn' | 'bad'; label: string }
+> = {
   NO_ACTION_REQUIRED: { tone: 'good', label: 'No action required' },
   NEEDS_STOCK: { tone: 'warn', label: 'Needs stock' },
   NO_SOURCE: { tone: 'bad', label: 'Needs stock, no source' },
+  EXCESS: { tone: 'neutral', label: 'Excess stock' },
 };
 
 function stockout(s: StoreStatus): string {
@@ -61,6 +65,9 @@ export function ReplenishmentStatusPanel({ productId }: { productId: string }) {
                     <td className={table.td}>
                       <span className="flex flex-wrap gap-1">
                         <Badge tone={OUTCOME[s.outcome].tone} label={OUTCOME[s.outcome].label} />
+                        {s.outcome === 'EXCESS' && s.movableExcess !== null && (
+                          <Badge tone="neutral" label={`${formatInt(s.movableExcess)} movable`} />
+                        )}
                         <ReviewBadge reason={s.outcome === 'NEEDS_STOCK' ? s.reviewReason : null} />
                       </span>
                     </td>
@@ -72,7 +79,12 @@ export function ReplenishmentStatusPanel({ productId }: { productId: string }) {
                     <td className={table.td}>
                       {s.pending ? (
                         <a className={table.link} href={href.recommendation(s.pending.id)}>
-                          Pending: {s.pending.action === 'TRANSFER' ? 'transfer' : 'order'}{' '}
+                          Pending:{' '}
+                          {s.pending.action === 'TRANSFER'
+                            ? 'transfer'
+                            : s.pending.action === 'REDISTRIBUTE_EXCESS'
+                              ? 'excess move'
+                              : 'order'}{' '}
                           {formatInt(s.pending.quantity)} →
                         </a>
                       ) : s.outcome === 'NEEDS_STOCK' ? (

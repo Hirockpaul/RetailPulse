@@ -37,6 +37,9 @@ export interface DcStock {
   availableNet: number;
 }
 
+/** Where a transfer comes from: a DC, or another store's movable excess (V2 2d-2). */
+export type TransferSource = DcStock & { kind: 'DC' | 'STORE' };
+
 export interface SupplierTerms {
   id: string;
   name: string;
@@ -76,6 +79,11 @@ export interface PlanInput {
   supplier: SupplierTerms | null;
   /** The supplier's measured delay; null when it has no recorded deliveries. */
   supplierDelay: SupplierDelay | null;
+  /**
+   * Other stores' movable excess of this product (availableNet = movable units, whole packs),
+   * still unallocated in this batch. Used before a DC when one store covers the whole need.
+   */
+  storeExcess?: DcStock[];
   /** DC stock still unallocated (earlier recommendations in the same batch already took theirs). */
   dcs: DcStock[];
   serviceLevelZ: number;
@@ -107,7 +115,7 @@ export interface Plan {
   position: number;
   rawQuantity: number;
   /** Set for transfers: the distribution centre chosen. */
-  sourceDc: DcStock | null;
+  source: TransferSource | null;
   supplier: SupplierTerms | null;
   /** Set when a DC had some stock but not enough, so a purchase order was suggested instead. */
   dcShortfall: { code: string; availableNet: number; needed: number } | null;
@@ -261,7 +269,7 @@ function buildPlan(
   input: PlanInput,
   action: Action,
   e: Evaluation,
-  extra: Pick<Plan, 'sourceDc' | 'supplier' | 'dcShortfall'>,
+  extra: Pick<Plan, 'source' | 'supplier' | 'dcShortfall'>,
 ): Plan {
   const position = input.available + input.inbound;
   const rawQuantity = Math.max(0, e.orderUpTo - position);
@@ -310,7 +318,10 @@ export function plan(input: PlanInput): PlanResult {
   const dcs = input.dcs
     .filter((d) => d.availableNet >= 1)
     .sort((a, b) => b.availableNet - a.availableNet);
-  if (dcs.length > 0) {
+  const stores = (input.storeExcess ?? [])
+    .filter((d) => d.availableNet >= 1)
+    .sort((a, b) => b.availableNet - a.availableNet || a.code.localeCompare(b.code));
+  if (dcs.length > 0 || stores.length > 0) {
     const e = evaluate(input, {
       meanDays: input.transferLeadTimeDays,
       stdDays: 0,
@@ -318,17 +329,27 @@ export function plan(input: PlanInput): PlanResult {
       deliveries: null,
     });
     if (position >= e.reorderPoint) return noNeed(position, e);
+    // The quantity does not depend on the source (same lead time, no minimum order).
     const candidate = buildPlan(input, 'TRANSFER', e, {
-      sourceDc: dcs[0],
+      source: null,
       supplier: null,
       dcShortfall: null,
     });
-    if (dcs[0].availableNet >= candidate.quantity) return { plan: candidate };
-    dcShortfall = {
-      code: dcs[0].code,
-      availableNet: dcs[0].availableNet,
-      needed: candidate.quantity,
-    };
+    // 1. Another store's excess, if one store can cover all of it (the one with the most).
+    if (stores.length > 0 && stores[0].availableNet >= candidate.quantity) {
+      return { plan: { ...candidate, source: { ...stores[0], kind: 'STORE' } } };
+    }
+    // 2. A distribution centre.
+    if (dcs.length > 0) {
+      if (dcs[0].availableNet >= candidate.quantity) {
+        return { plan: { ...candidate, source: { ...dcs[0], kind: 'DC' } } };
+      }
+      dcShortfall = {
+        code: dcs[0].code,
+        availableNet: dcs[0].availableNet,
+        needed: candidate.quantity,
+      };
+    }
   }
 
   if (!input.supplier) return { skip: 'NO_SOURCE' };
@@ -339,11 +360,39 @@ export function plan(input: PlanInput): PlanResult {
   if (position >= e.reorderPoint) return noNeed(position, e);
   return {
     plan: buildPlan(input, 'PURCHASE_ORDER', e, {
-      sourceDc: null,
+      source: null,
       supplier: input.supplier,
       dcShortfall,
     }),
   };
+}
+
+/**
+ * Excess at a store (V2 2d-2): keep = max(forecast demand over `keepDays`, the store's own reorder
+ * point); excess = position − keep; movable = what is physically there and not promised to an
+ * open outgoing transfer, capped by the excess and rounded DOWN to whole packs.
+ */
+export function excessAt(a: {
+  yhat: number[];
+  available: number;
+  inbound: number;
+  promisedOut: number;
+  packSize: number;
+  keepDays: number;
+  reorderPoint: number;
+}): { keep: number; excess: number; movable: number } {
+  const keep = Math.max(demandOver(a.yhat, a.keepDays), a.reorderPoint);
+  const excess = a.available + a.inbound - keep;
+  const pack = Math.max(a.packSize, 1);
+  const room = Math.min(excess, a.available - a.promisedOut);
+  return { keep, excess, movable: room > 0 ? Math.floor(room / pack) * pack : 0 };
+}
+
+/** The DC to send excess to: the one holding the least of this product (ties by code). */
+export function chooseDc<T extends { code: string; available: number }>(dcs: T[]): T | null {
+  return (
+    [...dcs].sort((a, b) => a.available - b.available || a.code.localeCompare(b.code))[0] ?? null
+  );
 }
 
 const n1 = (x: number) => (Math.round(x * 10) / 10).toString();
@@ -420,9 +469,13 @@ export function explain(p: Plan, c: ExplainContext): string {
         : '') +
       ` = ${p.quantity} units.`,
   ];
-  if (p.action === 'TRANSFER' && p.sourceDc) {
+  if (p.action === 'TRANSFER' && p.source?.kind === 'STORE') {
     lines.push(
-      `Source: transfer from ${p.sourceDc.code}, which has ${p.sourceDc.availableNet} units not already promised.`,
+      `Source: transfer from ${p.source.code}'s excess — it can spare ${p.source.availableNet} units beyond its own 60-day need, so no distribution-centre stock is used.`,
+    );
+  } else if (p.action === 'TRANSFER' && p.source) {
+    lines.push(
+      `Source: transfer from ${p.source.code}, which has ${p.source.availableNet} units not already promised.`,
     );
   } else if (p.supplier) {
     lines.push(
@@ -443,4 +496,30 @@ export function explain(p: Plan, c: ExplainContext): string {
     );
   }
   return lines.join(' ');
+}
+
+/** An excess move to a DC, in words and numbers. */
+export function explainExcess(c: {
+  sku: string;
+  locationCode: string;
+  keepDays: number;
+  demandKeep: number;
+  reorderPoint: number;
+  available: number;
+  inbound: number;
+  promisedOut: number;
+  packSize: number;
+  keep: number;
+  excess: number;
+  movable: number;
+  destinationCode: string;
+  destinationAvailable: number;
+}): string {
+  return [
+    `${c.sku} at ${c.locationCode} has more than it needs: forecast demand over the next ${c.keepDays} days is ${n1(c.demandKeep)} units and its reorder point is ${n1(c.reorderPoint)}, so it keeps ${n1(c.keep)}.`,
+    `Position = ${c.available} available + ${c.inbound} inbound = ${c.available + c.inbound}; excess = ${c.available + c.inbound} − ${n1(c.keep)} = ${n1(c.excess)}.`,
+    `Movable = the excess, at most the ${c.available - c.promisedOut} units on the shelf not promised to other transfers, rounded down to packs of ${c.packSize} = ${c.movable} units.`,
+    `After covering other stores' needs in this calculation, send the remaining excess to ${c.destinationCode}, the distribution centre holding the least of this product (${c.destinationAvailable} available).`,
+    `Approving creates the transfer; stock moves only when it is dispatched and received.`,
+  ].join(' ');
 }

@@ -30,7 +30,7 @@ export interface Overview {
   recommendations: {
     pending: number;
     byRisk: { CRITICAL: number; HIGH: number };
-    byAction: { TRANSFER: number; PURCHASE_ORDER: number };
+    byAction: { TRANSFER: number; PURCHASE_ORDER: number; REDISTRIBUTE_EXCESS: number };
     lastGeneratedAt: string | null;
   };
   alerts: { open: number; byKind: { OUT_OF_STOCK: number; LOW_STOCK: number } };

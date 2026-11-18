@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c, 2b and 2d-1 built**
-(see §9); waiting for approval of step 2d-2.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c, 2b and 2d built**
+(see §9); ready to write the next step's rules before building it.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -731,3 +731,65 @@ many recommendations are flagged per reason, and the spread of expected stockout
   view writes nothing and matches the pending recommendation); Python unchanged (94); all checks
   and e2e green. Docker demo rebuilt.
 
+
+### Step 2d-2 — excess redistribution rules (written 2026-11-18, BEFORE building or measuring)
+
+**Excess** uses the Overview's existing definition (more than 60 days of cover), so both pages
+agree. For a product at a store:
+- keep = the larger of forecast demand over the next **60 days** (beyond the horizon at its
+  average) and the store's own reorder point (supplier route) — *amended before building: with
+  60 days alone, a slow seller with a long supplier lead time could be both "excess" and "needs
+  stock"*. A store is a source only if it needs nothing itself;
+- excess = position (available + inbound) − keep;
+- **movable** = min(excess, available − units already promised to open outgoing transfers),
+  rounded **down** to whole packs. Only stock that is physically there can move.
+- Not a source of excess: recommendations flagged for review in 2d-1 (fallback forecast or Z-class
+  demand — the forecast is least reliable) and products with no demand forecast at that store.
+- Nothing is moved below 1 pack.
+
+**Use 1 — store to store (needs first).** When a store needs stock (unchanged rules), the source is
+chosen in this order: another store's movable excess if it covers the **whole** quantity (the
+store with the most), then a DC (as today), then the supplier. A store-to-store move is a normal
+`TRANSFER` whose source is a store, with the same 2-day lead time as from a DC (assumption,
+stated). The units are taken out of that store's movable excess for the rest of the batch.
+
+**Use 2 — back to a DC.** Movable excess left after all needs → a new action
+**`REDISTRIBUTE_EXCESS`**: the recommendation belongs to the store with the excess and names a
+destination DC — the DC holding the **least** available stock of that product (where it is most
+useful; ties by code). No stockout risk (`risk` is empty for this action only).
+
+**Approval** (admin / inventory manager, as for every recommendation): creates an APPROVED
+transfer from the store; stock moves only when it is dispatched and received. Quantity as
+suggested (these are never flagged for review). The product page's status view shows
+**EXCESS** with the movable units when a store has some.
+
+**Checks:** hand-checked unit tests (keep, excess, movable with packs / promised stock /
+exclusions, source order, DC choice); integration tests: store → store sourcing, an excess →
+DC recommendation whose approval creates one approved store → DC transfer and moves no stock,
+5 concurrent approvals → one document, the database refuses inconsistent rows, and no source
+store is ever planned below its keep level. Measured on the dev data, reported as found: number,
+units and value at cost of excess moves; how many needs were covered from store excess instead of
+a DC; movable units vs the Overview's 714 excess units (expected lower: whole packs, available
+only, exclusions).
+
+### Step 2d-2 — excess redistribution ✅ (2026-11-18)
+
+- Migrations `0015_redistribute_action.sql` and `0016_redistribute_excess.sql` add the third action,
+  its destination DC, nullable risk for excess only, and database checks for all three action
+  shapes. Store-to-store sourcing remains a normal `TRANSFER`.
+- Generation first calculates eligible movable excess, uses it for whole store needs before DC
+  stock, then suggests moving the remainder to the least-stocked DC. Existing outgoing transfers
+  are excluded, allocations are not promised twice, and fallback / Z-class / zero-demand stores
+  are explicitly tested as ineligible. Approval creates one approved transfer under concurrency
+  and moves no stock until dispatch/receipt.
+- UI: Replenishment filters, generation summary, list/detail explanation, product-by-store status,
+  and Overview all show excess moves. The detail page separates the keep-level calculation from a
+  normal replenishment calculation; a null risk is displayed as **Excess**, not as a stockout.
+- Measured on the current synthetic dev data (1,000 product × store pairs): **25** excess-to-DC
+  suggestions, **336 units**, **1,156.60** at primary-supplier unit cost; **5** store needs
+  (**66 units**) were covered from another store's excess. Total movable excess was **402 units**
+  versus the Overview's **714 surplus units** (56 %), lower as expected because movable stock is
+  available now, unpromised, in whole packs, and excludes uncertain forecasts.
+- Tests: API unit 194; integration 232 → 233 (including the new exclusion case); Python unchanged
+  at 94. Formatting, lint, typecheck, both builds and the browser e2e are green; API and web Docker
+  images rebuilt.

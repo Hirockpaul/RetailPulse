@@ -1,7 +1,11 @@
+import { OVERVIEW } from '../overview/overview.config';
 import {
+  chooseDc,
   type DcStock,
   demandOver,
+  excessAt,
   explain,
+  explainExcess,
   dayToDate,
   plan,
   type PlanInput,
@@ -14,6 +18,7 @@ import {
   type SupplierDelay,
   type SupplierTerms,
 } from './replenishment.calc';
+import { REPLENISHMENT } from './replenishment.config';
 
 const supplier: SupplierTerms = {
   id: 's1',
@@ -105,7 +110,7 @@ describe('plan — purchase order (no distribution-centre stock)', () => {
     expect(p.rawQuantity).toBeCloseTo(133.057, 3);
     expect(p.quantity).toBe(144);
     expect(p.supplier?.name).toContain('Harbor');
-    expect(p.sourceDc).toBeNull();
+    expect(p.source).toBeNull();
   });
 
   it('counts inbound stock in the position', () => {
@@ -166,7 +171,7 @@ describe('plan — transfer from a distribution centre', () => {
     expect(p.reorderPoint).toBeCloseTo(26.979, 3);
     expect(p.orderUpTo).toBeCloseTo(96.979, 3);
     expect(p.quantity).toBe(84);
-    expect(p.sourceDc?.code).toBe('DC-NORTH');
+    expect(p.source?.code).toBe('DC-NORTH');
     expect(p.supplier).toBeNull();
     expect(p.dcShortfall).toBeNull();
   });
@@ -175,7 +180,7 @@ describe('plan — transfer from a distribution centre', () => {
     const p = planned(
       base({ dcs: [dc(100, 'DC-SOUTH'), dc(900, 'DC-NORTH'), dc(300, 'DC-EAST')] }),
     );
-    expect(p.sourceDc?.code).toBe('DC-NORTH');
+    expect(p.source?.code).toBe('DC-NORTH');
   });
 
   it('does not recommend when stock already covers the short lead time', () => {
@@ -544,5 +549,177 @@ describe('explain — stockout and review sentences (2d-1)', () => {
       'Manual review: demand for this product at this store is erratic (class Z)',
     );
     expect(explain(p, { ...ctx, review: null })).not.toContain('Manual review');
+  });
+});
+
+describe('excessAt — what a store keeps and could give away (2d-2)', () => {
+  const flat = Array(14).fill(2); // 2 a day → 120 units over 60 days
+
+  it('keeps 60 days of demand; movable is rounded down to whole packs (checked by hand)', () => {
+    // position 200 − keep 120 = 80 excess; all on the shelf; packs of 12 → 72
+    expect(
+      excessAt({
+        yhat: flat,
+        available: 200,
+        inbound: 0,
+        promisedOut: 0,
+        packSize: 12,
+        keepDays: 60,
+        reorderPoint: 10,
+      }),
+    ).toEqual({ keep: 120, excess: 80, movable: 72 });
+  });
+
+  it('keeps at least its own reorder point', () => {
+    expect(
+      excessAt({
+        yhat: flat,
+        available: 200,
+        inbound: 0,
+        promisedOut: 0,
+        packSize: 1,
+        keepDays: 60,
+        reorderPoint: 150,
+      }),
+    ).toEqual({ keep: 150, excess: 50, movable: 50 });
+  });
+
+  it('inbound counts towards the excess, but only stock on the shelf and not promised can move', () => {
+    // position 100 + 100 = 200 → excess 80, but only 100 − 70 promised = 30 on the shelf → 24
+    expect(
+      excessAt({
+        yhat: flat,
+        available: 100,
+        inbound: 100,
+        promisedOut: 70,
+        packSize: 12,
+        keepDays: 60,
+        reorderPoint: 0,
+      }),
+    ).toEqual({ keep: 120, excess: 80, movable: 24 });
+  });
+
+  it('nothing movable below one pack or without excess', () => {
+    expect(
+      excessAt({
+        yhat: flat,
+        available: 131,
+        inbound: 0,
+        promisedOut: 0,
+        packSize: 12,
+        keepDays: 60,
+        reorderPoint: 0,
+      }).movable,
+    ).toBe(0); // 11 excess < one pack of 12
+    expect(
+      excessAt({
+        yhat: flat,
+        available: 100,
+        inbound: 0,
+        promisedOut: 0,
+        packSize: 1,
+        keepDays: 60,
+        reorderPoint: 0,
+      }),
+    ).toEqual({ keep: 120, excess: -20, movable: 0 });
+  });
+
+  it('uses the same 60 days as the Overview\'s "excess" definition', () => {
+    expect(REPLENISHMENT.excessKeepDays).toBe(OVERVIEW.excessCoverDays);
+  });
+});
+
+describe('chooseDc — excess goes to the DC holding the least of the product', () => {
+  it('least available first, ties by code', () => {
+    const dcs = [
+      { code: 'DC-SOUTH', available: 40 },
+      { code: 'DC-NORTH', available: 12 },
+      { code: 'DC-EAST', available: 12 },
+    ];
+    expect(chooseDc(dcs)?.code).toBe('DC-EAST');
+    expect(chooseDc([])).toBeNull();
+  });
+});
+
+describe("plan — another store's excess as the source (2d-2)", () => {
+  const store = (availableNet: number, code = 'STR-03'): DcStock => ({
+    locationId: code,
+    code,
+    availableNet,
+  });
+
+  it('uses a store whose excess covers the whole quantity, before any DC', () => {
+    // same numbers as the DC transfer case: quantity 84
+    const p = planned(base({ dcs: [dc(500)], storeExcess: [store(84)] }));
+    expect(p.action).toBe('TRANSFER');
+    expect(p.source).toEqual({
+      locationId: 'STR-03',
+      code: 'STR-03',
+      availableNet: 84,
+      kind: 'STORE',
+    });
+    expect(p.quantity).toBe(84);
+    expect(p.leadTimeDays).toBe(2);
+  });
+
+  it('picks the store with the most excess; falls back to a DC when no store covers it all', () => {
+    expect(
+      planned(base({ storeExcess: [store(96, 'STR-04'), store(120, 'STR-05')] })).source?.code,
+    ).toBe('STR-05');
+    const dcInstead = planned(base({ dcs: [dc(500)], storeExcess: [store(72)] }));
+    expect(dcInstead.source).toMatchObject({ code: 'DC-NORTH', kind: 'DC' });
+  });
+
+  it('store excess alone is enough for a transfer; too little goes to the supplier', () => {
+    expect(planned(base({ storeExcess: [store(84)], supplier: null })).source?.kind).toBe('STORE');
+    const po = planned(base({ storeExcess: [store(12)] }));
+    expect(po.action).toBe('PURCHASE_ORDER');
+    expect(po.dcShortfall).toBeNull();
+  });
+
+  it('explains a store-to-store transfer', () => {
+    const p = planned(base({ storeExcess: [store(84)] }));
+    const text = explain(p, {
+      sku: 'RP-00042',
+      locationCode: 'STR-01',
+      model: 'hgb_direct',
+      isFallback: false,
+      sigmaError: 3,
+      cls: null,
+      serviceLevel: 0.95,
+      serviceLevelZ: 1.645,
+      reviewPeriodDays: 7,
+      packSize: 12,
+      available: 20,
+      inbound: 0,
+    });
+    expect(text).toContain("Source: transfer from STR-03's excess — it can spare 84 units");
+  });
+});
+
+describe('explainExcess', () => {
+  it('shows keep, excess, movable and the destination with the numbers', () => {
+    const text = explainExcess({
+      sku: 'RP-00042',
+      locationCode: 'STR-05',
+      keepDays: 60,
+      demandKeep: 120,
+      reorderPoint: 10,
+      available: 200,
+      inbound: 0,
+      promisedOut: 0,
+      packSize: 12,
+      keep: 120,
+      excess: 80,
+      movable: 72,
+      destinationCode: 'DC-NORTH',
+      destinationAvailable: 12,
+    });
+    expect(text).toContain(
+      'over the next 60 days is 120 units and its reorder point is 10, so it keeps 120',
+    );
+    expect(text).toContain('excess = 200 − 120 = 80');
+    expect(text).toContain('rounded down to packs of 12 = 72 units');
+    expect(text).toContain('send the remaining excess to DC-NORTH');
   });
 });

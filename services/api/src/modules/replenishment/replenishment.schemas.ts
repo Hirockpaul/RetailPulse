@@ -4,7 +4,12 @@ import type { ReviewReason } from './replenishment.calc';
 
 export const RECOMMENDATION_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'] as const;
 export type RecommendationStatus = (typeof RECOMMENDATION_STATUSES)[number];
-export const RECOMMENDATION_ACTIONS = ['TRANSFER', 'PURCHASE_ORDER'] as const;
+export const RECOMMENDATION_ACTIONS = [
+  'TRANSFER',
+  'PURCHASE_ORDER',
+  'REDISTRIBUTE_EXCESS',
+] as const;
+export type RecommendationAction = (typeof RECOMMENDATION_ACTIONS)[number];
 export const RISKS = ['CRITICAL', 'HIGH'] as const;
 
 export const listRecommendationsQuerySchema = paginationSchema.extend({
@@ -44,7 +49,9 @@ export interface ProductStatus {
     available: number;
     inbound: number;
     position: number;
-    outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE';
+    outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE' | 'EXCESS';
+    /** EXCESS: units it could give away (whole packs), V2 2d-2. */
+    movableExcess: number | null;
     reorderPoint: number | null;
     suggestedQuantity: number | null;
     suggestedAction: 'TRANSFER' | 'PURCHASE_ORDER' | null;
@@ -61,9 +68,9 @@ export interface ProductStatus {
 
 export interface PendingRef {
   id: string;
-  action: 'TRANSFER' | 'PURCHASE_ORDER';
+  action: RecommendationAction;
   quantity: number;
-  risk: 'CRITICAL' | 'HIGH';
+  risk: 'CRITICAL' | 'HIGH' | null;
   reviewReason: ReviewReason | null;
 }
 
@@ -72,7 +79,11 @@ export interface PendingRef {
  * Fields marked "v2" exist on recommendations generated since V2 step 2b (safety stock v2);
  * older rows have `sigmaDaily` (the spread of demand) in place of `sigmaError`.
  */
-export interface RecommendationInputs {
+export type RecommendationInputs = NeedInputs | ExcessInputs;
+
+/** A store needs stock (TRANSFER or PURCHASE_ORDER). */
+export interface NeedInputs {
+  kind?: undefined;
   forecast: {
     runId: string;
     model: string;
@@ -118,7 +129,8 @@ export interface RecommendationInputs {
   /** v2 (2d-1): expected stockout and the manual-review reason. */
   stockout?: { day: number | null; date: string | null; beyondForecast: boolean };
   review?: ReviewReason | null;
-  source: { code: string; availableNet: number } | null;
+  /** kind: DC, or another store's excess (V2 2d-2; absent on older rows = DC). */
+  source: { code: string; availableNet: number; kind?: 'DC' | 'STORE' } | null;
   supplier: {
     id: string;
     name: string;
@@ -129,12 +141,46 @@ export interface RecommendationInputs {
   dcShortfall: { code: string; availableNet: number; needed: number } | null;
 }
 
+/** A store has excess no other store needed: send it to a DC (REDISTRIBUTE_EXCESS, V2 2d-2). */
+export interface ExcessInputs {
+  kind: 'EXCESS';
+  forecast: {
+    runId: string;
+    model: string;
+    isFallback: boolean;
+    historyDays: number;
+    testWape: number | null;
+    /** Average forecast units per day over the keep window. */
+    avgDailyDemand: number;
+  };
+  stock: {
+    onHand: number;
+    reserved: number;
+    available: number;
+    inbound: number;
+    position: number;
+    /** Already promised to open outgoing transfers. */
+    promisedOut: number;
+  };
+  excess: {
+    keepDays: number;
+    demandKeep: number;
+    reorderPoint: number;
+    keep: number;
+    excess: number;
+    movable: number;
+    packSize: number;
+  };
+  destination: { code: string; available: number };
+}
+
 export interface RecommendationSummary {
   id: string;
   status: RecommendationStatus;
-  action: 'TRANSFER' | 'PURCHASE_ORDER';
+  action: RecommendationAction;
   quantity: number;
-  risk: 'CRITICAL' | 'HIGH';
+  /** null for REDISTRIBUTE_EXCESS (no stockout risk). */
+  risk: 'CRITICAL' | 'HIGH' | null;
   daysOfCover: number | null;
   expectedStockoutOn: string | null;
   reviewReason: ReviewReason | null;
@@ -152,6 +198,9 @@ export interface RecommendationSummary {
   sourceCode: string | null;
   supplierId: string | null;
   supplierName: string | null;
+  /** REDISTRIBUTE_EXCESS: the DC the excess goes to. */
+  destinationLocationId: string | null;
+  destinationCode: string | null;
   decidedBy: string | null;
   decidedAt: Date | null;
   decisionNote: string | null;
@@ -182,6 +231,8 @@ export interface PairRow {
   onHand: number;
   reserved: number;
   inbound: number;
+  /** Units already promised to open outgoing transfers from this store. */
+  promisedOut: number;
   supplierId: string | null;
   supplierName: string | null;
   leadTimeDays: number | null;
@@ -193,11 +244,12 @@ export interface NewRecommendation {
   forecastRunId: string;
   productId: string;
   locationId: string;
-  action: 'TRANSFER' | 'PURCHASE_ORDER';
+  action: RecommendationAction;
   sourceLocationId: string | null;
   supplierId: string | null;
+  destinationLocationId: string | null;
   quantity: number;
-  risk: 'CRITICAL' | 'HIGH';
+  risk: 'CRITICAL' | 'HIGH' | null;
   daysOfCover: number | null;
   expectedStockoutOn: string | null;
   reviewReason: ReviewReason | null;
@@ -207,11 +259,12 @@ export interface NewRecommendation {
 
 export interface LockedRecommendation {
   status: RecommendationStatus;
-  action: 'TRANSFER' | 'PURCHASE_ORDER';
+  action: RecommendationAction;
   productId: string;
   locationId: string;
   sourceLocationId: string | null;
   supplierId: string | null;
+  destinationLocationId: string | null;
   quantity: number;
   reviewReason: ReviewReason | null;
   inputs: RecommendationInputs;

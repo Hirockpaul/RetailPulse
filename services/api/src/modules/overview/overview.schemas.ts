@@ -12,7 +12,7 @@ export interface Overview {
   recommendations: {
     pending: number;
     byRisk: { CRITICAL: number; HIGH: number };
-    byAction: { TRANSFER: number; PURCHASE_ORDER: number };
+    byAction: { TRANSFER: number; PURCHASE_ORDER: number; REDISTRIBUTE_EXCESS: number };
     lastGeneratedAt: Date | null;
   };
   alerts: { open: number; byKind: { OUT_OF_STOCK: number; LOW_STOCK: number } };
@@ -39,6 +39,7 @@ export interface RecommendationCounts {
   high: number;
   transfer: number;
   purchaseOrder: number;
+  redistributeExcess: number;
   lastGeneratedAt: Date | null;
 }
 

@@ -68,7 +68,8 @@ export function ReplenishmentPage() {
     const r = await generateRecommendations();
     setMessage(
       `${r.created} recommendation${r.created === 1 ? '' : 's'} created from ${formatInt(r.evaluated)} products ` +
-        `(${r.byAction.TRANSFER} transfers, ${r.byAction.PURCHASE_ORDER} orders; ${r.skipped.noNeed} products had enough stock` +
+        `(${r.byAction.TRANSFER} transfers, ${r.byAction.PURCHASE_ORDER} orders, ${r.byAction.REDISTRIBUTE_EXCESS} excess moves` +
+        `${r.fromStoreExcess ? `; ${r.fromStoreExcess} need${r.fromStoreExcess === 1 ? '' : 's'} covered from store excess` : ''}; ${r.skipped.noNeed} products had enough stock` +
         `${r.skipped.noSource ? `, ${r.skipped.noSource} had no source` : ''}). Nothing is ordered until you approve it.`,
     );
     setStatus('PENDING');
@@ -195,9 +196,10 @@ export function ReplenishmentPage() {
                 setPage(1);
               }}
             >
-              <option value="">Transfers and orders</option>
+              <option value="">All actions</option>
               <option value="TRANSFER">Transfers</option>
               <option value="PURCHASE_ORDER">Purchase orders</option>
+              <option value="REDISTRIBUTE_EXCESS">Excess moves</option>
             </select>
           </label>
           <label className="flex flex-col text-xs text-slate-500">
@@ -276,7 +278,10 @@ export function ReplenishmentPage() {
                       <td className={table.td}>{r.locationCode}</td>
                       <td className={table.td}>
                         {actionLabel(r)}{' '}
-                        {r.action === 'TRANSFER' ? null : <Badge tone="neutral" label="order" />}
+                        {r.action === 'PURCHASE_ORDER' && <Badge tone="neutral" label="order" />}
+                        {r.action === 'REDISTRIBUTE_EXCESS' && (
+                          <Badge tone="neutral" label="excess" />
+                        )}
                       </td>
                       <td className={table.tdNum}>{formatInt(r.quantity)}</td>
                       <td className={table.tdNum}>

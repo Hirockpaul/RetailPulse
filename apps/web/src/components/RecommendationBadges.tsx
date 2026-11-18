@@ -6,7 +6,8 @@ import type {
 } from '../api/replenishment';
 import { Badge } from './Badge';
 
-export function RiskBadge({ risk }: { risk: Risk }) {
+export function RiskBadge({ risk }: { risk: Risk | null }) {
+  if (risk === null) return <Badge tone="neutral" label="Excess" />;
   return risk === 'CRITICAL' ? (
     <Badge tone="bad" label="Critical" />
   ) : (
@@ -27,11 +28,13 @@ export function RecommendationStatusBadge({ status }: { status: RecommendationSt
   );
 }
 
-/** "Transfer from DC-NORTH" / "Order from <supplier>". */
-export function actionLabel(r: Pick<Recommendation, 'action' | 'sourceCode' | 'supplierName'>) {
-  return r.action === 'TRANSFER'
-    ? `Transfer from ${r.sourceCode}`
-    : `Order from ${r.supplierName ?? 'supplier'}`;
+/** "Transfer from DC-NORTH" / "Order from <supplier>" / "Move excess to DC-SOUTH". */
+export function actionLabel(
+  r: Pick<Recommendation, 'action' | 'sourceCode' | 'supplierName' | 'destinationCode'>,
+) {
+  if (r.action === 'TRANSFER') return `Transfer from ${r.sourceCode}`;
+  if (r.action === 'REDISTRIBUTE_EXCESS') return `Move excess to ${r.destinationCode}`;
+  return `Order from ${r.supplierName ?? 'supplier'}`;
 }
 
 /** Why a manager must set the quantity (V2 2d-1), in words. */

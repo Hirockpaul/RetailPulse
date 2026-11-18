@@ -4,6 +4,8 @@ import {
   approveRecommendation,
   getRecommendation,
   rejectRecommendation,
+  type ExcessInputs,
+  type NeedInputs,
 } from '../api/replenishment';
 import { Badge } from '../components/Badge';
 import {
@@ -89,7 +91,9 @@ export function RecommendationDetailPage({ id }: { id: string }) {
             {rec.data.expectedStockoutOn && (
               <p className="mt-1 text-sm text-slate-600">
                 Expected stockout: <strong>{formatDay(rec.data.expectedStockoutOn)}</strong>
-                {rec.data.inputs.stockout?.beyondForecast && ' (estimate beyond the forecast)'}
+                {'stockout' in rec.data.inputs &&
+                  rec.data.inputs.stockout?.beyondForecast &&
+                  ' (estimate beyond the forecast)'}
               </p>
             )}
             {rec.data.reviewReason && (
@@ -136,7 +140,7 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                   >
                     {busy === 'approve'
                       ? 'Approving…'
-                      : rec.data.action === 'TRANSFER'
+                      : rec.data.action === 'TRANSFER' || rec.data.action === 'REDISTRIBUTE_EXCESS'
                         ? 'Approve and create transfer'
                         : 'Approve and create purchase order'}
                   </button>
@@ -151,8 +155,10 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                 </div>
                 <p className="text-xs text-slate-500">
                   Approving creates the{' '}
-                  {rec.data.action === 'TRANSFER' ? 'transfer' : 'purchase order'} but moves no
-                  stock by itself.
+                  {rec.data.action === 'TRANSFER' || rec.data.action === 'REDISTRIBUTE_EXCESS'
+                    ? 'transfer'
+                    : 'purchase order'}{' '}
+                  but moves no stock by itself.
                 </p>
               </div>
             )}
@@ -210,96 +216,11 @@ export function RecommendationDetailPage({ id }: { id: string }) {
             </p>
           </section>
 
-          <div className="grid gap-5 md:grid-cols-3">
-            <InputsCard title="Stock position">
-              <Row label="On hand" value={formatInt(rec.data.inputs.stock.onHand)} />
-              <Row label="Reserved" value={formatInt(rec.data.inputs.stock.reserved)} />
-              <Row label="Available" value={formatInt(rec.data.inputs.stock.available)} />
-              <Row
-                label="Inbound (approved transfers / orders)"
-                value={formatInt(rec.data.inputs.stock.inbound)}
-              />
-              <Row label="Position" value={formatInt(rec.data.inputs.stock.position)} strong />
-            </InputsCard>
-
-            <InputsCard title="Forecast">
-              <Row label="Model" value={rec.data.inputs.forecast.model} />
-              <Row
-                label="Demand per day (lead time)"
-                value={formatDecimal(rec.data.inputs.forecast.avgDailyDemand)}
-              />
-              <Row
-                label="Demand during lead time"
-                value={formatDecimal(rec.data.inputs.forecast.demandDuringLead)}
-              />
-              {rec.data.inputs.forecast.sigmaError !== undefined ? (
-                <Row
-                  label="Typical daily forecast error (σe)"
-                  value={formatDecimal(rec.data.inputs.forecast.sigmaError)}
-                />
-              ) : (
-                <Row
-                  label="Daily demand spread (σ)"
-                  value={formatDecimal(rec.data.inputs.forecast.sigmaDaily ?? 0)}
-                />
-              )}
-              <Row label="History" value={`${rec.data.inputs.forecast.historyDays} days`} />
-              <Row
-                label="Accuracy on test window"
-                value={
-                  rec.data.inputs.forecast.testWape === null
-                    ? 'not measured'
-                    : formatPercent(rec.data.inputs.forecast.testWape)
-                }
-              />
-              {rec.data.inputs.forecast.isFallback && (
-                <p className="pt-1">
-                  <Badge tone="warn" label="Category-average fallback: little sales history" />
-                </p>
-              )}
-            </InputsCard>
-
-            <InputsCard title="Calculation">
-              <Row
-                label={`Lead time (${LEAD_BASIS[rec.data.inputs.parameters.leadTimeBasis ?? 'v1'] ?? rec.data.inputs.parameters.leadTimeSource})`}
-                value={`${formatDecimal(rec.data.inputs.parameters.leadTimeDays)} days`}
-              />
-              {rec.data.inputs.parameters.leadTimeStdDays !== undefined && (
-                <Row
-                  label="Lead-time spread (σL)"
-                  value={`${formatDecimal(rec.data.inputs.parameters.leadTimeStdDays)} days`}
-                />
-              )}
-              {rec.data.inputs.parameters.serviceLevel !== undefined && (
-                <Row
-                  label={`Service level (${rec.data.inputs.parameters.classification?.cls && rec.data.inputs.parameters.classification.cls !== 'NEW' ? `class ${rec.data.inputs.parameters.classification.cls}` : 'default'})`}
-                  value={formatPercent(rec.data.inputs.parameters.serviceLevel)}
-                />
-              )}
-              <Row
-                label="Service level z"
-                value={String(rec.data.inputs.parameters.serviceLevelZ)}
-              />
-              <Row
-                label="Safety stock"
-                value={formatDecimal(rec.data.inputs.calculation.safetyStock)}
-              />
-              <Row
-                label="Reorder point"
-                value={formatDecimal(rec.data.inputs.calculation.reorderPoint)}
-              />
-              <Row
-                label="Order-up-to level"
-                value={formatDecimal(rec.data.inputs.calculation.orderUpTo)}
-              />
-              <Row label="Need" value={formatDecimal(rec.data.inputs.calculation.rawQuantity)} />
-              <Row
-                label={`Rounded to packs of ${rec.data.inputs.parameters.packSize}`}
-                value={formatInt(rec.data.inputs.calculation.quantity)}
-                strong
-              />
-            </InputsCard>
-          </div>
+          {rec.data.inputs.kind === 'EXCESS' ? (
+            <ExcessCards inputs={rec.data.inputs} />
+          ) : (
+            <NeedCards inputs={rec.data.inputs} />
+          )}
           <p className="text-xs text-slate-500">
             Generated {formatDateTime(rec.data.generatedAt)}. Stock and forecast may have changed
             since; use Recalculate on the Replenishment page for a fresh suggestion.
@@ -315,6 +236,114 @@ const LEAD_BASIS: Record<string, string> = {
   measured: 'supplier, measured',
   promised: 'supplier, as promised',
 };
+
+function StockCard({ stock }: { stock: NeedInputs['stock'] | ExcessInputs['stock'] }) {
+  return (
+    <InputsCard title="Stock position">
+      <Row label="On hand" value={formatInt(stock.onHand)} />
+      <Row label="Reserved" value={formatInt(stock.reserved)} />
+      <Row label="Available" value={formatInt(stock.available)} />
+      <Row label="Inbound (approved transfers / orders)" value={formatInt(stock.inbound)} />
+      {'promisedOut' in stock && (
+        <Row label="Promised to outgoing transfers" value={formatInt(stock.promisedOut)} />
+      )}
+      <Row label="Position" value={formatInt(stock.position)} strong />
+    </InputsCard>
+  );
+}
+
+function ForecastCard({ forecast }: { forecast: NeedInputs['forecast'] }) {
+  return (
+    <InputsCard title="Forecast">
+      <Row label="Model" value={forecast.model} />
+      <Row label="Demand per day (lead time)" value={formatDecimal(forecast.avgDailyDemand)} />
+      <Row label="Demand during lead time" value={formatDecimal(forecast.demandDuringLead)} />
+      {forecast.sigmaError !== undefined ? (
+        <Row label="Typical daily forecast error (σe)" value={formatDecimal(forecast.sigmaError)} />
+      ) : (
+        <Row label="Daily demand spread (σ)" value={formatDecimal(forecast.sigmaDaily ?? 0)} />
+      )}
+      <Row label="History" value={`${forecast.historyDays} days`} />
+      <Row
+        label="Accuracy on test window"
+        value={forecast.testWape === null ? 'not measured' : formatPercent(forecast.testWape)}
+      />
+      {forecast.isFallback && (
+        <p className="pt-1">
+          <Badge tone="warn" label="Category-average fallback: little sales history" />
+        </p>
+      )}
+    </InputsCard>
+  );
+}
+
+function NeedCards({ inputs }: { inputs: NeedInputs }) {
+  return (
+    <div className="grid gap-5 md:grid-cols-3">
+      <StockCard stock={inputs.stock} />
+      <ForecastCard forecast={inputs.forecast} />
+      <InputsCard title="Calculation">
+        <Row
+          label={`Lead time (${LEAD_BASIS[inputs.parameters.leadTimeBasis ?? 'v1'] ?? inputs.parameters.leadTimeSource})`}
+          value={`${formatDecimal(inputs.parameters.leadTimeDays)} days`}
+        />
+        {inputs.parameters.leadTimeStdDays !== undefined && (
+          <Row
+            label="Lead-time spread (σL)"
+            value={`${formatDecimal(inputs.parameters.leadTimeStdDays)} days`}
+          />
+        )}
+        {inputs.parameters.serviceLevel !== undefined && (
+          <Row
+            label={`Service level (${inputs.parameters.classification?.cls && inputs.parameters.classification.cls !== 'NEW' ? `class ${inputs.parameters.classification.cls}` : 'default'})`}
+            value={formatPercent(inputs.parameters.serviceLevel)}
+          />
+        )}
+        <Row label="Service level z" value={String(inputs.parameters.serviceLevelZ)} />
+        <Row label="Safety stock" value={formatDecimal(inputs.calculation.safetyStock)} />
+        <Row label="Reorder point" value={formatDecimal(inputs.calculation.reorderPoint)} />
+        <Row label="Order-up-to level" value={formatDecimal(inputs.calculation.orderUpTo)} />
+        <Row label="Need" value={formatDecimal(inputs.calculation.rawQuantity)} />
+        <Row
+          label={`Rounded to packs of ${inputs.parameters.packSize}`}
+          value={formatInt(inputs.calculation.quantity)}
+          strong
+        />
+      </InputsCard>
+    </div>
+  );
+}
+
+function ExcessCards({ inputs }: { inputs: ExcessInputs }) {
+  return (
+    <div className="grid gap-5 md:grid-cols-3">
+      <StockCard stock={inputs.stock} />
+      <InputsCard title="Forecast and keep level">
+        <Row label="Model" value={inputs.forecast.model} />
+        <Row label="History" value={`${inputs.forecast.historyDays} days`} />
+        <Row
+          label={`Forecast demand (${inputs.excess.keepDays} days)`}
+          value={formatDecimal(inputs.excess.demandKeep)}
+        />
+        <Row label="Reorder point" value={formatDecimal(inputs.excess.reorderPoint)} />
+        <Row label="Units kept" value={formatDecimal(inputs.excess.keep)} strong />
+      </InputsCard>
+      <InputsCard title="Excess move">
+        <Row label="Excess above keep level" value={formatDecimal(inputs.excess.excess)} />
+        <Row
+          label={`Movable in packs of ${inputs.excess.packSize}`}
+          value={formatInt(inputs.excess.movable)}
+          strong
+        />
+        <Row label="Destination" value={inputs.destination.code} />
+        <Row
+          label="Destination stock before move"
+          value={formatInt(inputs.destination.available)}
+        />
+      </InputsCard>
+    </div>
+  );
+}
 
 function InputsCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (

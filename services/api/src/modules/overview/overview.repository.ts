@@ -69,6 +69,8 @@ export class OverviewRepository {
               COUNT(*) FILTER (WHERE status = 'PENDING' AND action = 'TRANSFER')::int AS transfer,
               COUNT(*) FILTER (WHERE status = 'PENDING' AND action = 'PURCHASE_ORDER')::int
                 AS "purchaseOrder",
+              COUNT(*) FILTER (WHERE status = 'PENDING' AND action = 'REDISTRIBUTE_EXCESS')::int
+                AS "redistributeExcess",
               MAX(generated_at) AS "lastGeneratedAt"
          FROM replenishment_recommendations
         WHERE ($1::uuid[] IS NULL OR location_id = ANY($1))`,

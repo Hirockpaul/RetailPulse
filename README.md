@@ -213,8 +213,10 @@ npm run forecast:serve
 
 Then sign in as an admin or inventory manager and open **Replenishment → Refresh forecasts**
 (about 30 seconds). It shows how accurate each model is, and lists recommendations that you can
-approve or reject. Approving creates the transfer or purchase order; stock moves only when those are
-received. A forecast never orders anything by itself.
+approve or reject. Suggestions can transfer stock from a DC, use another store's excess, order from
+a supplier, or return remaining excess to a DC. Approving creates the transfer or purchase order;
+stock moves only when those are dispatched/received. A forecast never moves or orders anything by
+itself.
 
 ```bash
 npm run forecast:test

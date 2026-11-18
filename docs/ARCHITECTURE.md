@@ -191,6 +191,7 @@ erDiagram
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
 | V2 2d-1 ✅ | `expected_stockout_on`, `review_reason`, `approved_quantity` on `replenishment_recommendations` |
+| V2 2d-2 ✅ | `REDISTRIBUTE_EXCESS`; `destination_location_id` on `replenishment_recommendations` |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -298,9 +299,9 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /forecasts/explanation`          | `productId, locationId`                        | why the first forecast day is what it is: starting point × factors (SHAP), or the reason there is none (`NOT_ML`, `FALLBACK`, `FAILED_CHECK`, `NOT_AVAILABLE`); plus the run's global importance. Store-scoped |
 | `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
 | `GET /replenishment/recommendations`  | `status, action, risk, needsReview, locationId, productId, page, pageSize` | most urgent first; each with its expected stockout date and review flag; store managers: own stores |
-| `GET /replenishment/status`           | `productId`                                    | per store, evaluated now with the generation calculation: NO_ACTION_REQUIRED / NEEDS_STOCK / NO_SOURCE, position, reorder point, expected stockout, review flag, pending recommendation. Writes nothing; store-scoped (V2 2d-1) |
+| `GET /replenishment/status`           | `productId`                                    | per store, evaluated now with the generation calculation: NO_ACTION_REQUIRED / NEEDS_STOCK / NO_SOURCE / EXCESS, position, reorder point, movable excess, expected stockout, review flag, pending recommendation. Writes nothing; store-scoped (V2 2d) |
 | `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
-| `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note?, quantity? }` (approve) · `{ note? }` (reject) | approve creates the approved transfer / purchase order; a recommendation flagged for review needs `quantity` and `note` (`422 QUANTITY_REQUIRED`), an unflagged one refuses another quantity (`422 QUANTITY_NOT_ALLOWED`) |
+| `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note?, quantity? }` (approve) · `{ note? }` (reject) | approve creates the approved transfer / purchase order (including store → store and excess → DC); a recommendation flagged for review needs `quantity` and `note` (`422 QUANTITY_REQUIRED`), an unflagged one refuses another quantity (`422 QUANTITY_NOT_ALLOWED`) |
 | `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
 | `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
 
@@ -532,9 +533,10 @@ noise the model cannot predict (§7.3). Lead time contributes 8.5 % of the varia
 28 % for Harbor and 37 % for Summit (the least punctual). Not claimed: that 99 % is achieved in
 practice — that needs a replay of past lead-time demand (scenarios / monitoring steps).
 
-- **Source:** a distribution centre with unallocated stock (lead time 2 days) when it can cover the
-  whole quantity — otherwise the primary supplier (its lead time and minimum). A centre that has
-  some stock but not enough is reported in the explanation ("DC-NORTH has 4, 84 needed").
+- **Source:** another store's eligible movable excess when it can cover the whole quantity, then a
+  distribution centre with unallocated stock (both use the assumed 2-day transfer lead time),
+  otherwise the primary supplier (its lead time and minimum). A centre that has some stock but not
+  enough is reported in the explanation ("DC-NORTH has 4, 84 needed").
 - **Scarce DC stock is never promised twice:** recommendations are produced most-urgent-first
   (lowest days of cover) and each transfer takes its quantity out of what later stores may use;
   stock already promised to open (requested/approved) transfers is excluded.
@@ -559,6 +561,13 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   there, unlike in a generation batch). Measured on the dev data: for all 1,000 pairs it agreed
   with a fresh generation (269 needs stock / 731 no action; same quantities and flags), ≤ 174 ms
   per product.
+- **Excess redistribution (V2 2d-2):** a store keeps the larger of 60 forecast days and its own
+  reorder point. Movable excess is capped by physically available, unpromised stock and rounded
+  down to packs; fallback, Z-class and zero-demand forecasts are excluded. Needs consume eligible
+  excess first. Any remainder becomes `REDISTRIBUTE_EXCESS` to the DC holding the least of that
+  product; it has no stockout risk. Approval creates an approved store → DC transfer, and the normal
+  transfer lifecycle moves the stock. On the synthetic dev data: 402 movable units versus 714
+  Overview surplus units; 5 needs used store excess and 25 remainder moves returned 336 units.
 
 ### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
 
@@ -872,3 +881,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 58 | Supplier performance from a delivery table, with synthetic history in the seed (V2 2c) | Lead-time statistics need history that does not exist yet; history rows never create orders or stock, and real receipts are added automatically | Synthetic profiles are simple (independent delays); no partial receipts yet, so real ORDER rows always have fill rate 100 % |
 | 59 | Safety stock from forecast error, measured supplier delay and a service level per ABC/XYZ class (V2 2b) | The forecast's error is the uncertainty left after forecasting (demand spread double-counts it); late suppliers need both a longer expected lead time and a cushion for its spread; value and predictability decide how much a stock-out is worth avoiding | Assumes independent, roughly normal daily errors; supplier-level delay ignores product differences; raises total safety stock by 48 % on the dev data, mostly through the 99 % level for A items — a policy choice, visible in config |
 | 60 | Manual review is a flag with a manager-entered quantity, and "no action required" is computed on request (V2 2d-1) | A reviewed suggestion still needs a source, so a third action type would break the transfer/order rules; computing status with the same pure `plan()` avoids storing 1,000 "nothing to do" rows that go stale with every sale | The status view and a generation batch can differ when several stores compete for scarce DC stock; quantities on flagged items are a person's judgement, not checked against the formula |
+| 61 | Store excess covers whole needs before DC stock; unused movable excess becomes `REDISTRIBUTE_EXCESS` to the least-stocked DC (V2 2d-2) | Reuses stock already in the network without splitting one need across documents; the keep level, pack rounding and exclusions are explainable and tested | Greedy per generation batch, not a transport optimizer; store transfers assume the same 2-day lead time as DC transfers; eligible movable stock (402 units measured) is intentionally below Overview surplus (714) |

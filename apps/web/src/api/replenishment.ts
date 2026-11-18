@@ -1,7 +1,7 @@
 import { getJson, type Page, postJson, qs } from './client';
 
 export type RecommendationStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
-export type RecommendationAction = 'TRANSFER' | 'PURCHASE_ORDER';
+export type RecommendationAction = 'TRANSFER' | 'PURCHASE_ORDER' | 'REDISTRIBUTE_EXCESS';
 export type Risk = 'CRITICAL' | 'HIGH';
 /** Why a manager must set the quantity (V2 2d-1). */
 export type ReviewReason = 'FALLBACK_FORECAST' | 'ERRATIC_DEMAND';
@@ -11,7 +11,7 @@ export interface Recommendation {
   status: RecommendationStatus;
   action: RecommendationAction;
   quantity: number;
-  risk: Risk;
+  risk: Risk | null;
   daysOfCover: number | null;
   /** First day with unmet demand at the forecast rate (null: not within 90 days / before 2d-1). */
   expectedStockoutOn: string | null;
@@ -29,6 +29,8 @@ export interface Recommendation {
   sourceCode: string | null;
   supplierId: string | null;
   supplierName: string | null;
+  destinationLocationId: string | null;
+  destinationCode: string | null;
   decidedBy: string | null;
   decidedAt: string | null;
   decisionNote: string | null;
@@ -36,7 +38,8 @@ export interface Recommendation {
   purchaseOrderId: string | null;
 }
 
-export interface RecommendationInputs {
+export interface NeedInputs {
+  kind?: undefined;
   forecast: {
     model: string;
     isFallback: boolean;
@@ -75,10 +78,41 @@ export interface RecommendationInputs {
   };
   stockout?: { day: number | null; date: string | null; beyondForecast: boolean };
   review?: ReviewReason | null;
-  source: { code: string; availableNet: number } | null;
+  source: { code: string; availableNet: number; kind?: 'DC' | 'STORE' } | null;
   supplier: { name: string; unitCost: number; leadTimeDays: number; minOrderQty: number } | null;
   dcShortfall: { code: string; availableNet: number; needed: number } | null;
 }
+
+export interface ExcessInputs {
+  kind: 'EXCESS';
+  forecast: {
+    model: string;
+    isFallback: boolean;
+    historyDays: number;
+    testWape: number | null;
+    avgDailyDemand: number;
+  };
+  stock: {
+    onHand: number;
+    reserved: number;
+    available: number;
+    inbound: number;
+    position: number;
+    promisedOut: number;
+  };
+  excess: {
+    keepDays: number;
+    demandKeep: number;
+    reorderPoint: number;
+    keep: number;
+    excess: number;
+    movable: number;
+    packSize: number;
+  };
+  destination: { code: string; available: number };
+}
+
+export type RecommendationInputs = NeedInputs | ExcessInputs;
 
 export interface RecommendationDetail extends Recommendation {
   explanation: string;
@@ -91,8 +125,9 @@ export interface GenerateResult {
   evaluated: number;
   created: number;
   expired: number;
-  byAction: { TRANSFER: number; PURCHASE_ORDER: number };
+  byAction: { TRANSFER: number; PURCHASE_ORDER: number; REDISTRIBUTE_EXCESS: number };
   byRisk: { CRITICAL: number; HIGH: number };
+  fromStoreExcess: number;
   skipped: { noNeed: number; noSource: number };
 }
 
@@ -130,7 +165,8 @@ export interface StoreStatus {
   available: number;
   inbound: number;
   position: number;
-  outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE';
+  outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE' | 'EXCESS';
+  movableExcess: number | null;
   reorderPoint: number | null;
   suggestedQuantity: number | null;
   suggestedAction: RecommendationAction | null;
@@ -145,7 +181,7 @@ export interface StoreStatus {
     id: string;
     action: RecommendationAction;
     quantity: number;
-    risk: Risk;
+    risk: Risk | null;
     reviewReason: ReviewReason | null;
   } | null;
 }
