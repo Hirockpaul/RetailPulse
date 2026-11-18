@@ -1,4 +1,10 @@
-import { type PositionRow, summarizePositions } from './overview.calc';
+import {
+  atRiskWithin,
+  classifyPosition,
+  healthByStore,
+  type PositionRow,
+  summarizePositions,
+} from './overview.calc';
 
 const cfg = { riskWindowDays: 7, excessCoverDays: 60, topN: 2 };
 
@@ -64,5 +70,76 @@ describe('summarizePositions', () => {
     const s = summarizePositions(rows, cfg);
     expect(s.atRisk).toBe(3);
     expect(s.atRiskTop).toHaveLength(2);
+  });
+});
+
+describe('Control Tower (V2 4a-1)', () => {
+  /** 10 units a day: 7-day demand 70, 14-day 140, 60-day excess limit 600; cost 2 a unit. */
+  const at = (over: Partial<PositionRow>) =>
+    row({ demandWindow: 70, demandWindowLong: 140, avgDaily: 10, unitCost: 2, ...over });
+
+  it('classifies each position once, in a fixed order (checked by hand)', () => {
+    const cfg = { excessCoverDays: 60 };
+    // 10 a day: 7-day demand 70, 60-day limit 600
+    expect(classifyPosition(at({ available: 0, inbound: 900 }), cfg)).toEqual({
+      state: 'OUT_OF_STOCK',
+      excessUnits: 0,
+    }); // nothing on the shelf beats any inbound
+    expect(classifyPosition(at({ demandWindow: null, avgDaily: null }), cfg).state).toBe(
+      'NO_FORECAST',
+    );
+    expect(classifyPosition(at({ available: 69 }), cfg).state).toBe('AT_RISK');
+    expect(classifyPosition(at({ available: 70 }), cfg).state).toBe('HEALTHY');
+    expect(classifyPosition(at({ available: 600 }), cfg).state).toBe('HEALTHY');
+    expect(classifyPosition(at({ available: 590, inbound: 15 }), cfg)).toEqual({
+      state: 'EXCESS',
+      excessUnits: 5,
+    });
+  });
+
+  it('counts states per store with excess value at cost', () => {
+    const rows = [
+      at({ locationId: 'b', locationCode: 'STR-02', available: 0 }),
+      at({ locationId: 'a', locationCode: 'STR-01', available: 650, unitCost: 1.5 }), // 50 × 1.5
+      at({ locationId: 'a', locationCode: 'STR-01', available: 610, unitCost: null }), // no cost
+      at({ locationId: 'a', locationCode: 'STR-01', available: 100 }),
+      at({ locationId: 'a', locationCode: 'STR-01', available: 20 }),
+    ];
+    expect(healthByStore(rows, { excessCoverDays: 60 })).toEqual([
+      {
+        locationId: 'a',
+        locationCode: 'STR-01',
+        outOfStock: 0,
+        noForecast: 0,
+        atRisk: 1,
+        excess: 2,
+        healthy: 1,
+        excessUnits: 60,
+        excessValue: 75,
+      },
+      {
+        locationId: 'b',
+        locationCode: 'STR-02',
+        outOfStock: 1,
+        noForecast: 0,
+        atRisk: 0,
+        excess: 0,
+        healthy: 0,
+        excessUnits: 0,
+        excessValue: 0,
+      },
+    ]);
+  });
+
+  it('at risk within 7 and within 14 days', () => {
+    const rows = [
+      at({ available: 60 }), // < 70: both windows
+      at({ available: 100 }), // 7-day fine, < 140 in 14 days
+      at({ available: 200 }), // fine in both
+      at({ available: 0 }), // out of stock is not "at risk"
+      at({ demandWindow: null, demandWindowLong: null, avgDaily: null }), // no forecast
+    ];
+    expect(atRiskWithin(rows, 'short')).toBe(1);
+    expect(atRiskWithin(rows, 'long')).toBe(2);
   });
 });

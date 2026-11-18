@@ -13,4 +13,11 @@ export class OverviewController {
   get(@Ctx() ctx: RequestContext) {
     return this.overview.get(ctx.user);
   }
+
+  /** Per-location health for the Control Tower table (V2 4a-1); same store scope. */
+  @Roles(...READ_ROLES)
+  @Get('locations')
+  locations(@Ctx() ctx: RequestContext) {
+    return this.overview.locations(ctx.user);
+  }
 }

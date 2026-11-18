@@ -1,8 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 (3a–3c) are built** (see §9); next is Phase 4 (analytics), starting with 4a Control
-Tower.
+Phase 3 (3a–3c) and step 4a-1 are built** (see §9); next is 4a-2, the Control Tower page and
+regrouped navigation.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1048,4 +1048,68 @@ retrained or re-registered), so the demo can forecast and monitor.
 - Tests: API unit 194 → 212 (every health rule), integration 236 → 243 (crafted runs: no runs,
   fresh, failed, stale, missed monitoring, drift; read roles; approvers only; GET writes nothing;
   service OK / 502 / 503); Python 124 unchanged; e2e 2. All green.
+
+
+### Step 4a — split (decided 2026-11-18)
+
+- **4a-1** Control Tower data: `GET /overview` extended (KPIs, risk panel, chart series) and
+  `GET /overview/locations` (per-location health), store-scoped, with a measured p95.
+- **4a-2** the Control Tower page (KPI row, risk panel with links, location table, 4 plain-SVG
+  charts) and the navigation regrouped into a few menus.
+
+### Step 4a-1 — Control Tower data: rules (written 2026-11-18, BEFORE building or measuring)
+
+Same read-model rules as the Overview (decision #42): reads across modules, writes nothing, the
+store scope of the caller applies everywhere (store managers: their stores only; DCs only for
+roles that may read every location). Existing definitions are reused, not redefined: at risk /
+excess (Overview, 7 and 60 days), open anomaly = NEW or INVESTIGATING (1e-2), supplier score (2c).
+Value "at cost" = units × the product's primary supplier unit cost.
+
+**KPIs** (added to today's): units on hand and available; stock value at cost; open transfers
+(REQUESTED, APPROVED, DISPATCHED) touching the scope; open anomalies; excess value at cost.
+
+**Risk panel**, each a count with the link target the page will use:
+- at risk within **7** days (as today) and within **14** days (same rule, 14-day forecast window);
+- excess positions, units and value at cost;
+- **delayed transfers**: APPROVED and not dispatched, or DISPATCHED and not received, for more than
+  **2 days** (the transfer lead time used by replenishment) since approval / dispatch;
+- **overdue purchase orders**: APPROVED with `expected_date` before today;
+- open anomalies (and how many are HIGH);
+- **supplier risk**: suppliers with a reliability score below **75** (2c scores: 86 / 81 / 69), with
+  their open purchase orders in scope.
+
+**Charts (data series only in this step):** stock health per store (out / at risk / healthy /
+excess counts); network daily units sold for the last 28 days of forecast history plus the latest
+forecast's next 14 days; excess value at cost per store; supplier on-time rate and score.
+
+**`GET /overview/locations`**: one row per location in scope — code, name, type; units on hand,
+available, value at cost; out-of-stock, at-risk (7 d) and excess counts (stores only; DCs show
+none because they have no forecast); pending recommendations; open alerts; open anomalies;
+inbound and outbound open transfers.
+
+**Performance target, fixed now:** on the dev data (200 products × 7 locations), **p95 ≤ 300 ms**
+for each endpoint as admin, measured over 200 sequential requests against a running API.
+
+**Checks:** integration tests with hand-built stock for every KPI and risk count (including the
+2-day delay boundary and the overdue-PO boundary), store-manager scope (no other store, no DC),
+GET writes nothing; unit tests for any new pure function.
+
+### Step 4a-1 — Control Tower data ✅ (2026-11-18)
+
+- `GET /overview` gains `controlTower` (rules, KPIs, risk panel, chart series); new
+  `GET /overview/locations`. Pure `classifyPosition`, `healthByStore`, `atRiskWithin`; the module now
+  also reads supplier scores through `SuppliersService` (`overview → suppliers`). Every definition is
+  reused from the Overview, 1e-2 and 2c; nothing is written.
+- **p95 target met** (≤ 300 ms, 200 sequential requests as admin after 10 warm-up, local build on the
+  dev data: 200 products × 7 locations, 1,400 balances): `/overview` p50 109.9 / **p95 122.5** /
+  max 145.6 ms; `/overview/locations` p50 25.8 / **p95 29.5** / max 34.5 ms.
+- Dev data: 167,280 units on hand, 526,146.65 at cost; at risk 239 (7 d) / 443 (14 d); excess 49
+  positions, 714 units, 2,887.14 at cost; 410 open anomalies (29 HIGH); 2 open transfers, none
+  delayed; no purchase orders; supplier risk: Summit Household (score 68.9). The old Overview numbers
+  are identical (at risk 239, excess 49 / 714, out of stock 129 = 27 + 29 + 26 + 27 + 20 per store).
+- Tests: API unit 212 → 215, integration 243 → 251 (KPI deltas from a hand adjustment, 7 vs 14-day
+  risk, excess value, the 2-day transfer-delay boundary ±5 minutes, the overdue-PO boundary (due today
+  vs yesterday), supplier risk with open orders, anomalies and HIGH, locations table incl. DCs, store
+  scope, writes nothing). Two mistakes in my own tests fixed (a helper with the wrong daily rate,
+  a loose type); no code change was needed. Python 124 and e2e unchanged; Docker API rebuilt.
 

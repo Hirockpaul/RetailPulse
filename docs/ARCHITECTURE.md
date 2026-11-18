@@ -85,7 +85,7 @@ flowchart TB
   replenishment --> forecasts & purchasing & transfers & suppliers & classifications
   events --> database
   alerts --> events & inventory
-  overview --> forecasts & events
+  overview --> forecasts & events & suppliers
   anomalies --> events
   classifications --> database
   housekeeping --> events
@@ -197,6 +197,7 @@ erDiagram
 | V2 3b ✅ | immutable artifact schema/digest/time on `forecast.model_versions`; MLflow mirror state on `forecast.runs` |
 | V2 3c-1 ✅ | `forecast.monitoring_runs`, `forecast.monitoring_results` (immutable; newest 30 kept) |
 | V2 3c-2 ✅ | — (API and page only; run health is computed on request) |
+| V2 4a-1 ✅ | — (read model only) |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -323,7 +324,8 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /classifications`                | `locationId (none = network), cls, q, sort (value·sku·cv·units), page, pageSize` | ABC/XYZ class of each product with units, value at cost, shares, weekly mean, variation (CV) and ADI; store scope for store managers' own stores |
 | `GET /classifications/summary`        | `locationId`                                   | the 3 × 3 matrix (count and value share per class, plus NEW), the run's data window, the rules and the suggested policy per class |
 | `POST /classifications/recalculate`   | —                                              | admin / inventory manager; also daily (background jobs) and in `npm run demo`. Changes no stock |
-| `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; store managers: own stores |
+| `GET /overview`                       | —                                              | stock-outs, at risk (7 days), excess (> 60 days of cover), pending recommendations, open alerts, freshness; plus `controlTower` (V2 4a-1): KPIs (units, value at cost, open transfers, open anomalies, excess value), risk panel (at risk 7 / 14 d, excess, delayed transfers, overdue orders, anomalies, suppliers scoring < 75) and chart series; store managers: own stores. Writes nothing; p95 122.5 ms on the dev data |
+| `GET /overview/locations`             | —                                              | one row per location in scope: units, value at cost, out / at-risk / excess counts (stores; DCs null), pending recommendations, open alerts and anomalies, open transfers in / out; p95 29.5 ms |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
 **Overview rules** (`modules/overview/overview.calc.ts`, unit-tested): `position = available + inbound`
@@ -924,3 +926,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 63 | One immutable, content-addressed local artifact per activatable registry version; optional MLflow is a post-commit mirror (V2 3b) | Rollback restores exact verified bytes; path containment and SHA checks happen before joblib load; forecasts stay available when MLflow is stopped | Existing 3a rows are materialized once by their first 3b run; local artifacts need filesystem backup; MLflow has no authentication and is localhost-only |
 | 64 | Monitoring compares the ACTIVE model's training tail with days after training; PSI sets status, KS is context; store sales are checked separately from pooled inputs (V2 3c-1) | The question is "has the world moved since this model learned?"; with ~28,000 points KS p-values flag trivial differences; a measured one-store shift is invisible in pooled inputs but obvious per store | Needs 7 new days before saying anything; 28/56-day inputs react late; thresholds are conventions, not tuned on real data |
 | 65 | Run health (stale / failed forecasts, missed monitoring) is computed on request, not stored or alerted on a timer (V2 3c-2) | It is about runs that did *not* happen, so no run can write it; computing from the latest rows is always current and needs no scheduler | Nobody is notified until someone opens the page; a notification channel is a later decision |
+| 66 | The Control Tower extends the Overview read model instead of adding a new module, and reuses every existing definition (V2 4a-1) | One landing page, one scope rule, no second meaning of "at risk", "excess", "open anomaly" or "supplier risk"; the old Overview numbers are unchanged (checked on the dev data) | `/overview` now does ~10 queries in parallel (p95 122.5 ms); a materialized summary would be needed at much larger scale |

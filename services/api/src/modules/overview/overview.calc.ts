@@ -22,6 +22,10 @@ export interface PositionRow {
   demandWindow: number | null;
   /** Average forecast units per day over the horizon; null without a forecast. */
   avgDaily: number | null;
+  /** Forecast units over the next `riskWindowLongDays` days (Control Tower, V2 4a). */
+  demandWindowLong?: number | null;
+  /** Primary supplier unit cost (value at cost); null when the product has none. */
+  unitCost?: number | null;
 }
 
 export interface PositionItem {
@@ -107,4 +111,91 @@ export function summarizePositions(rows: PositionRow[], cfg: SummaryConfig): Pos
     atRiskTop: atRisk.slice(0, cfg.topN),
     excessTop: excess.slice(0, cfg.topN),
   };
+}
+
+// ---------------------------------------------------------------- Control Tower (V2 4a-1)
+
+export type PositionState = 'OUT_OF_STOCK' | 'NO_FORECAST' | 'AT_RISK' | 'EXCESS' | 'HEALTHY';
+
+/**
+ * One state per store position, mutually exclusive, in this order: out of stock (nothing
+ * available) → no forecast → at risk (position below the window's forecast demand) → excess
+ * (above `excessCoverDays` of demand) → healthy. Same thresholds as `summarizePositions`.
+ */
+export function classifyPosition(
+  r: PositionRow,
+  cfg: Pick<SummaryConfig, 'excessCoverDays'>,
+): { state: PositionState; excessUnits: number } {
+  if (r.available <= 0) return { state: 'OUT_OF_STOCK', excessUnits: 0 };
+  if (r.demandWindow === null || r.avgDaily === null)
+    return { state: 'NO_FORECAST', excessUnits: 0 };
+  const position = r.available + r.inbound;
+  if (position < r.demandWindow) return { state: 'AT_RISK', excessUnits: 0 };
+  const limit = Math.ceil(cfg.excessCoverDays * r.avgDaily);
+  if (position > limit) return { state: 'EXCESS', excessUnits: position - limit };
+  return { state: 'HEALTHY', excessUnits: 0 };
+}
+
+export interface StoreHealth {
+  locationId: string;
+  locationCode: string;
+  outOfStock: number;
+  noForecast: number;
+  atRisk: number;
+  excess: number;
+  healthy: number;
+  excessUnits: number;
+  /** Excess units × primary supplier unit cost (products without a cost count 0). */
+  excessValue: number;
+}
+
+/** Per-store counts of each state, plus excess units and value at cost; sorted by store code. */
+export function healthByStore(
+  rows: PositionRow[],
+  cfg: Pick<SummaryConfig, 'excessCoverDays'>,
+): StoreHealth[] {
+  const byStore = new Map<string, StoreHealth>();
+  for (const r of rows) {
+    const h =
+      byStore.get(r.locationId) ??
+      byStore
+        .set(r.locationId, {
+          locationId: r.locationId,
+          locationCode: r.locationCode,
+          outOfStock: 0,
+          noForecast: 0,
+          atRisk: 0,
+          excess: 0,
+          healthy: 0,
+          excessUnits: 0,
+          excessValue: 0,
+        })
+        .get(r.locationId)!;
+    const { state, excessUnits } = classifyPosition(r, cfg);
+    const key = (
+      {
+        OUT_OF_STOCK: 'outOfStock',
+        NO_FORECAST: 'noForecast',
+        AT_RISK: 'atRisk',
+        EXCESS: 'excess',
+        HEALTHY: 'healthy',
+      } as const
+    )[state];
+    h[key]++;
+    h.excessUnits += excessUnits;
+    h.excessValue += excessUnits * (r.unitCost ?? 0);
+  }
+  return [...byStore.values()]
+    .map((h) => ({ ...h, excessValue: Math.round(h.excessValue * 100) / 100 }))
+    .sort((a, b) => a.locationCode.localeCompare(b.locationCode));
+}
+
+/** Positions with something available that will not cover the longer window's forecast. */
+export function atRiskWithin(rows: PositionRow[], window: 'short' | 'long'): number {
+  let n = 0;
+  for (const r of rows) {
+    const demand = window === 'short' ? r.demandWindow : (r.demandWindowLong ?? null);
+    if (r.available > 0 && demand !== null && r.available + r.inbound < demand) n++;
+  }
+  return n;
 }

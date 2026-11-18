@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
 import { EventsModule } from '../events/events.module';
 import { ForecastsModule } from '../forecasts/forecasts.module';
+import { SuppliersModule } from '../suppliers/suppliers.module';
 import { OverviewController } from './overview.controller';
 import { OverviewRepository } from './overview.repository';
 import { OverviewService } from './overview.service';
 
 /** Read model for the landing page. Reads across domains; writes nothing. */
 @Module({
-  imports: [ForecastsModule, EventsModule],
+  imports: [ForecastsModule, EventsModule, SuppliersModule],
   controllers: [OverviewController],
   providers: [OverviewService, OverviewRepository],
 })
