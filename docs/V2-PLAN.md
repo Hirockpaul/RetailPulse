@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
-Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c and 2b built** (see §9);
-waiting for approval of step 2d.
+Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phase 1, steps 2a, 2c, 2b and 2d-1 built**
+(see §9); waiting for approval of step 2d-2.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -654,4 +654,80 @@ lead-time demand against past forecasts, which belongs to the scenarios / monito
   assume an exact 2-day lead time.
 - Tests: API unit 143 → 165, integration 227 → 228 (class → service level through the API, measured
   supplier delay on the purchase-order path); Python unchanged (94); all checks and e2e green.
+
+
+### Step 2d — split (decided 2026-11-18)
+
+2d is three changes that each touch the database, the calculation, approval and the UI, so it is
+built and approved in two parts:
+
+- **2d-1** expected stockout date, manual review, and "no action required" on the product page.
+- **2d-2** `REDISTRIBUTE_EXCESS`: moving excess stock from a store to another store or a DC.
+
+### Step 2d-1 — rules (written 2026-11-18, BEFORE building or measuring)
+
+**Expected stockout date** (per product × store, from the latest forecast run; day 1 = the first
+forecast day = the day after the last complete day of data):
+- Available ≤ 0 → **out of stock now**.
+- Otherwise the first day *k* on which the cumulative forecast from day 1 to *k* is greater than the
+  position (available + inbound — the same position as reorder point and days of cover, so it
+  assumes inbound stock arrives in time). Stockout date = last data day + *k*.
+- Beyond the forecast horizon the horizon's average per day is used (as for lead-time demand) and
+  the date is marked "estimate beyond the forecast"; nothing is shown beyond **90 days**
+  ("not within 90 days"), nor when no demand is forecast.
+- Stored on every recommendation (`expected_stockout_on`) and shown in the list and detail.
+
+**Manual review** — a flag on a recommendation (`review_reason`), not a third action type: a
+reviewed suggestion still needs a source (DC or supplier) to become a transfer or order, and the
+database rule "a transfer has a source, an order a supplier" stays as it is. A recommendation is
+flagged when the automatic quantity is the least trustworthy:
+- `FALLBACK_FORECAST` — the forecast is the category-average fallback (under 56 days of history);
+- `ERRATIC_DEMAND` — the product's class at the store is Z (AZ, BZ, CZ), where the safety-stock
+  formula's normal approximation is weakest (2b).
+  If both apply, the fallback reason is stored (it is the more basic problem).
+Flagged recommendations are calculated exactly like the others, but approving one **requires the
+manager to enter the quantity and a note** (the suggestion is pre-filled); unflagged ones are
+approved as suggested and refuse a quantity (422), as today. Every approval stores the quantity
+actually approved (`approved_quantity`). Rejecting is unchanged.
+
+**"No action required" on the product page** — not stored. A new read-only endpoint
+`GET /replenishment/status?productId=` evaluates every store of that product **now** with the same
+pure calculation as generation (current stock, latest forecast, class, supplier delay, DC stock) and
+returns per store: position, reorder point, days of cover, expected stockout date, review flag, the
+outcome (NO ACTION REQUIRED / NEEDS STOCK / NO SOURCE) and the pending recommendation if one
+exists. Store managers see their own stores only. It writes nothing (tested).
+
+**Checks:** hand-checked unit tests for the stockout day (flat and uneven forecasts, beyond the
+horizon, the 90-day cap, out of stock now, no demand) and for both review reasons; integration tests
+for approving with and without a quantity, the status endpoint (scope, writes nothing, agrees with
+a generated recommendation for the same pair) and 5 concurrent approvals of a flagged
+recommendation creating one document. Measured on the dev data, reported as found (no target): how
+many recommendations are flagged per reason, and the spread of expected stockout dates.
+
+### Step 2d-1 — stockout date, manual review, "no action required" ✅ (2026-11-18)
+
+- Rules as written above, with one correction found on real data: "out of stock now" was first
+  dated the last day of data (yesterday); it is now dated the first forecast day (today), with a
+  test that fails on the old behaviour. The quantity errors are `422` (state-dependent, as in
+  `sales`), not `400` as first written.
+- Migration `0014_replenishment_review.sql` (`expected_stockout_on`, `review_reason`,
+  `approved_quantity`; approved quantity only on APPROVED rows). Pure `stockoutDay`, `dayToDate`,
+  `reviewReason` in `replenishment.calc.ts`; generation and the new status view share one
+  `evaluatePair`. `plan()` now returns the reorder point when nothing is needed.
+- API: `GET /replenishment/status?productId=` (read-only, store-scoped); `needsReview` filter;
+  approve takes `quantity` (required with a note when flagged, refused otherwise).
+- UI: list shows a Needs review badge, an Expected stockout column and a Review filter; the
+  detail page explains the flag and asks for quantity and note; the product page gets
+  **Replenishment by store** (no action required / needs stock, position, reorder point, expected
+  stockout, pending recommendation). No new horizontal overflow (the product page's phone overflow
+  is older: 547 px with or without the panel — still an open follow-up).
+- Measured on the dev data (269 pending after generating): **23 flagged** — 17 fallback forecast,
+  6 erratic demand; expected stockout: 127 out of stock now, the rest on forecast days 1–6
+  (as expected, recommendations exist only below the reorder point). Status view vs generation,
+  all 200 products × 5 stores: 269 needs stock / 731 no action required, **0 disagreements**, same
+  quantities and flags; slowest call 174 ms.
+- Tests: API unit 165 → 183, integration 228 → 231 (plus new assertions in existing tests:
+  approving with/without quantity, 5 concurrent approvals of a flagged item → one document, status
+  view writes nothing and matches the pending recommendation); Python unchanged (94); all checks
+  and e2e green. Docker demo rebuilt.
 

@@ -113,7 +113,53 @@ export interface Plan {
   dcShortfall: { code: string; availableNet: number; needed: number } | null;
 }
 
-export type PlanResult = { plan: Plan } | { skip: 'NO_NEED' | 'NO_SOURCE' };
+/** NO_NEED carries the numbers that show why (position at or above the reorder point). */
+export type PlanResult =
+  | { plan: Plan }
+  | { skip: 'NO_NEED'; position: number; reorderPoint: number; leadTimeDays: number }
+  | { skip: 'NO_SOURCE' };
+
+export type ReviewReason = 'FALLBACK_FORECAST' | 'ERRATIC_DEMAND';
+
+/**
+ * Why a person should set the quantity (V2 2d-1): the forecast is only a category average, or
+ * demand at this store is erratic (class Z). The fallback wins when both apply.
+ */
+export function reviewReason(isFallback: boolean, cls: string | null): ReviewReason | null {
+  if (isFallback) return 'FALLBACK_FORECAST';
+  if (cls && cls.length === 2 && cls[1] === 'Z') return 'ERRATIC_DEMAND';
+  return null;
+}
+
+/**
+ * Expected stockout, in forecast days (V2 2d-1): 0 = out of stock now (nothing available);
+ * otherwise the first day k on which cumulative forecast demand (day 1..k) exceeds the position.
+ * Beyond the forecast horizon the horizon's average is used (`beyondForecast`); null when it
+ * does not happen within `maxDays` (or no demand is forecast).
+ */
+export function stockoutDay(
+  yhat: number[],
+  available: number,
+  position: number,
+  maxDays: number,
+): { day: number | null; beyondForecast: boolean } {
+  if (available <= 0) return { day: 0, beyondForecast: false };
+  if (yhat.length === 0) return { day: null, beyondForecast: false };
+  const average = yhat.reduce((a, b) => a + b, 0) / yhat.length;
+  let cumulative = 0;
+  for (let k = 1; k <= maxDays; k++) {
+    cumulative += k <= yhat.length ? yhat[k - 1] : average;
+    if (cumulative > position + 1e-9) return { day: k, beyondForecast: k > yhat.length };
+  }
+  return { day: null, beyondForecast: false };
+}
+
+/** A forecast day as a date: day k after the last day of data ('YYYY-MM-DD'). */
+export function dayToDate(historyEnd: string, k: number): string {
+  const d = new Date(`${historyEnd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + k);
+  return d.toISOString().slice(0, 10);
+}
 
 export const roundUpToMultiple = (quantity: number, multiple: number): number =>
   Math.ceil(quantity / Math.max(multiple, 1)) * Math.max(multiple, 1);
@@ -249,6 +295,13 @@ function buildPlan(
   };
 }
 
+const noNeed = (position: number, e: Evaluation): PlanResult => ({
+  skip: 'NO_NEED',
+  position,
+  reorderPoint: e.reorderPoint,
+  leadTimeDays: e.lead.meanDays,
+});
+
 /** Decide whether a product at a store needs replenishing, and how. */
 export function plan(input: PlanInput): PlanResult {
   const position = input.available + input.inbound;
@@ -264,7 +317,7 @@ export function plan(input: PlanInput): PlanResult {
       basis: 'transfer',
       deliveries: null,
     });
-    if (position >= e.reorderPoint) return { skip: 'NO_NEED' };
+    if (position >= e.reorderPoint) return noNeed(position, e);
     const candidate = buildPlan(input, 'TRANSFER', e, {
       sourceDc: dcs[0],
       supplier: null,
@@ -283,7 +336,7 @@ export function plan(input: PlanInput): PlanResult {
     input,
     supplierLeadTime(input.supplier.leadTimeDays, input.supplierDelay, input.minSupplierDeliveries),
   );
-  if (position >= e.reorderPoint) return { skip: 'NO_NEED' };
+  if (position >= e.reorderPoint) return noNeed(position, e);
   return {
     plan: buildPlan(input, 'PURCHASE_ORDER', e, {
       sourceDc: null,
@@ -311,6 +364,25 @@ export interface ExplainContext {
   packSize: number;
   available: number;
   inbound: number;
+  /** Expected stockout (V2 2d-1); `date` null = not within the stockout horizon. */
+  stockout?: { day: number | null; date: string | null; beyondForecast: boolean };
+  review?: ReviewReason | null;
+}
+
+const REVIEW_TEXT: Record<ReviewReason, string> = {
+  FALLBACK_FORECAST:
+    'the forecast is only a category average because this product has little sales history here',
+  ERRATIC_DEMAND: `demand for this product at this store is erratic (class Z), where the safety-stock formula is least reliable`,
+};
+
+function stockoutText(s: NonNullable<ExplainContext['stockout']>): string {
+  if (s.day === 0) return 'Out of stock now.';
+  if (s.day === null || s.date === null)
+    return 'No stockout expected within 90 days at the forecast rate.';
+  return (
+    `Expected stockout on ${s.date} (forecast day ${s.day})` +
+    (s.beyondForecast ? ', an estimate beyond the forecast horizon at its average rate.' : '.')
+  );
 }
 
 function leadTimeText(p: Plan): string {
@@ -364,5 +436,11 @@ export function explain(p: Plan, c: ExplainContext): string {
       ? `Risk ${p.risk}.`
       : `Days of cover: ${n1(p.daysOfCover)} (${p.daysOfCover < p.leadTimeDays ? 'less than' : 'at least'} the ${L}-day lead time) → risk ${p.risk}.`,
   );
+  if (c.stockout) lines.push(stockoutText(c.stockout));
+  if (c.review) {
+    lines.push(
+      `Manual review: ${REVIEW_TEXT[c.review]}, so a manager sets the quantity when approving (${p.quantity} is only a starting point).`,
+    );
+  }
   return lines.join(' ');
 }

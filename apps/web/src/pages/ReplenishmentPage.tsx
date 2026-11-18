@@ -14,12 +14,13 @@ import { Pagination } from '../components/Pagination';
 import {
   actionLabel,
   RecommendationStatusBadge,
+  ReviewBadge,
   RiskBadge,
 } from '../components/RecommendationBadges';
 import { Empty, ErrorMessage, Loading } from '../components/Status';
 import { field, table } from '../components/table';
 import { useUser } from '../lib/auth';
-import { formatDateTime, formatDecimal, formatInt } from '../lib/format';
+import { formatDateTime, formatDay, formatDecimal, formatInt } from '../lib/format';
 import { canApprove } from '../lib/permissions';
 import { href } from '../lib/router';
 import { useAsync } from '../lib/useAsync';
@@ -31,6 +32,7 @@ export function ReplenishmentPage() {
   const [status, setStatus] = useState<RecommendationStatus | ''>('PENDING');
   const [action, setAction] = useState<RecommendationAction | ''>('');
   const [risk, setRisk] = useState<Risk | ''>('');
+  const [review, setReview] = useState<'' | 'true' | 'false'>('');
   const [page, setPage] = useState(1);
 
   const overview = useAsync(fetchForecastOverview);
@@ -41,10 +43,11 @@ export function ReplenishmentPage() {
           status: status || undefined,
           action: action || undefined,
           risk: risk || undefined,
+          needsReview: review === '' ? undefined : review === 'true',
           page,
           pageSize: PAGE_SIZE,
         }),
-      [status, action, risk, page],
+      [status, action, risk, review, page],
     ),
   );
 
@@ -212,6 +215,21 @@ export function ReplenishmentPage() {
               <option value="HIGH">High</option>
             </select>
           </label>
+          <label className="flex flex-col text-xs text-slate-500">
+            Review
+            <select
+              className={field}
+              value={review}
+              onChange={(e) => {
+                setReview(e.target.value as '' | 'true' | 'false');
+                setPage(1);
+              }}
+            >
+              <option value="">Any</option>
+              <option value="true">Needs a manual review</option>
+              <option value="false">Can be approved as suggested</option>
+            </select>
+          </label>
         </div>
 
         {recs.status === 'loading' && <Loading />}
@@ -235,6 +253,7 @@ export function ReplenishmentPage() {
                     <th className={table.th}>Suggested action</th>
                     <th className={table.thNum}>Quantity</th>
                     <th className={table.thNum}>Days of cover</th>
+                    <th className={table.th}>Expected stockout</th>
                     <th className={table.th}>Status</th>
                     <th className={table.th}>Generated</th>
                   </tr>
@@ -243,7 +262,10 @@ export function ReplenishmentPage() {
                   {recs.data.data.map((r) => (
                     <tr key={r.id} className={table.row}>
                       <td className={table.td}>
-                        <RiskBadge risk={r.risk} />
+                        <span className="flex flex-wrap gap-1">
+                          <RiskBadge risk={r.risk} />
+                          <ReviewBadge reason={r.reviewReason} />
+                        </span>
                       </td>
                       <td className={table.td}>
                         <a className={table.link} href={href.recommendation(r.id)}>
@@ -259,6 +281,9 @@ export function ReplenishmentPage() {
                       <td className={table.tdNum}>{formatInt(r.quantity)}</td>
                       <td className={table.tdNum}>
                         {r.daysOfCover === null ? '—' : formatDecimal(r.daysOfCover)}
+                      </td>
+                      <td className={table.td}>
+                        {r.expectedStockoutOn ? formatDay(r.expectedStockoutOn) : '—'}
                       </td>
                       <td className={table.td}>
                         <RecommendationStatusBadge status={r.status} />

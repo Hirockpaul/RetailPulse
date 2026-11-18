@@ -9,12 +9,14 @@ import { Badge } from '../components/Badge';
 import {
   actionLabel,
   RecommendationStatusBadge,
+  REVIEW_REASON_TEXT,
+  ReviewBadge,
   RiskBadge,
 } from '../components/RecommendationBadges';
 import { ErrorMessage, Loading } from '../components/Status';
 import { field, table } from '../components/table';
 import { useUser } from '../lib/auth';
-import { formatDateTime, formatDecimal, formatInt, formatPercent } from '../lib/format';
+import { formatDateTime, formatDay, formatDecimal, formatInt, formatPercent } from '../lib/format';
 import { canApprove } from '../lib/permissions';
 import { href } from '../lib/router';
 import { useAsync } from '../lib/useAsync';
@@ -23,6 +25,8 @@ export function RecommendationDetailPage({ id }: { id: string }) {
   const user = useUser();
   const rec = useAsync(useCallback(() => getRecommendation(id), [id]));
   const [note, setNote] = useState('');
+  // Flagged recommendations: the manager's own quantity (pre-filled with the suggestion).
+  const [quantity, setQuantity] = useState<string | null>(null);
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,7 +35,11 @@ export function RecommendationDetailPage({ id }: { id: string }) {
     setError(null);
     try {
       const text = note.trim() || undefined;
-      await (kind === 'approve' ? approveRecommendation(id, text) : rejectRecommendation(id, text));
+      const flagged = rec.status === 'success' && rec.data.reviewReason !== null;
+      const chosen = flagged ? Number(quantity ?? rec.data.quantity) : undefined;
+      await (kind === 'approve'
+        ? approveRecommendation(id, text, chosen)
+        : rejectRecommendation(id, text));
       rec.reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Unexpected error.');
@@ -67,6 +75,7 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                 <h2 className="text-xl font-semibold">{rec.data.productName}</h2>
               </div>
               <div className="flex items-center gap-2">
+                <ReviewBadge reason={rec.data.reviewReason} />
                 <RiskBadge risk={rec.data.risk} />
                 <RecommendationStatusBadge status={rec.data.status} />
               </div>
@@ -77,18 +86,47 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                 ({formatInt(rec.data.quantity / rec.data.packSize)} packs of {rec.data.packSize})
               </span>
             </p>
+            {rec.data.expectedStockoutOn && (
+              <p className="mt-1 text-sm text-slate-600">
+                Expected stockout: <strong>{formatDay(rec.data.expectedStockoutOn)}</strong>
+                {rec.data.inputs.stockout?.beyondForecast && ' (estimate beyond the forecast)'}
+              </p>
+            )}
+            {rec.data.reviewReason && (
+              <p className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+                Needs a manual review — {REVIEW_REASON_TEXT[rec.data.reviewReason]}. The suggested
+                quantity is only a starting point: enter the quantity to approve and a note.
+              </p>
+            )}
 
             {rec.data.status === 'PENDING' && canApprove(user) && (
               <div className="mt-4 space-y-3 border-t pt-4">
-                <label className="flex flex-col text-xs text-slate-500">
-                  Note (optional)
-                  <input
-                    className={`${field} max-w-xl`}
-                    maxLength={200}
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                  />
-                </label>
+                <div className="flex flex-wrap gap-3">
+                  {rec.data.reviewReason && (
+                    <label className="flex flex-col text-xs text-slate-500">
+                      Quantity to approve
+                      <input
+                        className={`${field} w-32`}
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        step={1}
+                        required
+                        value={quantity ?? String(rec.data.quantity)}
+                        onChange={(e) => setQuantity(e.target.value)}
+                      />
+                    </label>
+                  )}
+                  <label className="flex min-w-0 flex-1 flex-col text-xs text-slate-500">
+                    {rec.data.reviewReason ? 'Note (required to approve)' : 'Note (optional)'}
+                    <input
+                      className={`${field} max-w-xl`}
+                      maxLength={200}
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                    />
+                  </label>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -130,6 +168,10 @@ export function RecommendationDetailPage({ id }: { id: string }) {
                   : `${rec.data.status === 'APPROVED' ? 'Approved' : 'Rejected'} by ${rec.data.decidedBy} on ${
                       rec.data.decidedAt ? formatDateTime(rec.data.decidedAt) : '—'
                     }.`}{' '}
+                {rec.data.approvedQuantity !== null &&
+                  rec.data.approvedQuantity !== rec.data.quantity && (
+                    <>Approved quantity: {formatInt(rec.data.approvedQuantity)} units. </>
+                  )}
                 {rec.data.decisionNote && <>Note: “{rec.data.decisionNote}”. </>}
                 {rec.data.transferId && (
                   <a className={table.link} href={href.transfer(rec.data.transferId)}>

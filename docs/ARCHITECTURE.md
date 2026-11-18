@@ -190,6 +190,7 @@ erDiagram
 | 5 ✅ | `outbox_events`, `processed_events`, `alerts`                                             |
 | 6 ✅ | `forecast.demand_daily`, `forecast.model_versions`, `forecast.runs`, `forecast.model_metrics`, `forecast.series`, `forecast.points`, `purchase_orders`, `purchase_order_lines`, `replenishment_recommendations` |
 | V2 1a ✅ | `forecast.promotions`, `forecast.injected_anomalies`, `forecast.horizon_metrics` (+ `bias`, `interval_coverage`, `interval_width` on `forecast.model_metrics`) |
+| V2 2d-1 ✅ | `expected_stockout_on`, `review_reason`, `approved_quantity` on `replenishment_recommendations` |
 | V2 2c ✅ | `supplier_deliveries` (SYNTHETIC history from the seed, ORDER rows when a purchase order is received; immutable) |
 | V2 2a ✅ | `classification_runs`, `inventory_classifications` (CHECK: class = ABC + XYZ, or NEW) |
 | V2 1e-2 ✅ | `operational_anomalies`, `anomaly_reviews` (+ transition trigger), `anomaly_review_events` (append-only), view `anomaly_findings` |
@@ -296,9 +297,10 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + 80 % and 95 % ranges + the run's range calibration, for one product at one store |
 | `GET /forecasts/explanation`          | `productId, locationId`                        | why the first forecast day is what it is: starting point × factors (SHAP), or the reason there is none (`NOT_ML`, `FALLBACK`, `FAILED_CHECK`, `NOT_AVAILABLE`); plus the run's global importance. Store-scoped |
 | `POST /replenishment/generate`        | —                                              | recommendations from the latest forecast; creates **no** transfer/order |
-| `GET /replenishment/recommendations`  | `status, action, risk, locationId, productId, page, pageSize` | most urgent first; store managers: own stores |
+| `GET /replenishment/recommendations`  | `status, action, risk, needsReview, locationId, productId, page, pageSize` | most urgent first; each with its expected stockout date and review flag; store managers: own stores |
+| `GET /replenishment/status`           | `productId`                                    | per store, evaluated now with the generation calculation: NO_ACTION_REQUIRED / NEEDS_STOCK / NO_SOURCE, position, reorder point, expected stockout, review flag, pending recommendation. Writes nothing; store-scoped (V2 2d-1) |
 | `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
-| `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note? }`            | approve creates the approved transfer / purchase order |
+| `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note?, quantity? }` (approve) · `{ note? }` (reject) | approve creates the approved transfer / purchase order; a recommendation flagged for review needs `quantity` and `note` (`422 QUANTITY_REQUIRED`), an unflagged one refuses another quantity (`422 QUANTITY_NOT_ALLOWED`) |
 | `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
 | `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
 
@@ -544,6 +546,19 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   is a `409`; five simultaneous approvals create exactly one document (tested).
 - **Regenerating** expires the previous pending recommendations (one pending per product × store,
   enforced by a partial unique index) and counts approved-but-unreceived stock as inbound.
+- **Expected stockout date (V2 2d-1):** the first forecast day on which cumulative forecast demand
+  exceeds the position (so inbound stock is assumed to arrive in time); nothing available = out of
+  stock now (dated today); beyond the 14-day horizon at the horizon's average, marked as an
+  estimate; nothing shown past 90 days.
+- **Manual review (V2 2d-1):** a recommendation is flagged when its quantity is least trustworthy —
+  a category-average fallback forecast, or Z-class (erratic) demand at the store. It is calculated
+  like any other, but approving it requires the manager's quantity and a note; every approval
+  stores `approved_quantity`. A flag, not a third action: the suggestion still needs a source.
+- **"No action required"** is not stored: the product page asks `GET /replenishment/status`, which
+  runs the same `plan()` for that product's stores now (DC stock is not shared out between stores
+  there, unlike in a generation batch). Measured on the dev data: for all 1,000 pairs it agreed
+  with a fresh generation (269 needs stock / 731 no action; same quantities and flags), ≤ 174 ms
+  per product.
 
 ### 7.3 Measured accuracy (synthetic data — not a claim about real retail)
 
@@ -856,3 +871,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 57 | ABC/XYZ is computed in the API from `forecast.demand_daily`, read-only (V2 2a) | It is plain arithmetic over sales history and drives stocking policy (an API concern); no ML runtime needed | The API reads a table the forecasting service writes; the read is isolated in one repository |
 | 58 | Supplier performance from a delivery table, with synthetic history in the seed (V2 2c) | Lead-time statistics need history that does not exist yet; history rows never create orders or stock, and real receipts are added automatically | Synthetic profiles are simple (independent delays); no partial receipts yet, so real ORDER rows always have fill rate 100 % |
 | 59 | Safety stock from forecast error, measured supplier delay and a service level per ABC/XYZ class (V2 2b) | The forecast's error is the uncertainty left after forecasting (demand spread double-counts it); late suppliers need both a longer expected lead time and a cushion for its spread; value and predictability decide how much a stock-out is worth avoiding | Assumes independent, roughly normal daily errors; supplier-level delay ignores product differences; raises total safety stock by 48 % on the dev data, mostly through the 99 % level for A items — a policy choice, visible in config |
+| 60 | Manual review is a flag with a manager-entered quantity, and "no action required" is computed on request (V2 2d-1) | A reviewed suggestion still needs a source, so a third action type would break the transfer/order rules; computing status with the same pure `plan()` avoids storing 1,000 "nothing to do" rows that go stale with every sale | The status view and a generation batch can differ when several stores compete for scarce DC stock; quantities on flagged items are a person's judgement, not checked against the formula |

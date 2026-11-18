@@ -5,6 +5,7 @@ import { Badge, StockBadge } from '../components/Badge';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { MovementForm } from '../components/MovementForm';
 import { Pagination } from '../components/Pagination';
+import { ReplenishmentStatusPanel } from '../components/ReplenishmentStatusPanel';
 import { ReservationsPanel } from '../components/ReservationsPanel';
 import { AsOf, Empty, ErrorMessage, Loading } from '../components/Status';
 import { table } from '../components/table';
@@ -77,6 +78,7 @@ export function ProductDetailPage({ id }: { id: string }) {
             productId={id}
             packSize={product.data.packSize}
           />
+          <ReplenishmentStatusPanel key={`repl-${version}`} productId={id} />
           <ForecastPanel productId={id} />
           <ReservationsPanel key={`res-${version}`} productId={id} onChanged={refresh} />
           <Ledger key={`ledger-${version}`} productId={id} />

@@ -12,6 +12,8 @@ export const REPLENISHMENT = {
   minSupplierDeliveries: 20,
   /** Service level for products that are NEW or not classified yet. */
   defaultServiceLevel: 0.95,
+  /** Expected stockout dates further away than this are not shown (V2 2d-1). */
+  stockoutHorizonDays: 90,
 } as const;
 
 export type ServiceLevel = 0.9 | 0.95 | 0.97 | 0.99;

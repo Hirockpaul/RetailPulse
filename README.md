@@ -300,7 +300,10 @@ npm run test:e2e
    chart with its 80 % range, and the **ledger** explaining every unit.
 3. **Replenishment** → open a recommendation: the “why” panel shows every input (forecast and its
    typical error, lead time and how reliable the supplier is, the service level from the product's
-   ABC/XYZ class, safety stock, reorder point, position, pack rounding, source). Approve it: an approved transfer or
+   ABC/XYZ class, safety stock, reorder point, position, pack rounding, source) and the expected
+   stockout date. Items marked **Needs review** (little sales history, or erratic demand) are
+   approved with a quantity and a note you enter; the product page shows, per store, whether
+   anything is needed now (“No action required” is computed live, not stored). Approve it: an approved transfer or
    purchase order is created — nothing moves yet.
 4. **Transfers** → dispatch and receive it: two ledger rows (`TRANSFER_OUT`, `TRANSFER_IN`), and
    the alert for that store resolves on its own (event worker).
@@ -331,7 +334,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 165 unit/HTTP + 228 integration (TypeScript), 94 Python, 2 end-to-end |
+| Tests | 183 unit/HTTP + 231 integration (TypeScript), 94 Python, 2 end-to-end |
 
 ## Known limitations
 

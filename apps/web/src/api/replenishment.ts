@@ -3,6 +3,8 @@ import { getJson, type Page, postJson, qs } from './client';
 export type RecommendationStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 export type RecommendationAction = 'TRANSFER' | 'PURCHASE_ORDER';
 export type Risk = 'CRITICAL' | 'HIGH';
+/** Why a manager must set the quantity (V2 2d-1). */
+export type ReviewReason = 'FALLBACK_FORECAST' | 'ERRATIC_DEMAND';
 
 export interface Recommendation {
   id: string;
@@ -11,6 +13,10 @@ export interface Recommendation {
   quantity: number;
   risk: Risk;
   daysOfCover: number | null;
+  /** First day with unmet demand at the forecast rate (null: not within 90 days / before 2d-1). */
+  expectedStockoutOn: string | null;
+  reviewReason: ReviewReason | null;
+  approvedQuantity: number | null;
   generatedAt: string;
   forecastRunId: string;
   productId: string;
@@ -67,6 +73,8 @@ export interface RecommendationInputs {
     quantity: number;
     daysOfCover: number | null;
   };
+  stockout?: { day: number | null; date: string | null; beyondForecast: boolean };
+  review?: ReviewReason | null;
   source: { code: string; availableNet: number } | null;
   supplier: { name: string; unitCost: number; leadTimeDays: number; minOrderQty: number } | null;
   dcShortfall: { code: string; availableNet: number; needed: number } | null;
@@ -92,9 +100,16 @@ export const listRecommendations = (p: {
   status?: RecommendationStatus;
   action?: RecommendationAction;
   risk?: Risk;
+  needsReview?: boolean;
   page?: number;
   pageSize?: number;
-}) => getJson<Page<Recommendation>>(`/replenishment/recommendations${qs({ ...p })}`);
+}) =>
+  getJson<Page<Recommendation>>(
+    `/replenishment/recommendations${qs({
+      ...p,
+      needsReview: p.needsReview === undefined ? undefined : String(p.needsReview),
+    })}`,
+  );
 
 export const getRecommendation = (id: string) =>
   getJson<RecommendationDetail>(`/replenishment/recommendations/${id}`);
@@ -102,8 +117,48 @@ export const getRecommendation = (id: string) =>
 export const generateRecommendations = () =>
   postJson<GenerateResult>('/replenishment/generate', {});
 
-export const approveRecommendation = (id: string, note?: string) =>
-  postJson<RecommendationDetail>(`/replenishment/recommendations/${id}/approve`, { note });
+/** `quantity` only for recommendations flagged for review (then it and a note are required). */
+export const approveRecommendation = (id: string, note?: string, quantity?: number) =>
+  postJson<RecommendationDetail>(`/replenishment/recommendations/${id}/approve`, {
+    note,
+    quantity,
+  });
+
+export interface StoreStatus {
+  locationId: string;
+  locationCode: string;
+  available: number;
+  inbound: number;
+  position: number;
+  outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE';
+  reorderPoint: number | null;
+  suggestedQuantity: number | null;
+  suggestedAction: RecommendationAction | null;
+  serviceLevel: number;
+  cls: string | null;
+  reviewReason: ReviewReason | null;
+  expectedStockoutOn: string | null;
+  stockoutBeyondForecast: boolean;
+  outOfStockNow: boolean;
+  isFallback: boolean;
+  pending: {
+    id: string;
+    action: RecommendationAction;
+    quantity: number;
+    risk: Risk;
+    reviewReason: ReviewReason | null;
+  } | null;
+}
+
+export interface ProductStatus {
+  forecastRunId: string | null;
+  historyEnd: string | null;
+  stores: StoreStatus[];
+}
+
+/** Per store, does this product need anything now? (computed on request, nothing stored) */
+export const getReplenishmentStatus = (productId: string) =>
+  getJson<ProductStatus>(`/replenishment/status${qs({ productId })}`);
 
 export const rejectRecommendation = (id: string, note?: string) =>
   postJson<RecommendationDetail>(`/replenishment/recommendations/${id}/reject`, { note });

@@ -222,6 +222,8 @@ type Rec = {
   sourceCode: string | null;
   supplierName: string | null;
   explanation: string;
+  expectedStockoutOn: string | null;
+  reviewReason: string | null;
   inputs: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   transferId: string | null;
   purchaseOrderId: string | null;
@@ -421,6 +423,83 @@ describe('recommendations from a forecast', () => {
       testWape: null,
     });
     expect(r.explanation).toContain('category-average fallback');
+    // V2 2d-1: a fallback forecast is flagged for manual review.
+    expect(r.reviewReason).toBe('FALLBACK_FORECAST');
+    expect(r.inputs.review).toBe('FALLBACK_FORECAST');
+    expect(r.explanation).toContain('Manual review: the forecast is only a category average');
+    const flagged = (
+      await admin().get('/replenishment/recommendations?needsReview=true&pageSize=100').expect(200)
+    ).body;
+    expect(flagged.data.map((x: Rec) => x.sku)).toEqual([E.sku]);
+    const unflagged = (
+      await admin().get('/replenishment/recommendations?needsReview=false&pageSize=100').expect(200)
+    ).body;
+    expect(flagged.total).toBe(1);
+    expect(unflagged.total).toBeGreaterThan(0);
+    expect(unflagged.data.some((x: Rec) => x.sku === E.sku)).toBe(false);
+  });
+
+  it('V2 2d-1: stores the expected stockout date (first forecast day with unmet demand)', async () => {
+    // A at STR-01: 20 units, 10 a day from tomorrow-of-history (today): days 1 and 2 are covered,
+    // day 3 is not. History ends yesterday in the fixture, so day 3 = today + 2.
+    const r = await recFor(A.sku, loc.str1);
+    const expected = (await db.query(`SELECT (current_date + 2)::text AS d`)).rows[0].d;
+    expect(r.expectedStockoutOn).toBe(expected);
+    expect(r.inputs.stockout).toEqual({ day: 3, date: expected, beyondForecast: false });
+    expect(r.explanation).toContain(`Expected stockout on ${expected} (forecast day 3).`);
+    expect(r.reviewReason).toBeNull();
+    // E at STR-01 has 5 units: day 1 already runs out.
+    const e = await recFor(E.sku, loc.str1);
+    expect(e.inputs.stockout.day).toBe(1);
+  });
+
+  it('V2 2d-1: the status view evaluates every store now, the same way, and writes nothing', async () => {
+    const tables = [
+      'replenishment_recommendations',
+      'stock_transfers',
+      'purchase_orders',
+      'inventory_ledger',
+      'outbox_events',
+    ];
+    const counts = async () =>
+      Promise.all(tables.map((t) => count(`SELECT COUNT(*)::int AS n FROM ${t}`)));
+    const before = await counts();
+
+    // A at STR-01 needs stock: the same suggestion as the pending recommendation.
+    const rec = await recFor(A.sku, loc.str1);
+    const a = (await admin().get(`/replenishment/status?productId=${A.id}`).expect(200)).body;
+    expect(a).toMatchObject({ forecastRunId: runId });
+    const aStore = a.stores.find((x: { locationId: string }) => x.locationId === loc.str1);
+    expect(aStore).toMatchObject({
+      locationCode: 'STR-01',
+      outcome: 'NEEDS_STOCK',
+      position: 20,
+      suggestedAction: 'TRANSFER',
+      suggestedQuantity: rec.quantity,
+      expectedStockoutOn: rec.expectedStockoutOn,
+      outOfStockNow: false,
+      reviewReason: null,
+      pending: { id: rec.id, action: 'TRANSFER', quantity: rec.quantity },
+    });
+    expect(aStore.reorderPoint).toBeCloseTo(rec.inputs.calculation.reorderPoint, 9);
+
+    // C has plenty: no action required, and the numbers that show why.
+    const c = (await admin().get(`/replenishment/status?productId=${C.id}`).expect(200)).body;
+    expect(c.stores).toHaveLength(1);
+    expect(c.stores[0]).toMatchObject({ outcome: 'NO_ACTION_REQUIRED', pending: null });
+    expect(c.stores[0].position).toBeGreaterThanOrEqual(c.stores[0].reorderPoint);
+
+    // Store managers see their own stores only; validation; nothing was written.
+    const d1 = (await admin().get(`/replenishment/status?productId=${D.id}`).expect(200)).body;
+    expect(d1.stores.map((x: { locationCode: string }) => x.locationCode)).toEqual([
+      'STR-01',
+      'STR-02',
+    ]);
+    const d2 = (await as('store2').get(`/replenishment/status?productId=${D.id}`).expect(200)).body;
+    expect(d2.stores.map((x: { locationCode: string }) => x.locationCode)).toEqual(['STR-02']);
+    await admin().get('/replenishment/status?productId=nope').expect(400);
+    await admin().get('/replenishment/status').expect(400);
+    expect(await counts()).toEqual(before);
   });
 
   it('explains every recommendation with the numbers, and stores every input', async () => {
@@ -521,6 +600,12 @@ describe('recommendations from a forecast', () => {
     const storeBefore = await stockRow(A.id, loc.str1);
     const transfersBefore = await count('SELECT COUNT(*)::int AS n FROM stock_transfers');
 
+    // V2 2d-1: an unflagged recommendation is approved as suggested, never with another quantity.
+    const other = await inv()
+      .post(`/replenishment/recommendations/${r.id}/approve`, { quantity: r.quantity + 12 })
+      .expect(422);
+    expect(other.body.error.code).toBe('QUANTITY_NOT_ALLOWED');
+
     const res = await inv()
       .post(`/replenishment/recommendations/${r.id}/approve`, { note: 'go ahead' })
       .expect(200);
@@ -529,6 +614,7 @@ describe('recommendations from a forecast', () => {
       decidedBy: 'Imani Inventory',
       decisionNote: 'go ahead',
       purchaseOrderId: null,
+      approvedQuantity: r.quantity,
     });
     expect(res.body.decidedAt).toEqual(expect.any(String));
     expect(await count('SELECT COUNT(*)::int AS n FROM stock_transfers')).toBe(transfersBefore + 1);
@@ -620,12 +706,35 @@ describe('recommendations from a forecast', () => {
     expect(cancel.body.error.code).toBe('INVALID_STATE_TRANSITION');
   });
 
-  it('cancelling an unreceived order is for admins and inventory managers and adds no stock', async () => {
+  it('V2 2d-1: a flagged recommendation needs the manager’s quantity and a note; cancelling its order adds no stock', async () => {
     const r = await recFor(E.sku, loc.str1);
-    const po = (await inv().post(`/replenishment/recommendations/${r.id}/approve`).expect(200)).body
-      .purchaseOrderId;
+    expect(r.reviewReason).toBe('FALLBACK_FORECAST');
+    const url = `/replenishment/recommendations/${r.id}/approve`;
+    for (const body of [{}, { note: 'looks fine' }, { quantity: 30 }]) {
+      const res = await inv().post(url, body).expect(422);
+      expect(res.body.error.code).toBe('QUANTITY_REQUIRED');
+    }
+    await inv().post(url, { quantity: 0, note: 'x' }).expect(400);
+    await inv().post(url, { quantity: 2.5, note: 'x' }).expect(400);
+    expect((await recFor(E.sku, loc.str1)).status).toBe('PENDING'); // nothing decided yet
+
+    const chosen = r.quantity + 12;
+    const approved = (
+      await inv().post(url, { quantity: chosen, note: 'new product, start small' }).expect(200)
+    ).body;
+    expect(approved).toMatchObject({
+      status: 'APPROVED',
+      quantity: r.quantity, // the suggestion stays on record
+      approvedQuantity: chosen,
+      decisionNote: 'new product, start small',
+    });
+    const po = approved.purchaseOrderId;
+    const line = (
+      await db.query(`SELECT quantity FROM purchase_order_lines WHERE purchase_order_id = $1`, [po])
+    ).rows;
+    expect(line).toEqual([{ quantity: chosen }]);
     const before = await stockRow(E.id, loc.str1);
-    expect(before.inbound).toBe(r.quantity);
+    expect(before.inbound).toBe(chosen);
 
     await as('store1').post(`/purchase-orders/${po}/cancel`).expect(403);
     const cancelled = await inv().post(`/purchase-orders/${po}/cancel`).expect(201);
@@ -716,6 +825,8 @@ describe('recommendations from a forecast', () => {
       expect(r1.explanation).toContain('Service level 99 % (class AX at STR-01) → z = 2.3263');
 
       expect(r2.inputs.parameters).toMatchObject({ serviceLevel: 0.9, serviceLevelZ: 1.2816 });
+      expect(r2.reviewReason).toBe('ERRATIC_DEMAND'); // V2 2d-1: class Z → manual review
+      expect(r1.reviewReason).toBeNull();
       expect(r2.inputs.calculation.safetyStock).toBeCloseTo(1.2816 * 3 * Math.sqrt(2), 9);
 
       // Only the class AT THE STORE counts; a network-wide class alone gives the default.
@@ -730,6 +841,45 @@ describe('recommendations from a forecast', () => {
     } finally {
       await db.query('DELETE FROM classification_runs WHERE id = $1', [run]);
     }
+  });
+
+  it('V2 2d-1: five simultaneous approvals of a flagged recommendation create one document', async () => {
+    const P = await product('RP-00134');
+    await setOnHand(P.id, loc.str1, 0);
+    await setOnHand(P.id, loc.dcN, 500);
+    await seedForecast([{ product: P.id, location: loc.str1, perDay: 4, fallback: true }]);
+    await inv().post('/replenishment/generate').expect(200);
+    const r = await recFor(P.sku, loc.str1);
+    expect(r.reviewReason).toBe('FALLBACK_FORECAST');
+    // Nothing available: out of stock now, dated the first forecast day (today), not yesterday.
+    const today = (await db.query(`SELECT current_date::text AS d`)).rows[0].d;
+    expect(r.inputs.stockout).toMatchObject({ day: 0 });
+    expect(r.expectedStockoutOn).toBe(today);
+    expect(r.explanation).toContain('Out of stock now.');
+    const docs = await count(
+      'SELECT (SELECT COUNT(*) FROM stock_transfers) + (SELECT COUNT(*) FROM purchase_orders) AS n',
+    );
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        inv().post(`/replenishment/recommendations/${r.id}/approve`, { quantity: 24, note: 'ok' }),
+      ),
+    );
+    expect(results.map((x) => x.status).sort()).toEqual([200, 409, 409, 409, 409]);
+    expect(
+      Number(
+        await count(
+          'SELECT (SELECT COUNT(*) FROM stock_transfers) + (SELECT COUNT(*) FROM purchase_orders) AS n',
+        ),
+      ),
+    ).toBe(Number(docs) + 1);
+    const t = (
+      await db.query(
+        `SELECT tl.quantity FROM stock_transfer_lines tl
+         JOIN replenishment_recommendations r ON r.transfer_id = tl.transfer_id WHERE r.id = $1`,
+        [r.id],
+      )
+    ).rows;
+    expect(t).toEqual([{ quantity: 24 }]);
   });
 
   it('regenerating replaces the pending recommendations (old ones expire) and counts inbound stock', async () => {

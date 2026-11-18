@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { accessibleLocationIds, assertLocationAccess } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
 import { DatabaseService } from '../../core/database/database.service';
@@ -9,12 +14,26 @@ import { ForecastsService } from '../forecasts/forecasts.service';
 import { PurchasingService } from '../purchasing/purchasing.service';
 import { SuppliersService } from '../suppliers/suppliers.service';
 import { TransfersService } from '../transfers/transfers.service';
-import { type DcStock, explain, plan, serviceLevelFor } from './replenishment.calc';
+import {
+  type DcStock,
+  dayToDate,
+  explain,
+  plan,
+  type PlanResult,
+  type ReviewReason,
+  reviewReason,
+  serviceLevelFor,
+  stockoutDay,
+  type SupplierDelay,
+  type SupplierTerms,
+} from './replenishment.calc';
 import { REPLENISHMENT } from './replenishment.config';
 import { ReplenishmentRepository } from './replenishment.repository';
 import type {
+  ApproveBody,
   DecisionBody,
   ListRecommendationsQuery,
+  ProductStatus,
   NewRecommendation,
   PairRow,
   RecommendationDetail,
@@ -32,6 +51,79 @@ export interface GenerateResult {
   byAction: { TRANSFER: number; PURCHASE_ORDER: number };
   byRisk: { CRITICAL: number; HIGH: number };
   skipped: { noNeed: number; noSource: number };
+}
+
+/** What generation and the status view both need besides the pair itself. */
+interface EvalContext {
+  delays: Map<string, SupplierDelay>;
+  classes: Map<string, string>;
+  historyEnd: string | null;
+}
+
+/** One product × store evaluated with the pure calculation. */
+interface PairEvaluation {
+  outcome: PlanResult;
+  supplier: SupplierTerms | null;
+  available: number;
+  cls: string | null;
+  serviceLevel: number;
+  z: number;
+  review: ReviewReason | null;
+  stockout: { day: number | null; date: string | null; beyondForecast: boolean };
+}
+
+function evaluatePair(pair: PairRow, dcs: DcStock[], ctx: EvalContext): PairEvaluation {
+  const supplier =
+    pair.supplierId &&
+    pair.leadTimeDays !== null &&
+    pair.minOrderQty !== null &&
+    pair.unitCost !== null
+      ? {
+          id: pair.supplierId,
+          name: pair.supplierName ?? 'supplier',
+          leadTimeDays: pair.leadTimeDays,
+          minOrderQty: pair.minOrderQty,
+          unitCost: pair.unitCost,
+        }
+      : null;
+  const available = pair.onHand - pair.reserved;
+  const cls = ctx.classes.get(`${pair.productId}:${pair.locationId}`) ?? null;
+  const { serviceLevel, z } = serviceLevelFor(cls);
+  const outcome = plan({
+    yhat: pair.yhat,
+    sigmaError: pair.sigmaError,
+    packSize: pair.packSize,
+    available,
+    inbound: pair.inbound,
+    supplier,
+    supplierDelay: (pair.supplierId && ctx.delays.get(pair.supplierId)) || null,
+    dcs,
+    serviceLevelZ: z,
+    reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
+    transferLeadTimeDays: REPLENISHMENT.transferLeadTimeDays,
+    minSupplierDeliveries: REPLENISHMENT.minSupplierDeliveries,
+  });
+  const so = stockoutDay(
+    pair.yhat,
+    available,
+    available + pair.inbound,
+    REPLENISHMENT.stockoutHorizonDays,
+  );
+  return {
+    outcome,
+    supplier,
+    available,
+    cls,
+    serviceLevel,
+    z,
+    review: reviewReason(pair.isFallback, cls),
+    stockout: {
+      ...so,
+      // Out of stock now (day 0) is dated the first forecast day, i.e. today.
+      date:
+        so.day !== null && ctx.historyEnd ? dayToDate(ctx.historyEnd, Math.max(so.day, 1)) : null,
+    },
+  };
 }
 
 /**
@@ -93,37 +185,17 @@ export class ReplenishmentService {
       skipped: { noNeed: 0, noSource: 0 },
     };
 
+    const ctx: EvalContext = {
+      delays,
+      classes: classified.classes,
+      historyEnd: run.historyEnd,
+    };
     for (const pair of ordered) {
-      const supplier =
-        pair.supplierId &&
-        pair.leadTimeDays !== null &&
-        pair.minOrderQty !== null &&
-        pair.unitCost !== null
-          ? {
-              id: pair.supplierId,
-              name: pair.supplierName ?? 'supplier',
-              leadTimeDays: pair.leadTimeDays,
-              minOrderQty: pair.minOrderQty,
-              unitCost: pair.unitCost,
-            }
-          : null;
-      const available = pair.onHand - pair.reserved;
-      const cls = classified.classes.get(`${pair.productId}:${pair.locationId}`) ?? null;
-      const { serviceLevel, z } = serviceLevelFor(cls);
-      const outcome = plan({
-        yhat: pair.yhat,
-        sigmaError: pair.sigmaError,
-        packSize: pair.packSize,
-        available,
-        inbound: pair.inbound,
-        supplier,
-        supplierDelay: (pair.supplierId && delays.get(pair.supplierId)) || null,
-        dcs: remaining.get(pair.productId) ?? [],
-        serviceLevelZ: z,
-        reviewPeriodDays: REPLENISHMENT.reviewPeriodDays,
-        transferLeadTimeDays: REPLENISHMENT.transferLeadTimeDays,
-        minSupplierDeliveries: REPLENISHMENT.minSupplierDeliveries,
-      });
+      const { outcome, available, cls, serviceLevel, z, review, stockout } = evaluatePair(
+        pair,
+        remaining.get(pair.productId) ?? [],
+        ctx,
+      );
       if ('skip' in outcome) {
         if (outcome.skip === 'NO_NEED') result.skipped.noNeed++;
         else result.skipped.noSource++;
@@ -148,6 +220,8 @@ export class ReplenishmentService {
         quantity: p.quantity,
         risk: p.risk,
         daysOfCover: p.daysOfCover,
+        expectedStockoutOn: stockout.date,
+        reviewReason: review,
         explanation: explain(p, {
           sku: pair.sku,
           locationCode: pair.locationCode,
@@ -161,6 +235,8 @@ export class ReplenishmentService {
           packSize: pair.packSize,
           available,
           inbound: pair.inbound,
+          stockout,
+          review,
         }),
         inputs: {
           forecast: {
@@ -203,6 +279,8 @@ export class ReplenishmentService {
             quantity: p.quantity,
             daysOfCover: p.daysOfCover,
           },
+          stockout,
+          review,
           source: p.sourceDc
             ? { code: p.sourceDc.code, availableNet: p.sourceDc.availableNet }
             : null,
@@ -222,6 +300,58 @@ export class ReplenishmentService {
       return expired;
     });
     return result;
+  }
+
+  /**
+   * "Does this product need anything?" per store, evaluated NOW with the same calculation as
+   * generation (current stock, latest forecast, class, supplier delay, DC stock). Writes nothing.
+   * DC stock is not shared out between the stores here, unlike in a generation batch.
+   */
+  async status(productId: string, user: AuthUser): Promise<ProductStatus> {
+    const run = await this.forecasts.latestSucceededRun();
+    if (!run) return { forecastRunId: null, historyEnd: null, stores: [] };
+    const [pairs, dcByProduct, delays, classified, pending] = await Promise.all([
+      this.repo.loadPairs(run.id, productId),
+      this.repo.loadDcStock(productId),
+      this.suppliers.delays(),
+      this.classifications.latestStoreClasses(),
+      this.repo.pendingForProduct(productId),
+    ]);
+    const scope = accessibleLocationIds(user);
+    const ctx: EvalContext = { delays, classes: classified.classes, historyEnd: run.historyEnd };
+    const stores = pairs
+      .filter((p) => scope === null || scope.includes(p.locationId))
+      .sort((a, b) => a.locationCode.localeCompare(b.locationCode))
+      .map((pair) => {
+        const e = evaluatePair(pair, dcByProduct.get(productId) ?? [], ctx);
+        const o = e.outcome;
+        return {
+          locationId: pair.locationId,
+          locationCode: pair.locationCode,
+          available: e.available,
+          inbound: pair.inbound,
+          position: e.available + pair.inbound,
+          outcome:
+            'plan' in o
+              ? ('NEEDS_STOCK' as const)
+              : o.skip === 'NO_NEED'
+                ? ('NO_ACTION_REQUIRED' as const)
+                : ('NO_SOURCE' as const),
+          reorderPoint:
+            'plan' in o ? o.plan.reorderPoint : o.skip === 'NO_NEED' ? o.reorderPoint : null,
+          suggestedQuantity: 'plan' in o ? o.plan.quantity : null,
+          suggestedAction: 'plan' in o ? o.plan.action : null,
+          serviceLevel: e.serviceLevel,
+          cls: e.cls,
+          reviewReason: e.review,
+          expectedStockoutOn: e.stockout.date,
+          stockoutBeyondForecast: e.stockout.beyondForecast,
+          outOfStockNow: e.stockout.day === 0,
+          isFallback: pair.isFallback,
+          pending: pending.get(pair.locationId) ?? null,
+        };
+      });
+    return { forecastRunId: run.id, historyEnd: run.historyEnd, stores };
   }
 
   /** Store managers see recommendations for their own stores only. */
@@ -246,11 +376,12 @@ export class ReplenishmentService {
    * same transaction. Stock still moves only later (dispatch/receive of the transfer, receipt of
    * the order). Approving twice is a 409.
    */
-  approve(id: string, body: DecisionBody, ctx: RequestContext): Promise<RecommendationDetail> {
+  approve(id: string, body: ApproveBody, ctx: RequestContext): Promise<RecommendationDetail> {
     return this.db.transaction(async (client) => {
       const rec = await this.repo.lock(client, id);
       if (!rec) throw notFound();
       assertPending(rec.status);
+      const quantity = approvedQuantity(rec.reviewReason, rec.quantity, body);
 
       let links: { transferId?: string; purchaseOrderId?: string };
       if (rec.action === 'TRANSFER' && rec.sourceLocationId) {
@@ -261,7 +392,7 @@ export class ReplenishmentService {
               sourceLocationId: rec.sourceLocationId,
               destinationLocationId: rec.locationId,
               notes: `Replenishment recommendation ${id}`,
-              lines: [{ productId: rec.productId, quantity: rec.quantity }],
+              lines: [{ productId: rec.productId, quantity }],
             },
             ctx.user.id,
           ),
@@ -278,7 +409,7 @@ export class ReplenishmentService {
               lines: [
                 {
                   productId: rec.productId,
-                  quantity: rec.quantity,
+                  quantity,
                   unitCost: rec.inputs.supplier.unitCost,
                 },
               ],
@@ -289,7 +420,7 @@ export class ReplenishmentService {
       } else {
         throw new Error('Recommendation has neither a source location nor a supplier.');
       }
-      await this.repo.decide(client, id, 'APPROVED', ctx.user.id, body.note, links);
+      await this.repo.decide(client, id, 'APPROVED', ctx.user.id, body.note, links, quantity);
       return this.reload(client, id);
     });
   }
@@ -312,6 +443,34 @@ export class ReplenishmentService {
     if (!rec) throw new Error('Recommendation vanished inside its own transaction.');
     return rec;
   }
+}
+
+/**
+ * A recommendation flagged for review is approved only with the manager's own quantity and a
+ * note; an unflagged one only as suggested (V2 2d-1).
+ */
+function approvedQuantity(
+  review: ReviewReason | null,
+  suggested: number,
+  body: ApproveBody,
+): number {
+  if (review) {
+    if (body.quantity === undefined || !body.note) {
+      throw new UnprocessableEntityException({
+        code: 'QUANTITY_REQUIRED',
+        message:
+          'This recommendation needs a manual review: enter the quantity to approve and a note.',
+      });
+    }
+    return body.quantity;
+  }
+  if (body.quantity !== undefined && body.quantity !== suggested) {
+    throw new UnprocessableEntityException({
+      code: 'QUANTITY_NOT_ALLOWED',
+      message: 'Only recommendations flagged for review can be approved with another quantity.',
+    });
+  }
+  return suggested;
 }
 
 function assertPending(status: string) {

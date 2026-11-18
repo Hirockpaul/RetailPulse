@@ -4,15 +4,17 @@ import { idParamSchema } from '../../core/http/query';
 import { Ctx, type RequestContext } from '../../core/http/request-context';
 import { ZodValidationPipe } from '../../core/http/zod-validation.pipe';
 import {
+  type ApproveBody,
+  approveBodySchema,
   type DecisionBody,
   decisionBodySchema,
   type ListRecommendationsQuery,
   listRecommendationsQuerySchema,
+  statusQuerySchema,
 } from './replenishment.schemas';
 import { ReplenishmentService } from './replenishment.service';
 
 const idParam = new ZodValidationPipe(idParamSchema);
-const decisionBody = new ZodValidationPipe(decisionBodySchema);
 
 /** Suggestions only: nothing is ordered or moved until a manager approves a recommendation. */
 @Controller('replenishment')
@@ -25,6 +27,16 @@ export class ReplenishmentController {
   @HttpCode(200)
   generate() {
     return this.replenishment.generate();
+  }
+
+  /** Per store, does this product need anything now? Computed on request; writes nothing. */
+  @Roles(...READ_ROLES)
+  @Get('status')
+  status(
+    @Query(new ZodValidationPipe(statusQuerySchema)) { productId }: { productId: string },
+    @Ctx() ctx: RequestContext,
+  ) {
+    return this.replenishment.status(productId, ctx.user);
   }
 
   @Roles(...READ_ROLES)
@@ -47,7 +59,7 @@ export class ReplenishmentController {
   @HttpCode(200)
   approve(
     @Param(idParam) { id }: { id: string },
-    @Body(decisionBody) body: DecisionBody,
+    @Body(new ZodValidationPipe(approveBodySchema)) body: ApproveBody,
     @Ctx() ctx: RequestContext,
   ) {
     return this.replenishment.approve(id, body, ctx);
@@ -58,7 +70,7 @@ export class ReplenishmentController {
   @HttpCode(200)
   reject(
     @Param(idParam) { id }: { id: string },
-    @Body(decisionBody) body: DecisionBody,
+    @Body(new ZodValidationPipe(decisionBodySchema)) body: DecisionBody,
     @Ctx() ctx: RequestContext,
   ) {
     return this.replenishment.reject(id, body, ctx);

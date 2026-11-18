@@ -8,6 +8,7 @@ import type {
   LockedRecommendation,
   NewRecommendation,
   PairRow,
+  PendingRef,
   RecommendationDetail,
   RecommendationStatus,
   RecommendationSummary,
@@ -15,6 +16,8 @@ import type {
 
 const SUMMARY_COLUMNS = `
   r.id, r.status, r.action, r.quantity, r.risk, r.days_of_cover::float8 AS "daysOfCover",
+  r.expected_stockout_on::text AS "expectedStockoutOn", r.review_reason AS "reviewReason",
+  r.approved_quantity AS "approvedQuantity",
   r.generated_at AS "generatedAt", r.forecast_run_id AS "forecastRunId",
   r.product_id AS "productId", p.sku::text AS sku, p.name AS "productName", p.pack_size AS "packSize",
   r.location_id AS "locationId", l.code::text AS "locationCode",
@@ -37,14 +40,18 @@ const FILTER = `
     AND ($3::stockout_risk IS NULL OR r.risk = $3)
     AND ($4::uuid IS NULL OR r.location_id = $4)
     AND ($5::uuid IS NULL OR r.product_id = $5)
-    AND ($6::uuid[] IS NULL OR r.location_id = ANY($6))`;
+    AND ($6::uuid[] IS NULL OR r.location_id = ANY($6))
+    AND ($7::boolean IS NULL OR (r.review_reason IS NOT NULL) = $7)`;
 
 @Injectable()
 export class ReplenishmentRepository {
   constructor(private readonly db: DatabaseService) {}
 
-  /** Every product x store of a forecast run with its forecast, stock and supplier terms. */
-  async loadPairs(runId: string): Promise<PairRow[]> {
+  /**
+   * Every product x store of a forecast run with its forecast, stock and supplier terms
+   * (optionally for one product only).
+   */
+  async loadPairs(runId: string, productId: string | null = null): Promise<PairRow[]> {
     const { rows } = await this.db.query<PairRow>(
       `WITH pts AS (
          SELECT product_id, location_id, array_agg(yhat::float8 ORDER BY horizon_day) AS yhat
@@ -72,14 +79,14 @@ export class ReplenishmentRepository {
          LEFT JOIN inventory_balances b ON b.product_id = s.product_id AND b.location_id = s.location_id
          LEFT JOIN supplier_products sp ON sp.product_id = s.product_id AND sp.is_primary
          LEFT JOIN suppliers sup ON sup.id = sp.supplier_id
-        WHERE s.run_id = $1`,
-      [runId],
+        WHERE s.run_id = $1 AND ($2::uuid IS NULL OR s.product_id = $2)`,
+      [runId, productId],
     );
     return rows;
   }
 
   /** Distribution-centre stock not already promised to open (requested / approved) transfers. */
-  async loadDcStock(): Promise<Map<string, DcStock[]>> {
+  async loadDcStock(productId: string | null = null): Promise<Map<string, DcStock[]>> {
     const { rows } = await this.db.query<DcStock & { productId: string }>(
       `SELECT b.product_id AS "productId", l.id AS "locationId", l.code::text AS code,
               (b.on_hand - b.reserved - COALESCE(o.qty, 0))::int AS "availableNet"
@@ -90,13 +97,25 @@ export class ReplenishmentRepository {
              FROM stock_transfer_lines tl JOIN stock_transfers t ON t.id = tl.transfer_id
             WHERE tl.product_id = b.product_id AND t.source_location_id = b.location_id
               AND t.status IN ('REQUESTED', 'APPROVED')) o ON true
-        WHERE b.on_hand - b.reserved - COALESCE(o.qty, 0) > 0`,
+        WHERE b.on_hand - b.reserved - COALESCE(o.qty, 0) > 0
+          AND ($1::uuid IS NULL OR b.product_id = $1)`,
+      [productId],
     );
     const byProduct = new Map<string, DcStock[]>();
     for (const { productId, ...dc } of rows) {
       byProduct.set(productId, [...(byProduct.get(productId) ?? []), dc]);
     }
     return byProduct;
+  }
+
+  /** Pending recommendations of one product, by store. */
+  async pendingForProduct(productId: string): Promise<Map<string, PendingRef>> {
+    const { rows } = await this.db.query<PendingRef & { locationId: string }>(
+      `SELECT id, location_id AS "locationId", action, quantity, risk, review_reason AS "reviewReason"
+         FROM replenishment_recommendations WHERE product_id = $1 AND status = 'PENDING'`,
+      [productId],
+    );
+    return new Map(rows.map(({ locationId, ...ref }) => [locationId, ref]));
   }
 
   /** Serialize concurrent "generate" calls (the one-pending-per-pair index would otherwise clash). */
@@ -115,8 +134,8 @@ export class ReplenishmentRepository {
     await client.query(
       `INSERT INTO replenishment_recommendations
          (forecast_run_id, product_id, location_id, action, source_location_id, supplier_id,
-          quantity, risk, days_of_cover, inputs, explanation)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          quantity, risk, days_of_cover, inputs, explanation, expected_stockout_on, review_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         r.forecastRunId,
         r.productId,
@@ -129,6 +148,8 @@ export class ReplenishmentRepository {
         r.daysOfCover === null ? null : Math.round(r.daysOfCover * 100) / 100,
         JSON.stringify(r.inputs),
         r.explanation,
+        r.expectedStockoutOn,
+        r.reviewReason,
       ],
     );
   }
@@ -137,7 +158,7 @@ export class ReplenishmentRepository {
     const { rows } = await client.query<LockedRecommendation>(
       `SELECT status, action, product_id AS "productId", location_id AS "locationId",
               source_location_id AS "sourceLocationId", supplier_id AS "supplierId",
-              quantity, inputs
+              quantity, review_reason AS "reviewReason", inputs
          FROM replenishment_recommendations WHERE id = $1 FOR UPDATE`,
       [id],
     );
@@ -151,13 +172,22 @@ export class ReplenishmentRepository {
     userId: string,
     note: string | undefined,
     links: { transferId?: string; purchaseOrderId?: string },
+    approvedQuantity: number | null = null,
   ): Promise<void> {
     await client.query(
       `UPDATE replenishment_recommendations
           SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4,
-              transfer_id = $5, purchase_order_id = $6
+              transfer_id = $5, purchase_order_id = $6, approved_quantity = $7
         WHERE id = $1`,
-      [id, status, userId, note ?? null, links.transferId ?? null, links.purchaseOrderId ?? null],
+      [
+        id,
+        status,
+        userId,
+        note ?? null,
+        links.transferId ?? null,
+        links.purchaseOrderId ?? null,
+        approvedQuantity,
+      ],
     );
   }
 
@@ -180,12 +210,13 @@ export class ReplenishmentRepository {
       q.locationId ?? null,
       q.productId ?? null,
       scope,
+      q.needsReview ?? null,
     ];
     const [rows, count] = await Promise.all([
       this.db.query<RecommendationSummary>(
         `SELECT ${SUMMARY_COLUMNS} ${FROM} ${FILTER}
           ORDER BY (r.risk = 'CRITICAL') DESC, r.days_of_cover NULLS LAST, r.generated_at DESC, r.id
-          LIMIT $7 OFFSET $8`,
+          LIMIT $8 OFFSET $9`,
         [...filter, q.pageSize, offsetOf(q)],
       ),
       this.db.query<{ total: number }>(

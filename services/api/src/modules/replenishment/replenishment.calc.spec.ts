@@ -2,11 +2,14 @@ import {
   type DcStock,
   demandOver,
   explain,
+  dayToDate,
   plan,
   type PlanInput,
+  reviewReason,
   roundUpToMultiple,
   safetyStock,
   serviceLevelFor,
+  stockoutDay,
   supplierLeadTime,
   type SupplierDelay,
   type SupplierTerms,
@@ -113,8 +116,8 @@ describe('plan — purchase order (no distribution-centre stock)', () => {
   });
 
   it('does nothing when the position is at or above the reorder point', () => {
-    expect(plan(base({ available: 84 }))).toEqual({ skip: 'NO_NEED' });
-    expect(plan(base({ available: 30, inbound: 60 }))).toEqual({ skip: 'NO_NEED' });
+    expect(plan(base({ available: 84 }))).toMatchObject({ skip: 'NO_NEED', position: 84 });
+    expect(plan(base({ available: 30, inbound: 60 }))).toMatchObject({ skip: 'NO_NEED' });
   });
 
   it('raises a small need to the supplier minimum, in whole packs', () => {
@@ -140,8 +143,9 @@ describe('plan — purchase order (no distribution-centre stock)', () => {
   });
 
   it('suggests nothing when there is no demand', () => {
-    expect(plan(base({ yhat: Array(14).fill(0), sigmaError: 0, available: 0 }))).toEqual({
+    expect(plan(base({ yhat: Array(14).fill(0), sigmaError: 0, available: 0 }))).toMatchObject({
       skip: 'NO_NEED',
+      reorderPoint: 0,
     });
   });
 
@@ -176,7 +180,9 @@ describe('plan — transfer from a distribution centre', () => {
 
   it('does not recommend when stock already covers the short lead time', () => {
     // reorder point with the 2-day lead time is 26.979, so 27 is enough
-    expect(plan(base({ dcs: [dc(500)], available: 27 }))).toEqual({ skip: 'NO_NEED' });
+    const ok = plan(base({ dcs: [dc(500)], available: 27 }));
+    expect(ok).toMatchObject({ skip: 'NO_NEED', position: 27, leadTimeDays: 2 });
+    expect('reorderPoint' in ok && ok.reorderPoint).toBeCloseTo(26.979, 3);
     expect('plan' in plan(base({ dcs: [dc(500)], available: 26 }))).toBe(true);
   });
 
@@ -209,7 +215,9 @@ describe('plan — stock-out risk', () => {
   });
 
   it('plenty of inbound stock means no recommendation, even with nothing on the shelf', () => {
-    expect(plan(base({ available: 0, inbound: 100, dcs: [dc(500)] }))).toEqual({ skip: 'NO_NEED' });
+    expect(plan(base({ available: 0, inbound: 100, dcs: [dc(500)] }))).toMatchObject({
+      skip: 'NO_NEED',
+    });
   });
 
   it('CRITICAL when the position will not last the lead time; HIGH when it just does', () => {
@@ -435,5 +443,106 @@ describe('safety stock v2 — simulation under its own assumptions', () => {
       if (demand <= d * lead.meanDays + ss) covered++;
     }
     expect(Math.abs(covered / cycles - target)).toBeLessThanOrEqual(0.01);
+  });
+});
+
+describe('stockoutDay — first forecast day whose cumulative demand exceeds the position (2d-1)', () => {
+  const flat = Array(14).fill(10);
+
+  it('flat forecast (checked by hand)', () => {
+    // 25 units: day 1 → 10, day 2 → 20, day 3 → 30 > 25 → runs out on day 3
+    expect(stockoutDay(flat, 25, 25, 90)).toEqual({ day: 3, beyondForecast: false });
+    // exactly 20 lasts days 1 and 2; day 3 is the first day with unmet demand
+    expect(stockoutDay(flat, 20, 20, 90)).toEqual({ day: 3, beyondForecast: false });
+    expect(stockoutDay(flat, 5, 5, 90)).toEqual({ day: 1, beyondForecast: false });
+  });
+
+  it('uneven forecast: uses each day, not the average', () => {
+    // 2, 2, 20 …: 4 units last two days, the big day 3 empties 23
+    expect(stockoutDay([2, 2, 20, 1], 23, 23, 90)).toEqual({ day: 3, beyondForecast: false });
+    expect(stockoutDay([2, 2, 20, 1], 24, 24, 90)).toEqual({ day: 4, beyondForecast: false });
+  });
+
+  it('counts inbound stock in the position, but nothing available is out of stock now', () => {
+    expect(stockoutDay(flat, 10, 45, 90)).toEqual({ day: 5, beyondForecast: false });
+    expect(stockoutDay(flat, 0, 100, 90)).toEqual({ day: 0, beyondForecast: false });
+    expect(stockoutDay(flat, -3, 0, 90)).toEqual({ day: 0, beyondForecast: false });
+  });
+
+  it('beyond the horizon uses the horizon average and says so; nothing past the cap', () => {
+    // 14 days × 10 = 140; average 10 → 205 units run out on day 21
+    expect(stockoutDay(flat, 205, 205, 90)).toEqual({ day: 21, beyondForecast: true });
+    expect(stockoutDay(flat, 900, 900, 90)).toEqual({ day: null, beyondForecast: false }); // day 91
+    expect(stockoutDay(flat, 899, 899, 90)).toEqual({ day: 90, beyondForecast: true });
+  });
+
+  it('no demand forecast → no stockout date', () => {
+    expect(stockoutDay(Array(14).fill(0), 5, 5, 90)).toEqual({ day: null, beyondForecast: false });
+    expect(stockoutDay([], 5, 5, 90)).toEqual({ day: null, beyondForecast: false });
+  });
+
+  it('turns a forecast day into a date after the last day of data', () => {
+    expect(dayToDate('2026-11-17', 1)).toBe('2026-11-18');
+    expect(dayToDate('2026-11-17', 0)).toBe('2026-11-17');
+    expect(dayToDate('2026-12-30', 3)).toBe('2027-01-02');
+  });
+});
+
+describe('reviewReason — when a person should set the quantity (2d-1)', () => {
+  it.each([
+    [true, 'AX', 'FALLBACK_FORECAST'],
+    [true, 'CZ', 'FALLBACK_FORECAST'], // both apply: the fallback is the more basic problem
+    [true, null, 'FALLBACK_FORECAST'],
+    [false, 'AZ', 'ERRATIC_DEMAND'],
+    [false, 'BZ', 'ERRATIC_DEMAND'],
+    [false, 'CZ', 'ERRATIC_DEMAND'],
+    [false, 'AX', null],
+    [false, 'CY', null],
+    [false, 'NEW', null],
+    [false, null, null],
+  ])('fallback %s, class %s → %s', (fallback, cls, expected) => {
+    expect(reviewReason(fallback, cls)).toBe(expected);
+  });
+});
+
+describe('explain — stockout and review sentences (2d-1)', () => {
+  const ctx = {
+    sku: 'RP-00042',
+    locationCode: 'STR-01',
+    model: 'hgb_direct',
+    isFallback: false,
+    sigmaError: 3,
+    cls: 'CZ',
+    serviceLevel: 0.9,
+    serviceLevelZ: 1.2816,
+    reviewPeriodDays: 7,
+    packSize: 12,
+    available: 20,
+    inbound: 0,
+  };
+  const p = planned(base({ dcs: [dc(500)] }));
+
+  it('states the expected stockout date, out of stock now, or none within 90 days', () => {
+    const at = (stockout: { day: number | null; date: string | null; beyondForecast: boolean }) =>
+      explain(p, { ...ctx, stockout });
+    expect(at({ day: 3, date: '2026-11-20', beyondForecast: false })).toContain(
+      'Expected stockout on 2026-11-20 (forecast day 3).',
+    );
+    expect(at({ day: 21, date: '2026-12-08', beyondForecast: true })).toContain(
+      'an estimate beyond the forecast horizon',
+    );
+    expect(at({ day: 0, date: '2026-11-17', beyondForecast: false })).toContain(
+      'Out of stock now.',
+    );
+    expect(at({ day: null, date: null, beyondForecast: false })).toContain(
+      'No stockout expected within 90 days',
+    );
+  });
+
+  it('says why a manager must set the quantity', () => {
+    expect(explain(p, { ...ctx, review: 'ERRATIC_DEMAND' })).toContain(
+      'Manual review: demand for this product at this store is erratic (class Z)',
+    );
+    expect(explain(p, { ...ctx, review: null })).not.toContain('Manual review');
   });
 });

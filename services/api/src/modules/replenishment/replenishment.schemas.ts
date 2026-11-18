@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { paginationSchema, uuidSchema } from '../../core/http/query';
+import type { ReviewReason } from './replenishment.calc';
 
 export const RECOMMENDATION_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'] as const;
 export type RecommendationStatus = (typeof RECOMMENDATION_STATUSES)[number];
@@ -12,6 +13,11 @@ export const listRecommendationsQuerySchema = paginationSchema.extend({
   risk: z.enum(RISKS).optional(),
   locationId: uuidSchema.optional(),
   productId: uuidSchema.optional(),
+  /** true = only recommendations flagged for manual review. */
+  needsReview: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
 });
 export type ListRecommendationsQuery = z.output<typeof listRecommendationsQuerySchema>;
 
@@ -19,6 +25,47 @@ export const decisionBodySchema = z.object({
   note: z.string().trim().min(1).max(200).optional(),
 });
 export type DecisionBody = z.output<typeof decisionBodySchema>;
+
+/** Approving: `quantity` is required for (and only accepted on) a flagged recommendation. */
+export const approveBodySchema = decisionBodySchema.extend({
+  quantity: z.number().int().min(1).max(100_000).optional(),
+});
+export type ApproveBody = z.output<typeof approveBodySchema>;
+
+export const statusQuerySchema = z.object({ productId: uuidSchema });
+
+/** Per store: does this product need anything now? (V2 2d-1, computed on request, not stored) */
+export interface ProductStatus {
+  forecastRunId: string | null;
+  historyEnd: string | null;
+  stores: {
+    locationId: string;
+    locationCode: string;
+    available: number;
+    inbound: number;
+    position: number;
+    outcome: 'NO_ACTION_REQUIRED' | 'NEEDS_STOCK' | 'NO_SOURCE';
+    reorderPoint: number | null;
+    suggestedQuantity: number | null;
+    suggestedAction: 'TRANSFER' | 'PURCHASE_ORDER' | null;
+    serviceLevel: number;
+    cls: string | null;
+    reviewReason: ReviewReason | null;
+    expectedStockoutOn: string | null;
+    stockoutBeyondForecast: boolean;
+    outOfStockNow: boolean;
+    isFallback: boolean;
+    pending: PendingRef | null;
+  }[];
+}
+
+export interface PendingRef {
+  id: string;
+  action: 'TRANSFER' | 'PURCHASE_ORDER';
+  quantity: number;
+  risk: 'CRITICAL' | 'HIGH';
+  reviewReason: ReviewReason | null;
+}
 
 /**
  * Every input and intermediate number of a recommendation, stored as JSON for the "why" panel.
@@ -68,6 +115,9 @@ export interface RecommendationInputs {
     quantity: number;
     daysOfCover: number | null;
   };
+  /** v2 (2d-1): expected stockout and the manual-review reason. */
+  stockout?: { day: number | null; date: string | null; beyondForecast: boolean };
+  review?: ReviewReason | null;
   source: { code: string; availableNet: number } | null;
   supplier: {
     id: string;
@@ -86,6 +136,10 @@ export interface RecommendationSummary {
   quantity: number;
   risk: 'CRITICAL' | 'HIGH';
   daysOfCover: number | null;
+  expectedStockoutOn: string | null;
+  reviewReason: ReviewReason | null;
+  /** The quantity actually approved (null unless APPROVED; null for approvals before 2d-1). */
+  approvedQuantity: number | null;
   generatedAt: Date;
   forecastRunId: string;
   productId: string;
@@ -145,6 +199,8 @@ export interface NewRecommendation {
   quantity: number;
   risk: 'CRITICAL' | 'HIGH';
   daysOfCover: number | null;
+  expectedStockoutOn: string | null;
+  reviewReason: ReviewReason | null;
   inputs: RecommendationInputs;
   explanation: string;
 }
@@ -157,5 +213,6 @@ export interface LockedRecommendation {
   sourceLocationId: string | null;
   supplierId: string | null;
   quantity: number;
+  reviewReason: ReviewReason | null;
   inputs: RecommendationInputs;
 }
