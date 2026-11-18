@@ -1,5 +1,6 @@
 import { Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { APPROVER_ROLES, READ_ROLES, Roles } from '../../core/auth/roles';
+import { Ctx, type RequestContext } from '../../core/http/request-context';
 import { MonitoringService } from './monitoring.service';
 
 /** Model monitoring: read for everyone signed in; running it now is for approvers. */
@@ -16,7 +17,7 @@ export class MonitoringController {
   @Roles(...APPROVER_ROLES)
   @Post('run')
   @HttpCode(200)
-  run() {
-    return this.monitoring.run();
+  run(@Ctx() ctx: RequestContext) {
+    return this.monitoring.run(ctx.correlationId);
   }
 }

@@ -1,0 +1,196 @@
+{
+  "uid": "retailpulse-forecast-quality",
+  "title": "RetailPulse Forecast Quality (synthetic)",
+  "description": "Time-ordered validation and untouched-test metrics on synthetic demand. Coverage is measured, not assumed.",
+  "tags": ["retailpulse", "business", "synthetic", "forecast"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "5m",
+  "editable": false,
+  "time": { "from": "now-1y", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Latest served test WAPE",
+      "description": "Weighted absolute percentage error; lower is better.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT wape AS value FROM reporting.forecast_quality WHERE split = 'test' AND served_model AND ('$model' = 'All' OR model = '$model') ORDER BY started_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Latest served test bias",
+      "description": "Positive means over-forecast; negative means under-forecast.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT bias AS value FROM reporting.forecast_quality WHERE split = 'test' AND served_model AND ('$model' = 'All' OR model = '$model') ORDER BY started_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Measured 80% coverage",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT interval_coverage AS value FROM reporting.forecast_quality WHERE split = 'test' AND served_model AND ('$model' = 'All' OR model = '$model') ORDER BY started_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 1, "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Measured 95% coverage",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT interval95_coverage AS value FROM reporting.forecast_quality WHERE split = 'test' AND served_model AND ('$model' = 'All' OR model = '$model') ORDER BY started_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 1, "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Test WAPE by run",
+      "description": "Each line is one evaluated model; the selected model filter applies.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 5, "w": 13, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT started_at AS time, wape::double precision AS value, model AS metric FROM reporting.forecast_quality WHERE $__timeFilter(started_at) AND split = 'test' AND ('$model' = 'All' OR model = '$model') ORDER BY started_at"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "asc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Latest model comparison",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 13, "y": 5, "w": 11, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT model AS \"Model\", split AS \"Split\", served_model AS \"Served\", mae AS \"MAE\", rmse AS \"RMSE\", wape AS \"WAPE\", bias AS \"Bias\", interval_coverage AS \"80% coverage\", interval95_coverage AS \"95% coverage\" FROM reporting.forecast_quality WHERE run_id = (SELECT run_id FROM reporting.forecast_quality ORDER BY started_at DESC LIMIT 1) AND ('$model' = 'All' OR model = '$model') ORDER BY model, split"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/^(WAPE|Bias|80% coverage|95% coverage)$/" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+        "query": "SELECT DISTINCT model AS __text, model AS __value FROM reporting.forecast_quality ORDER BY 1",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "All",
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  }
+}

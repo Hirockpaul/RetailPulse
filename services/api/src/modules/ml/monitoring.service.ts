@@ -59,8 +59,8 @@ export class MonitoringService {
     };
   }
 
-  async run(): Promise<MonitoringOverview> {
-    await this.client.runMonitoring();
+  async run(correlationId?: string): Promise<MonitoringOverview> {
+    await this.client.runMonitoring(correlationId);
     return this.overview();
   }
 }

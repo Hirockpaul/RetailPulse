@@ -1,0 +1,190 @@
+{
+  "uid": "retailpulse-inventory",
+  "title": "RetailPulse Inventory (synthetic snapshot)",
+  "description": "Current synthetic inventory snapshot. Values use current catalog price and current primary-supplier cost; the time picker does not apply.",
+  "tags": ["retailpulse", "business", "synthetic"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "5m",
+  "editable": false,
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "On hand now",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(sum(on_hand), 0) AS value FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Available now",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(sum(available), 0) AS value FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Value at current cost",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(sum(cost_value), 0) AS value FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Out-of-stock product locations",
+      "description": "Current rows with zero available units; this is not the Control Tower's forecast-risk measure.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) FILTER (WHERE available = 0) AS value FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Units by location",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 5, "w": 13, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT location_code AS \"Location\", sum(available)::integer AS \"Available\", sum(reserved)::integer AS \"Reserved\" FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category') GROUP BY location_code ORDER BY location_code"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0,
+        "showValue": "auto",
+        "stacking": "normal",
+        "groupWidth": 0.7,
+        "barWidth": 0.97,
+        "barRadius": 0,
+        "fullHighlight": false,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Lowest available stock",
+      "description": "Current quantities only; use the Control Tower for forecast-based risk.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 13, "y": 5, "w": 11, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT location_code AS \"Location\", sku AS \"SKU\", product_name AS \"Product\", on_hand AS \"On hand\", reserved AS \"Reserved\", available AS \"Available\" FROM reporting.inventory_snapshot WHERE ('$location' = 'All' OR location_code = '$location') AND ('$category' = 'All' OR category = '$category') ORDER BY available, on_hand, sku LIMIT 20"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [{ "displayName": "Available", "desc": false }]
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "location",
+        "label": "Location",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+        "query": "SELECT DISTINCT location_code AS __text, location_code AS __value FROM reporting.inventory_snapshot ORDER BY 1",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "All",
+        "multi": false,
+        "sort": 1
+      },
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+        "query": "SELECT DISTINCT category AS __text, category AS __value FROM reporting.inventory_snapshot ORDER BY 1",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "All",
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  }
+}

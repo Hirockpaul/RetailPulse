@@ -1,0 +1,17 @@
+apiVersion: 1
+datasources:
+  - name: RetailPulse PostgreSQL (read only)
+    uid: retailpulse-postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: retailpulse_grafana
+    isDefault: false
+    editable: false
+    jsonData:
+      database: $__env{POSTGRES_DB}
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: $__env{GRAFANA_DB_PASSWORD}

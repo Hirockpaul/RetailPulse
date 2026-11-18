@@ -177,3 +177,19 @@ test('a manager generates a report, sees its period and generation time, and can
   await expect(page.getByRole('button', { name: 'Print / save as PDF' })).toBeHidden();
   await expect(page.getByText('(UTC days)')).toBeVisible();
 });
+
+test('a signed-in analyst can read the generated API contract', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Email').fill('analyst@retailpulse.test');
+  await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
+
+  await page.goto('/api/v1/docs');
+  await expect(page).toHaveTitle('RetailPulse API documentation');
+  await expect(page.locator('#status')).toHaveText(
+    'OpenAPI 3.1.0 · 73 operations · session cookie authentication',
+  );
+  await expect(page.locator('main article')).toHaveCount(73);
+  await expect(page.getByRole('heading', { name: 'Inventory movements' })).toBeVisible();
+});

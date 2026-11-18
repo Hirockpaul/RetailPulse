@@ -3,11 +3,15 @@
 # Optional profiles:
 #   full           the whole app in containers: migrate + seed, synthetic history, API, forecasting,
 #                  web on http://localhost:8080          docker compose --profile full up --build
-#   observability  Prometheus (:9090) + Grafana (:3001) with one dashboard. Scrapes the API in the
-#                  `full` profile, or a dev API on the host (npm run dev:api).
+#   observability  Prometheus (:9090) + Grafana (:3001), with API and read-only business dashboards.
+#                  Scrapes the API in `full`, or a dev API on the host (npm run dev:api). Business
+#                  dashboards use only the reporting views through a restricted PostgreSQL role.
 #                                                        docker compose --profile observability up
 #   mlops          MLflow mirror (:5000), SQLite + local artifacts. To mirror full-profile runs:
 #                  MLFLOW_TRACKING_URI=http://mlflow:5000 docker compose --profile full --profile mlops up
+#   tracing        Jaeger (:16686), in-memory traces received over private OTLP/HTTP. Set
+#                  OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 and combine with `full`.
+#                                                        docker compose --profile tracing up
 # All published ports are bound to 127.0.0.1: this is a local demo, not a deployment.
 
 x-database-url: &database-url postgresql://${POSTGRES_USER:-retailpulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-retailpulse}
@@ -75,6 +79,7 @@ services:
       DATABASE_URL: *database-url
       MODEL_ARTIFACT_DIR: /var/lib/retailpulse/models
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - model_artifacts:/var/lib/retailpulse/models
     depends_on:
@@ -90,6 +95,7 @@ services:
       DATABASE_URL: *database-url
       FORECAST_URL: http://forecasting:8000
       API_PORT: '3000'
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - '127.0.0.1:3000:3000'
     depends_on:
@@ -118,6 +124,40 @@ services:
       - '127.0.0.1:9090:9090'
     restart: unless-stopped
 
+  # The migration creates this role without LOGIN. Supply its local-only password at runtime so a
+  # credential is never stored in the migration or Grafana provisioning files.
+  grafana-db-init:
+    profiles: [observability]
+    image: postgres:17-alpine
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-retailpulse}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-retailpulse}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        if [ -z "$${GRAFANA_DB_PASSWORD}" ]; then
+          echo "set GRAFANA_DB_PASSWORD in .env for the observability profile" >&2
+          exit 1
+        fi
+        tries=0
+        until [ "$$(psql -Atqc "SELECT count(*) FROM pg_roles WHERE rolname = 'retailpulse_grafana'")" = "1" ]; do
+          tries=$$((tries + 1))
+          if [ "$$tries" -ge 60 ]; then
+            echo "reporting migration is not available after 60 seconds" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        psql --set=ON_ERROR_STOP=1 --set=grafana_password="$${GRAFANA_DB_PASSWORD}" <<'SQL'
+        ALTER ROLE retailpulse_grafana WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD :'grafana_password';
+        SQL
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+
   grafana:
     profiles: [observability]
     image: grafana/grafana-oss:12.1.0
@@ -126,12 +166,16 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-grafana}
       GF_USERS_ALLOW_SIGN_UP: 'false'
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-retailpulse}
     volumes:
       - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - '127.0.0.1:3001:3000'
-    depends_on: [prometheus]
+    depends_on:
+      prometheus: { condition: service_started }
+      grafana-db-init: { condition: service_completed_successfully }
     restart: unless-stopped
 
   # ---------------------------------------------------------------- profile: mlops
@@ -164,6 +208,17 @@ services:
       - mlflow_data:/mlflow
     ports:
       - '127.0.0.1:5000:5000'
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- profile: tracing
+  # Local, ephemeral traces only. The UI is localhost-bound and OTLP is private to Compose.
+  jaeger:
+    profiles: [tracing]
+    image: jaegertracing/jaeger:2.23.0
+    environment:
+      JAEGER_LISTEN_HOST: 0.0.0.0
+    ports:
+      - '127.0.0.1:16686:16686'
     restart: unless-stopped
 
 volumes:

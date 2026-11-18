@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { assertLocationAccess } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
+import type { RequestContext } from '../../core/http/request-context';
 import { ForecastClient } from './forecast.client';
 import { describeFactor, featureLabel } from './forecasts.explain';
 import { ForecastsRepository } from './forecasts.repository';
@@ -24,8 +25,8 @@ export class ForecastsService {
   ) {}
 
   /** Start a forecast run in the Python service. It only writes forecast data, never stock. */
-  startRun(body: RunForecastBody) {
-    return this.client.startRun(body.horizonDays);
+  startRun(body: RunForecastBody, ctx: RequestContext) {
+    return this.client.startRun(body.horizonDays, ctx.correlationId);
   }
 
   /**

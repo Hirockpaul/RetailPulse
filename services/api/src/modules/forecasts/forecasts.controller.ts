@@ -18,8 +18,11 @@ export class ForecastsController {
   @Roles(...APPROVER_ROLES)
   @Post('run')
   @HttpCode(202)
-  run(@Body(new ZodValidationPipe(runForecastBodySchema)) body: RunForecastBody) {
-    return this.forecasts.startRun(body);
+  run(
+    @Body(new ZodValidationPipe(runForecastBodySchema)) body: RunForecastBody,
+    @Ctx() ctx: RequestContext,
+  ) {
+    return this.forecasts.startRun(body, ctx);
   }
 
   @Roles(...READ_ROLES)

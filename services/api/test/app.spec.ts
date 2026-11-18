@@ -1,4 +1,5 @@
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { DiscoveryModule, DiscoveryService, Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -9,6 +10,8 @@ import { PUBLIC_KEY, ROLES_KEY } from '../src/core/auth/roles';
 import { SessionService } from '../src/core/auth/session.service';
 import { loadEnv } from '../src/core/config/env';
 import { DatabaseService } from '../src/core/database/database.service';
+import { OPENAPI_DOCUMENT } from '../src/core/openapi/openapi.document';
+import { OPENAPI_ROUTES, routeKey } from '../src/core/openapi/openapi.routes';
 
 const env = loadEnv({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://u:p@localhost:1/none' });
 
@@ -165,6 +168,111 @@ describe('authentication and roles (global guard)', () => {
     }
     expect(routes).toBeGreaterThan(25);
     expect(undeclared).toEqual([]);
+  });
+});
+
+describe('generated OpenAPI', () => {
+  let app: INestApplication;
+  beforeAll(async () => {
+    app = await buildApp(async () => 1);
+  });
+  afterAll(async () => app.close());
+
+  it('requires a session for both the document and its HTML reader', async () => {
+    await request(app.getHttpServer()).get('/api/v1/openapi.json').expect(401);
+    await request(app.getHttpServer()).get('/api/v1/docs').expect(401);
+  });
+
+  it('serves an OpenAPI 3.1 contract generated from the runtime Zod request schemas', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/openapi.json')
+      .set('Cookie', as('tok-analyst'))
+      .expect(200);
+    const spec = res.body;
+    expect(spec.openapi).toBe('3.1.0');
+    expect(spec.info.description).toMatch(/synthetic/i);
+    expect(spec.components.securitySchemes.sessionCookie).toMatchObject({
+      type: 'apiKey',
+      in: 'cookie',
+      name: 'rp_session',
+    });
+    expect(spec.paths['/metrics'].get.security).toEqual([]);
+    expect(spec.paths['/api/v1/metrics']).toBeUndefined();
+    expect(spec.paths['/api/v1/health'].get.security).toEqual([]);
+    expect(spec.paths['/api/v1/docs'].get.security).toEqual([{ sessionCookie: [] }]);
+
+    const login =
+      spec.paths['/api/v1/auth/login'].post.requestBody.content['application/json'].schema;
+    expect(login.properties.email).toMatchObject({
+      type: 'string',
+      maxLength: 254,
+    });
+    expect(login.properties.password).toMatchObject({ type: 'string', minLength: 1 });
+    const products = spec.paths['/api/v1/products'].get.parameters;
+    expect(products).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'pageSize',
+          in: 'query',
+          schema: expect.objectContaining({ default: 25, maximum: 100 }),
+        }),
+      ]),
+    );
+    const saleHeaders = spec.paths['/api/v1/sales'].post.parameters;
+    expect(saleHeaders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Idempotency-Key', in: 'header', required: true }),
+      ]),
+    );
+  });
+
+  it('serves a dependency-free reader to every signed-in role', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/docs')
+      .set('Cookie', as('tok-store'))
+      .expect(200);
+    expect(res.headers['content-type']).toMatch(/^text\/html/);
+    expect(res.text).toContain('RetailPulse API documentation');
+    expect(res.text).toContain('/api/v1/openapi.json');
+    expect(res.text).toMatch(/synthetic/i);
+  });
+
+  it('covers every real Nest route exactly once and has unique operation ids', () => {
+    const discovery = app.get(DiscoveryService);
+    const actual = new Set<string>();
+    for (const wrapper of discovery.getControllers()) {
+      if (!wrapper.instance) continue;
+      const controllerPath = (Reflect.getMetadata(PATH_METADATA, wrapper.metatype as object) ??
+        '') as string;
+      const proto = Object.getPrototypeOf(wrapper.instance);
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        const handler = proto[name];
+        if (name === 'constructor' || typeof handler !== 'function') continue;
+        const handlerPath = Reflect.getMetadata(PATH_METADATA, handler) as string | undefined;
+        const requestMethod = Reflect.getMetadata(METHOD_METADATA, handler) as
+          RequestMethod | undefined;
+        if (handlerPath === undefined || requestMethod === undefined) continue;
+        const path = [controllerPath, handlerPath]
+          .filter(Boolean)
+          .join('/')
+          .replace(/^\/+|\/+$/g, '')
+          .replace(/\/+/g, '/');
+        const method = RequestMethod[requestMethod].toLowerCase();
+        if (method !== 'get' && method !== 'post') throw new Error(`Undocumented method ${method}`);
+        actual.add(routeKey({ method, path }));
+      }
+    }
+
+    const registeredKeys = OPENAPI_ROUTES.map(routeKey);
+    expect(new Set(registeredKeys).size).toBe(registeredKeys.length);
+    expect([...actual].sort()).toEqual([...registeredKeys].sort());
+
+    const operationIds = Object.values(
+      OPENAPI_DOCUMENT.paths as Record<string, Record<string, { operationId: string }>>,
+    )
+      .flatMap((path) => Object.values(path))
+      .map((operation) => operation.operationId);
+    expect(new Set(operationIds).size).toBe(operationIds.length);
   });
 });
 

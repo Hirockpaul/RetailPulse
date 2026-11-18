@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3 and steps 4a–4c are built** (see §9); next is 4d, Grafana business dashboards.
+Phase 3, steps 4a–4d and 5a–5b are built** (see §9); next is 5c, the security review.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -243,6 +243,31 @@ anomalies, intervals, ABC/XYZ and supplier statistics all depend on it.
 - ✅ Accept: a test proves running scenarios changes no row in ledger, balances, outbox, transfers or
   POs; reports show period + generated-at; Control Tower p95 measured.
 
+### Step 4d — Grafana business dashboards: rules (written 2026-11-18, BEFORE building)
+
+- Keep the existing Prometheus-backed **RetailPulse API** dashboard. Add a PostgreSQL datasource and
+  four provisioned dashboards: **Sales**, **Inventory**, **Forecast quality**, and **Suppliers**.
+  Every dashboard says the data is synthetic and states whether its numbers are historical or a
+  current snapshot.
+- Grafana queries only views in a new `reporting` schema. The fixed `retailpulse_grafana` database
+  role gets `USAGE` on that schema and `SELECT` on those views, with no privilege on application or
+  `forecast` tables and no write privilege anywhere. It is created `NOLOGIN` by the migration; the
+  optional observability profile enables login with `GRAFANA_DB_PASSWORD` at startup, so no database
+  password is committed.
+- **Sales:** daily units and value by store/product/category from `forecast.demand_daily`; value uses
+  the current catalog price, not a historical sale price. **Inventory:** current on-hand, reserved
+  and available units and value at primary-supplier cost. **Forecast quality:** validation/test MAE,
+  RMSE, WAPE, bias and measured 80/95% coverage by run/model, with the served model marked.
+  **Suppliers:** deliveries, lead-time spread, on-time/fill rates and the existing reliability score
+  (50% on-time + 30% fill + 20% lead-time consistency; no score below five deliveries).
+- Dashboard filters are read-only Grafana variables (store/category/model/supplier as applicable).
+  Business dashboards default to the last year; inventory is explicitly a live snapshot and ignores
+  the time picker. Anonymous access remains localhost-only and Viewer-only.
+- Checks: a real-database integration test proves all four views return seeded/inserted facts, the
+  Grafana role can read every reporting view, and that role cannot read or write base tables. Validate
+  provisioning files and dashboard JSON, then start the observability profile and verify both
+  datasources and all five dashboards through Grafana's HTTP API.
+
 ### Phase 5 — Production engineering
 
 - **OpenAPI:** generated from the existing Zod schemas (Zod 4 `toJSONSchema`) via a route registry,
@@ -257,6 +282,44 @@ anomalies, intervals, ABC/XYZ and supplier statistics all depend on it.
 - **Backup/restore:** `scripts/db/backup.sh`, `restore.sh` (into a *new* database, never over the
   current one), `npm run db:verify` (balance = Σ ledger, no negatives, outbox consistency).
 - ✅ Accept: restore drill documented with measured timings; route-coverage test for OpenAPI.
+
+### Step 5a — generated OpenAPI: rules (written 2026-11-18, BEFORE building)
+
+- Add a small route registry in the API core. Every Nest HTTP handler has one registry entry with
+  method, path, tag, summary, response status/content type and, where applicable, the exact Zod body
+  or query schema already used by its controller. Zod 4 `toJSONSchema(..., { io: 'input' })`
+  generates OpenAPI 3.1 request schemas; validation rules are not copied into decorators.
+- Generate `/api/v1/openapi.json` plus a dependency-free HTML reader at `/api/v1/docs`. Both require
+  a normal signed-in session (all four roles); login, logout, health and Prometheus metrics remain
+  documented as public. The specification describes the `rp_session` cookie, `Idempotency-Key`,
+  common error envelope, JSON/text/CSV responses and the exact non-prefixed `/metrics` path.
+- Responses without an existing runtime Zod schema are documented by status and media type rather
+  than inventing a second response model that could drift from the TypeScript interfaces. This step
+  makes request contracts executable and route coverage complete; typed response schemas can be
+  added incrementally when they also become runtime validators.
+- A coverage test discovers the real Nest controller methods and compares method + internal path with
+  the registry in both directions. A new route without a registry entry, a stale entry, or a duplicate
+  operation/path fails CI. Tests also prove docs/spec are unauthenticated at 401, readable by a
+  signed-in analyst, OpenAPI 3.1 structure is valid, Zod constraints/defaults appear, public/security
+  markers are correct, and all operation IDs are unique.
+
+### Step 5b — OpenTelemetry tracing: rules (written 2026-11-18, BEFORE building)
+
+- Tracing is optional and disabled unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Normal development,
+  tests and the default/full Compose profile keep working without Jaeger or an exporter. The
+  `tracing` profile adds one localhost-only Jaeger all-in-one container with its UI on port 16686 and
+  OTLP/HTTP ingestion on the private Compose network.
+- The API starts the OpenTelemetry Node SDK before Nest loads, with HTTP, Express and `pg`
+  instrumentation. The forecasting service instruments FastAPI. Both export OTLP/HTTP,
+  identify themselves as `retailpulse-api` and `retailpulse-forecasting`, and use W3C Trace Context.
+- API calls to forecasting inject the active `traceparent` and forward the request correlation ID.
+  Both services attach the safe correlation ID to the active server span and return `x-trace-id` for
+  diagnostics. No request/response bodies, cookies, authorization values, database statements or
+  credentials are added as custom attributes; URL query values are redacted by the API sanitizer.
+- Tests prove tracing is a no-op without configuration, trace-context injection is valid, correlation
+  IDs are joined to spans/response headers, and the forecasting middleware accepts/returns the same
+  correlation ID. A live profile check must show one trace spanning API and forecasting in Jaeger,
+  while stopping Jaeger must not stop either application service.
 
 ### Phase 6 — Final verification and release notes (as in the brief).
 
@@ -1419,4 +1482,69 @@ looked at page by page; store manager sees only own-store scopes.
   on both pages at 1280 / 768 / 390 / 320; store manager: only "STR-01" offered, only STR-01 reports
   listed, a network report refused with "Store managers can only use reports for their own stores."
   API unit 225 and integration 266 unchanged (no API change); Docker web rebuilt.
+
+### Step 4d — Grafana business dashboards ✅ (2026-11-18, not committed yet)
+
+- Migrations `0023_business_intelligence.sql` and `0024_supplier_score_zero_lead.sql` add
+  owner-executed, security-barrier views in the
+  `reporting` schema: `sales_daily`, `inventory_snapshot`, `forecast_quality` and
+  `supplier_performance`. The cluster-wide `retailpulse_grafana` role has `SELECT` on those views
+  only. It has no application/forecast table privilege and no write privilege; the integration test
+  switches to that role and proves both denials.
+- The optional observability profile injects `GRAFANA_DB_PASSWORD`, enables the otherwise-`NOLOGIN`
+  role, and provisions PostgreSQL beside Prometheus. No database credential is committed. Grafana
+  keeps *RetailPulse API* and adds four read-only dashboards with store/category/model/supplier
+  filters and explicit synthetic/snapshot/current-price labels.
+- Live Grafana 12.1 verification: PostgreSQL and Prometheus health both `OK`; its search API lists all
+  five dashboards; Chromium loaded every business dashboard without query, datasource or panel-plugin
+  errors. Measured through the restricted role on the current demo: 349,084 daily product/store sales
+  rows (1,139,702 units over 2025-11-17–2026-11-17), 1,400 inventory rows (167,280 on hand,
+  $526,146.65 at current cost), 30 model-metric rows over five runs, and 2,601 supplier deliveries.
+- Tests: API unit **225**, integration **266 → 270**, forecasting **124**, browser e2e **4**;
+  formatting, lint, typecheck, both production builds, Compose validation and fresh-database
+  migrations all pass. The four new integration tests cover view facts, the zero-day supplier-score
+  edge, the database boundary and the provisioned dashboard JSON.
+
+### Step 5a — generated OpenAPI ✅ (2026-11-18, not committed yet)
+
+- `core/openapi/openapi.routes.ts` registers all **73** Nest operations (70 paths) with method,
+  internal path, tag, summary, success status/media type and references to the same Zod body/query
+  objects used by controllers. `openapi.document.ts` uses Zod 4 input JSON Schema and documents the
+  session cookie, idempotency header, path/query parameters, errors, JSON/CSV/text/HTML and the
+  root-level `/metrics`; there is no new dependency.
+- Signed-in users can download `/api/v1/openapi.json` or use the self-contained `/api/v1/docs`
+  reader. Both return 401 when signed out. Login/logout/health/metrics are correctly marked public
+  inside the contract. Response field schemas are deliberately absent until those responses have
+  runtime Zod validators; status and content type are documented now without inventing a second
+  model beside the TypeScript interfaces.
+- The coverage test discovers Nest controllers and compares method + path with the registry in both
+  directions, and checks duplicate registry entries and operation IDs. Unit tests also check Zod
+  defaults/limits, cookie security, public routes, the idempotency header and protected docs.
+- Live production-build check on port 3002: signed out **401**, signed-in analyst **200**; OpenAPI
+  3.1 with 73 unique operation IDs; Chromium rendered 73 route cards in 22 groups. The browser e2e
+  repeats the signed-in reader flow through the normal Vite API proxy.
+- Verification: API unit **225 → 229**, integration **270**, forecasting **124**, browser e2e
+  **4 → 5**; formatting, lint, typecheck and both production builds pass.
+
+### Step 5b — OpenTelemetry tracing ✅ (2026-11-18, not committed yet)
+
+- The API starts the optional Node SDK before Nest, with HTTP, Express and PostgreSQL
+  instrumentation and OTLP/HTTP export. FastAPI has matching optional OTLP export and inbound W3C
+  instrumentation. No endpoint means no Node SDK/exporter; neither application depends on Jaeger.
+- Active API spans carry `retailpulse.correlation_id` and return `x-trace-id`. Calls to forecasting
+  inject `traceparent` and forward `x-correlation-id`; forecasting attaches the same correlation ID
+  and returns the shared trace ID. The pre-export processor removes SQL/body attributes and redacts
+  every URL query value while retaining parameter names.
+- The optional `tracing` Compose profile runs Jaeger 2.23 with in-memory storage, private OTLP/HTTP
+  ingestion and its localhost-only UI on port 16686. Both service images were rebuilt with tracing
+  enabled. Jaeger's API listed `retailpulse-api` and `retailpulse-forecasting`.
+- Live check: one monitoring request returned correlation `live-trace-5b-12345` and trace
+  `53c52497fffc39a3733449be0e62b305`; that exact Jaeger trace contained both services, the same
+  correlation attribute on both server spans and PostgreSQL spans. A request containing
+  `search=supersecret5b` stored only `search=REDACTED`; the raw trace contained no secret, SQL text
+  or body attribute. With Jaeger stopped, API health, FastAPI health and a real API → forecasting
+  monitoring call all remained **200**; Jaeger was then restarted.
+- Verification: API unit **229 → 234**, integration **270**, forecasting **124 → 127**, browser e2e
+  **5**; formatting, lint, typecheck, both production builds, Compose validation and Docker images
+  all pass.
 

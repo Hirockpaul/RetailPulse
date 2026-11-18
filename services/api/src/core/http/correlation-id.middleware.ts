@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { trace } from '@opentelemetry/api';
 import type { NextFunction, Request, Response } from 'express';
 
 export const CORRELATION_HEADER = 'x-correlation-id';
@@ -10,5 +11,11 @@ export function correlationId(req: Request, res: Response, next: NextFunction) {
   const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
   res.locals.correlationId = id;
   res.setHeader(CORRELATION_HEADER, id);
+  const span = trace.getActiveSpan();
+  const traceId = span?.spanContext().traceId;
+  if (span && traceId && /^[0-9a-f]{32}$/.test(traceId)) {
+    span.setAttribute('retailpulse.correlation_id', id);
+    res.setHeader('x-trace-id', traceId);
+  }
   next();
 }

@@ -1,0 +1,207 @@
+{
+  "uid": "retailpulse-suppliers",
+  "title": "RetailPulse Suppliers (synthetic history)",
+  "description": "Supplier statistics from synthetic delivery history plus any received demo orders. A score needs at least five deliveries.",
+  "tags": ["retailpulse", "business", "synthetic", "suppliers"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "5m",
+  "editable": false,
+  "time": { "from": "now-1y", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Deliveries",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(sum(deliveries), 0) AS value FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Weighted on-time rate",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT sum(on_time_rate * deliveries) / nullif(sum(deliveries), 0) AS value FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier')"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 1, "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Weighted fill rate",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT sum(fill_rate * deliveries) / nullif(sum(deliveries), 0) AS value FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier')"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "decimals": 1, "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Suppliers below score 75",
+      "description": "The Control Tower uses the same threshold for supplier risk.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) FILTER (WHERE reliability_score < 75) AS value FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier')"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Reliability score",
+      "description": "50% on-time + 30% fill + 20% lead-time consistency.",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 0, "y": 5, "w": 10, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT supplier_name AS metric, reliability_score AS value FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier') ORDER BY reliability_score DESC NULLS LAST"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "green", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizWidth": 8,
+        "minVizHeight": 16,
+        "orientation": "horizontal",
+        "reduceOptions": { "values": true, "calcs": ["lastNotNull"], "fields": "" },
+        "showUnfilled": true,
+        "valueMode": "color"
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Supplier detail",
+      "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+      "gridPos": { "x": 10, "y": 5, "w": 14, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT supplier_code AS \"Code\", supplier_name AS \"Supplier\", deliveries AS \"Deliveries\", synthetic_deliveries AS \"Synthetic\", on_time_rate AS \"On time\", fill_rate AS \"Fill\", mean_lead_days AS \"Mean lead days\", std_lead_days AS \"Lead std days\", reliability_score AS \"Score\" FROM reporting.supplier_performance WHERE ('$supplier' = 'All' OR supplier_code = '$supplier') ORDER BY reliability_score DESC NULLS LAST"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/^(On time|Fill)$/" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [{ "displayName": "Score", "desc": true }]
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "supplier",
+        "label": "Supplier",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "retailpulse-postgres" },
+        "query": "SELECT supplier_code || ' · ' || supplier_name AS __text, supplier_code AS __value FROM reporting.supplier_performance ORDER BY supplier_code",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "All",
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  }
+}

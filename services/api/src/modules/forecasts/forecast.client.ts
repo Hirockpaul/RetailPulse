@@ -5,6 +5,7 @@ import {
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { context, propagation } from '@opentelemetry/api';
 import { ENV, type Env } from '../../core/config/env';
 
 /** Talks to the internal Python forecasting service. Replaced by a fake in tests. */
@@ -13,12 +14,18 @@ export class ForecastClient {
   constructor(@Inject(ENV) private readonly env: Env) {}
 
   /** Ask the service to start a run in the background (it answers 202 straight away). */
-  async startRun(horizonDays?: number): Promise<{ runId: string; status: string }> {
+  async startRun(
+    horizonDays?: number,
+    correlationId?: string,
+  ): Promise<{ runId: string; status: string }> {
     let res: Response;
     try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      propagation.inject(context.active(), headers);
+      if (correlationId) headers['x-correlation-id'] = correlationId;
       res = await fetch(`${this.env.FORECAST_URL}/forecast/run`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify(horizonDays === undefined ? {} : { horizonDays }),
         signal: AbortSignal.timeout(10_000),
       });
@@ -45,11 +52,15 @@ export class ForecastClient {
   }
 
   /** Ask the service to run model monitoring now (V2 3c-2). Synchronous: a few seconds. */
-  async runMonitoring(): Promise<MonitoringStarted> {
+  async runMonitoring(correlationId?: string): Promise<MonitoringStarted> {
     let res: Response;
     try {
+      const headers: Record<string, string> = {};
+      propagation.inject(context.active(), headers);
+      if (correlationId) headers['x-correlation-id'] = correlationId;
       res = await fetch(`${this.env.FORECAST_URL}/monitoring/run`, {
         method: 'POST',
+        headers,
         signal: AbortSignal.timeout(60_000),
       });
     } catch {

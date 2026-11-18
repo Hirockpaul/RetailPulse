@@ -26,7 +26,8 @@ append-only ledger, forecasts demand, and suggests replenishment that a manager 
 | Database            | PostgreSQL 17 (plain SQL migrations)           | Day 1 ✅  |
 | Forecasting service | Python, FastAPI, Pandas, NumPy, scikit-learn   | Day 6 ✅  |
 | Events              | PostgreSQL outbox + in-API worker (no Kafka)   | Day 5 ✅  |
-| Metrics             | Prometheus + Grafana (optional compose profile)| Day 7 ✅  |
+| Metrics             | Prometheus + Grafana (optional compose profile) | Day 7 ✅ |
+| Tracing             | OpenTelemetry + Jaeger (optional compose profile) | V2 5b ✅ |
 | Local infra         | Docker Compose (Postgres; full demo profile)   | Day 7 ✅  |
 | End-to-end test     | Playwright (one happy path)                    | Day 7 ✅  |
 
@@ -69,7 +70,7 @@ RetailPulse/
 ├── services/forecasting/     FastAPI forecasting service
 ├── docs/ARCHITECTURE.md      System design
 ├── .github/workflows/ci.yml  Lint, typecheck, test, migrate
-├── docker-compose.yml        PostgreSQL; profiles `full` (whole app) and `observability`
+├── docker-compose.yml        PostgreSQL; optional `full`, `observability`, `mlops`, `tracing` profiles
 ├── ops/observability/        Prometheus config + Grafana dashboard
 ├── scripts/simulation/       POS simulator, `npm run demo`, `npm run measure`
 ├── .env.example
@@ -106,12 +107,33 @@ Stop it with `docker compose --profile full down` (add `-v` to also delete the d
 The full profile uses the same PostgreSQL container and volume as local development, and ports
 3000 and 8080: stop `npm run dev:api` first.
 
-**Metrics (optional):** Prometheus on http://localhost:9090 and Grafana on http://localhost:3001
-(dashboard *RetailPulse API*: requests, p95 latency, errors, outbox backlog; anonymous read-only):
+**Metrics and business dashboards (optional):** Prometheus on http://localhost:9090 and Grafana on
+http://localhost:3001. Set `GRAFANA_DB_PASSWORD` in `.env` first (a local-only password different
+from `POSTGRES_PASSWORD`). Grafana includes the *RetailPulse API* dashboard (requests, p95 latency,
+errors, outbox backlog) plus read-only *Sales*, *Inventory*, *Forecast Quality* and *Suppliers*
+dashboards. Viewing is anonymous and localhost-only; all business dashboards say that the data is
+synthetic.
 
 ```bash
 docker compose --profile full --profile observability up -d --wait
 ```
+
+**API contract:** after signing in, open http://localhost:8080/api/v1/docs for the generated reader,
+or download OpenAPI 3.1 JSON from http://localhost:8080/api/v1/openapi.json. Both use the normal
+session cookie and are unavailable when signed out. Request bodies and query parameters come from
+the same Zod schemas used at runtime; a coverage test fails if a Nest route is missing.
+
+**Distributed traces (optional):** start the full demo with Jaeger and explicitly point both
+services at its private OTLP endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 docker compose --profile full --profile tracing up --build -d --wait
+```
+
+Open Jaeger at http://localhost:16686. API requests, PostgreSQL calls and API → forecasting calls
+share W3C trace context; each request joins its correlation ID to the active trace. Query values,
+SQL text, bodies, cookies and credentials are not exported. Without the environment variable,
+tracing is disabled; if Jaeger stops, inventory and forecasting continue operating.
 
 ## Quick start for development (WSL2 / Linux)
 
@@ -355,7 +377,12 @@ npm run test:e2e
    Yesterday's network report is created automatically every day, last week's every Monday.
 10. **Models → Model monitoring** shows run health and drift; press *Run monitoring now* (it says
    “not enough data” until 7 days of sales exist after the model's training).
-11. **Health** shows the event worker; Grafana (optional) shows latency and the outbox backlog.
+11. **Health** shows the event worker. Grafana (optional) shows latency and the outbox backlog, plus
+    synthetic sales, current inventory, forecast quality and supplier performance. Its PostgreSQL
+    user can read only the four `reporting` views and cannot read or write application tables.
+12. **API documentation** at `/api/v1/docs` lists every route and its generated request contract.
+    It requires the same signed-in session as the app; `/api/v1/openapi.json` is the machine-readable
+    OpenAPI 3.1 document.
 
 ## Measured numbers
 
@@ -372,7 +399,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
 | Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 225 unit/HTTP + 266 integration (TypeScript), 124 Python, 4 end-to-end |
+| Tests | 234 unit/HTTP + 270 integration (TypeScript), 127 Python, 5 end-to-end |
 
 ## Known limitations
 
@@ -382,12 +409,13 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
   safe with several instances, but this was only tested with one API process.
 - **Local demo, not a deployment.** Ports are bound to `127.0.0.1`; the forecasting service has no
   login and is only reachable inside the compose network; `/metrics` is unauthenticated (counts and
-  latencies only); Grafana allows anonymous read-only viewing. The session cookie is `Secure` in the
+  latencies only); Grafana allows anonymous read-only viewing of operational and business data.
+  Grafana's database credential is restricted to `reporting` views, but anonymous business data is
+  still suitable only for this synthetic localhost demo. The session cookie is `Secure` in the
   container, which browsers accept on `http://localhost` only.
 - **Retention.** Processed outbox events and idempotency keys are deleted after 7 days (a retry
   with the same key after that counts as a new request). Dead letters are kept until replayed.
-- **Not built:** a generated OpenAPI page (the endpoint table in ARCHITECTURE §5 is the
-  reference), manual purchase orders, partial transfer deliveries, Redis/Superset, hosting.
+- **Not built:** manual purchase orders, partial transfer deliveries, Redis/Superset, hosting.
 
 ## Principles
 

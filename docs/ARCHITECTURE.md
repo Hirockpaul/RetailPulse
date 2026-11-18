@@ -107,10 +107,11 @@ flowchart TB
 | ---------------- | ------------------------------------------ | ------------------------------------------------- |
 | Config           | `core/config/env.ts`                       | Zod-validated at boot; app refuses to start if invalid |
 | DB access        | `core/database/database.service.ts`        | One `pg` pool, `query()`, `transaction()`, `ping()` |
-| Correlation ID   | `core/http/correlation-id.middleware.ts`   | Accept or create `x-correlation-id`, echo it      |
+| Correlation ID   | `core/http/correlation-id.middleware.ts`   | Accept/create `x-correlation-id`; join active span and return `x-trace-id` |
 | Errors           | `core/http/http-exception.filter.ts`       | `{ error: { code, message }, correlationId }`     |
 | Versioning       | `bootstrap.ts`                             | Global prefix `/api/v1` (except `/metrics`)       |
 | Metrics          | `core/metrics/`                            | Prometheus registry per app; request latency by route **template**; `GET /metrics` (public, counts only) |
+| Tracing          | `core/tracing/`, forecasting `tracing.py`  | Optional OTLP/HTTP; W3C context API → FastAPI; HTTP/Express/pg + FastAPI spans |
 | Housekeeping     | `modules/housekeeping/`                    | Hourly: delete processed outbox events and idempotency keys older than 7 days (`HOUSEKEEPING_ENABLED`) |
 
 ---
@@ -265,13 +266,14 @@ Transitions are checked in the service and guarded in SQL
 | Business errors| `409 INSUFFICIENT_STOCK`, `409 INVALID_STATE_TRANSITION`, `404 NOT_FOUND`   |
 | Idempotency    | `Idempotency-Key` header (8–100 chars) required on every stock-changing `POST`: `/sales`, `/receipts`, `/returns`, `/adjustments`, `/reservations` (Day 4+: `/transfers`, `/purchase-orders`). A retry returns the stored response with `Idempotent-Replayed: true`; same key + different body → `422 IDEMPOTENCY_KEY_REUSED`. |
 | Auth           | Server-side session in an `HttpOnly; SameSite=Strict` cookie (`Secure` in production), 8 h. A **global guard** requires a session and an allowed role on every route; a route without `@Roles()` is ADMIN-only and a test fails if any route declares neither `@Roles` nor `@Public`. Store managers are further limited to their stores in the service layer. Details: *Roles and access* below. |
-| Docs           | The endpoint table below is the reference (a generated OpenAPI page was not built; see decision #47) |
+| Docs           | Signed-in `/api/v1/docs`; OpenAPI 3.1 JSON at `/api/v1/openapi.json`; route coverage is tested |
 
 ### Endpoints so far
 
 | Method & path                         | Query params                                   | Notes |
 | ------------------------------------- | ---------------------------------------------- | ----- |
 | `GET /health`                         | —                                              | 503 when DB is down |
+| `GET /openapi.json`, `GET /docs`      | —                                              | signed-in generated contract and dependency-free reader |
 | `GET /products`                       | `q, categoryId, sort (sku·name·price·available), page, pageSize` | network totals per product |
 | `GET /products/:id`                   | —                                              | includes primary supplier terms |
 | `GET /products/:id/stock`             | —                                              | one row per location, `asOf` |
@@ -753,9 +755,9 @@ RetailPulse/
 ├── README.md                        what it is + quick start
 ├── docs/
 │   └── ARCHITECTURE.md ✅           this file
-├── docker-compose.yml ✅            postgres; profiles `full`, `observability`, optional `mlops`
+├── docker-compose.yml ✅            postgres; optional `full`, `observability`, `mlops`, `tracing`
 ├── .dockerignore ✅
-├── ops/observability/ ✅           prometheus.yml, grafana/ (datasource + one dashboard JSON)
+├── ops/observability/ ✅           Prometheus + Grafana (API plus four SQL dashboards)
 ├── .env.example ✅
 ├── package.json ✅                  npm workspaces + root scripts
 ├── eslint.config.mjs ✅  .prettierrc.json ✅
@@ -778,7 +780,9 @@ RetailPulse/
 │   │   │   │   ├── http/ ✅         correlation-id, exception filter, zod pipe, query.ts (page/sort)
 │   │   │   │   ├── auth/ ✅         session guard, roles decorator, store-access helpers
 │   │   │   │   ├── idempotency/ ✅  Idempotency-Key handling (+ purge of old keys)
-│   │   │   │   └── metrics/ ✅      Prometheus registry, request-latency middleware, GET /metrics
+│   │   │   │   ├── metrics/ ✅      Prometheus registry, request-latency middleware, GET /metrics
+│   │   │   │   ├── openapi/ ✅      Zod-backed route registry, OpenAPI 3.1 + signed-in reader
+│   │   │   │   └── tracing/ ✅      optional OTel SDK, safe attributes, OTLP exporter
 │   │   │   └── modules/             one folder per business domain
 │   │   │       ├── health/ ✅
 │   │   │       ├── catalog/ ✅      products, categories, supplier terms
@@ -809,6 +813,7 @@ RetailPulse/
 │       │   ├── repository.py ✅     every SQL statement; writes only to `forecast.*`
 │       │   ├── artifacts.py ✅      write-once bundles; contained path + SHA + metadata verification
 │       │   ├── mlflow_mirror.py ✅  best-effort post-commit params/metrics/artifact mirror
+│       │   ├── tracing.py ✅        FastAPI W3C propagation + optional OTLP exporter
 │       │   ├── data.py ✅           history → (series × days) matrix
 │       │   ├── db.py, config.py ✅  connections (reads are READ ONLY), settings
 │       │   ├── anomalies/ ✅        detect.py (unusual sales), evaluate.py (precision/recall vs labels)
@@ -931,7 +936,7 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 44 | Prometheus metrics via `@prometheus-io/client` (the maintained successor of `prom-client`), one registry per app, route **templates** as labels | Bounded label cardinality, no ids in metrics; tests can build several apps | `/metrics` is public — keep it off the public proxy (the web container does not forward it) |
 | 45 | Housekeeping in the API (hourly timer), 7-day retention for processed events and idempotency keys | Tables stopped growing without another service or cron container | A retry with the same key after 7 days is treated as new (tested and documented) |
 | 46 | Compose profiles `full` and `observability`; ports bound to 127.0.0.1; forecasting not published | One command for a full local demo; Prometheus/Grafana stay optional | Not a deployment: no TLS, shared demo password, anonymous Grafana viewer |
-| 47 | No generated OpenAPI page | It would need either decorators on every route or a hand-kept route list; the endpoint table here is reviewed with each change | API consumers read this document instead of an interactive spec |
+| 47 | ~~No generated OpenAPI page~~ (superseded by #71) | Day 7 deferred the contract until route drift could be prevented | Superseded in V2 5a |
 | 48 | Category and store enter the model as numeric codes, not native categorical splits (V2 1a) | A spike showed SHAP's TreeExplainer returns non-additive (wrong) values for native categorical splits; codes keep it exact. Measured: same test WAPE as one-hot and as Day 6 | A tree needs several splits to isolate one store; harmless at this size |
 | 49 | The promotion calendar is a known input for the target day | Promotions are planned in advance, like the calendar; without it the model learns promotion spikes as noise | Synthetic promotions are easy to model (fixed ×1.6); none are planned for the live horizon |
 | 50 | Anomalies are injected with labels on a separate random stream | Detection can be measured (precision/recall) and every other day keeps the value it had before | The injected kinds (spike, 3-day drop) are simpler than real anomalies |
@@ -954,3 +959,6 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 67 | Control Tower charts are hand-written SVG / HTML with a palette validated by script, not a chart library (V2 4a-2) | Four simple forms (segmented bars, bars, one line); the app already draws its forecast chart this way; no dependency to keep updated; full control of accessibility (focusable marks, table view, keyboard crosshair) | More code per chart; anything richer (zoom, many series) would justify a library |
 | 68 | Scenarios reuse the replenishment batch in memory instead of a separate simulator, and store summaries only (V2 4b-1) | One calculation means a scenario can never disagree with what generation would do; baseline and scenario from one snapshot isolate the parameters' effect; summaries are small and immutable | Results are not per pair (only totals); a parameter that the batch does not use (e.g. lead time when DCs cover everything) shows no effect — reported, not hidden |
 | 69 | Reports are immutable snapshots with the period and generation time inside, not live queries (V2 4c-1) | A report must say the same thing when re-read or exported later; the period's numbers come from the append-only ledger, the stock figures are labelled "at generation time" | Stock at period end is not reconstructed; sales value uses current prices; a report generated before late corrections does not include them (generate a new one) |
+| 70 | Grafana business dashboards query only owner-executed views in `reporting` through a dedicated database role (V2 4d) | One SQL definition for each business dataset; Grafana cannot read or write application tables; its password is injected only when the optional profile starts | Anonymous viewers can see all synthetic network data on localhost; sales value and inventory value use current prices/costs, not historical ones |
+| 71 | One route registry generates OpenAPI request contracts from the controllers' existing Zod schemas; Nest discovery checks complete coverage (V2 5a) | No duplicate validation decorators or new library; adding, removing or changing a route without its contract fails CI | Responses without runtime Zod validators have accurate status/media type but no invented field schema; the dependency-free reader is intentionally simpler than Swagger UI |
+| 72 | OpenTelemetry export is opt-in; W3C context and correlation IDs cross API → forecasting; Jaeger is a localhost-only Compose profile (V2 5b) | Traces diagnose one request across Nest, PostgreSQL and FastAPI without making observability a runtime dependency | Jaeger uses ephemeral in-memory storage; URL values and SQL text are stripped, reducing trace detail to protect data |

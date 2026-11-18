@@ -267,7 +267,8 @@ Each day has **A — Build** and **B — Verify/harden**. A day is done only whe
   events and idempotency keys after 7 days. Fresh clone → demo: `cp .env.example .env` and
   `docker compose --profile full up --build -d --wait` (2 commands). `npm run demo`,
   `npm run measure`, `npm run test:e2e` (own `<db>_e2e` database). Measured numbers and known
-  limitations are in README. No OpenAPI page (ARCHITECTURE decision #47).
+  limitations are in README. V2 step 5a later superseded decision #47 with generated, signed-in
+  OpenAPI documentation whose coverage test includes every Nest route (decision #71).
 
 **After Day 7 (only if wanted):** Superset for BI, Redis cache, hosted demo (check costs first).
 

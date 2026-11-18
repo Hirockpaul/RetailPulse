@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from app import pipeline, repository
 from app.db import connect
 from app.schemas import RunRequest, RunStarted
+from app.tracing import configure_tracing
 
 app = FastAPI(title="RetailPulse Forecasting", version="0.2.0")
 
@@ -114,3 +115,6 @@ def get_forecast(sku: str, location_code: str) -> dict[str, Any]:
     if result is None:
         raise HTTPException(status_code=404, detail="No forecast for that product and store.")
     return result
+
+
+configure_tracing(app)

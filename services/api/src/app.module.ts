@@ -5,6 +5,7 @@ import { AuthGuard } from './core/auth/auth.guard';
 import { ENV, type Env } from './core/config/env';
 import { DatabaseModule } from './core/database/database.module';
 import { MetricsModule } from './core/metrics/metrics.module';
+import { OpenApiModule } from './core/openapi/openapi.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnomaliesModule } from './modules/anomalies/anomalies.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -41,6 +42,7 @@ export class AppModule {
       imports: [
         DatabaseModule,
         MetricsModule,
+        OpenApiModule,
         AuthCoreModule,
         AuthModule,
         HealthModule,
