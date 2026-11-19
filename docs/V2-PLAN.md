@@ -1716,3 +1716,62 @@ to the manifest, and the Control Tower answering identically from the restored d
   scripts were checked with `bash -n` and exercised end to end, not linted.
 - Not done (stated): point-in-time recovery (WAL archiving) and automatic scheduled backups.
 
+
+### Step 6 — split (decided 2026-11-19)
+
+Collecting every acceptance criterion showed two promises of the testing plan (§6) not kept:
+**decision D5** (web component tests with Vitest + Testing Library — the web app has none) and the
+**end-to-end 9-step flow** (login → Control Tower → risk → forecast → explanation → recommendation →
+approve → transfer → stock updated) plus "a scenario changes nothing" in the browser. So:
+
+- **6-1** close both gaps.
+- **6-2** final verification from a fresh install (empty volumes, `npm run demo`), a traceability
+  table of every acceptance criterion to its evidence, and the V2 release notes.
+
+### Step 6-1 — closing the test gaps: rules (written 2026-11-19, BEFORE building)
+
+**End-to-end 9-step flow.** The e2e database gets a **fixture forecast** (`e2e/forecast-fixture.mjs`,
+run by `start-api.mjs` after the seed): one finished run with a flat, hand-chosen forecast for a few
+product × store pairs, the model registry rows and a SHAP explanation for one pair — written exactly
+like the integration-test fixtures and labelled as a fixture. The forecasting service itself is not
+started (its own suite covers it); the e2e checks what the user sees and does with a forecast:
+Control Tower shows the risk → the product's forecast chart and "Why this forecast?" →
+Replenishment *Recalculate* → open the recommendation → approve → the created transfer is dispatched
+and received → the store's stock went up by exactly the approved quantity (ledger rows visible).
+A second test runs a what-if scenario in the browser and proves stock, recommendations and the ledger
+are unchanged (counts read through the API before and after).
+
+**Web component tests (D5).** Vitest + Testing Library + jsdom as dev dependencies of `apps/web`,
+`npm run test -w apps/web` included in `npm run check`. Tests (behaviour, not snapshots):
+role-based visibility (approve buttons, Scenarios menu item, report scope choices for a store
+manager), and loading / empty / error states of shared components and one page, with the API client
+mocked at the module boundary. Production dependency audits stay clean (dev dependencies only).
+
+### Step 6-1 — closing the test gaps ✅ (2026-11-19)
+
+- **Nine-step e2e flow.** `apps/web/e2e/forecast-fixture.mjs` (run by `start-api.mjs` after the seed)
+  writes one finished run labelled "e2e FIXTURE" — a product at STR-01 whose stock lasts under two
+  days (DC-NORTH able to cover the order, checked; it fails loudly otherwise), a calm product at
+  STR-02, a SHAP explanation and global importance. The new test signs in, takes the first row of the
+  Control Tower's "Soonest to run out", opens the product's forecast at STR-01, opens "Why this
+  forecast?", presses *Recalculate*, opens the transfer recommendation, approves it, dispatches and
+  receives the transfer, and finds STR-01's stock higher by exactly the approved quantity.
+- **"A scenario changes nothing" in the browser:** create and run a +50 % scenario, compare it; the
+  Control Tower's units on hand and open transfers, the last stock movement and the recommendation
+  count are identical before and after (read through the API in the same session).
+- The first e2e test asserted "No forecast yet"; with the fixture it now asserts the risk list. The
+  old "scenario without a forecast" test became the scenario test above (the no-forecast 409 stays
+  covered by the integration tests).
+- **D5 done:** Vitest 5 + Testing Library + jsdom (dev dependencies; production audit still 0
+  vulnerabilities), `npm run test -w apps/web` inside `npm run check`. 13 tests: Planning → Scenarios
+  visible for inventory managers and analysts, not store managers; scenario create / run offered to
+  approvers only; report scopes for a store manager (own store only, no network) and an inventory
+  manager; loading / empty / error / retry for the shared components and the Scenarios page. The
+  network is faked at `fetch` (one level below the API client functions named in the rules) so the
+  real client, auth provider and pages run. A mutation check (store managers shown Scenarios) made
+  the menu test fail as it should.
+- npm reported two older packages with unapproved install scripts (`@parcel/watcher`, `protobufjs`,
+  from earlier dependencies) — left as they are, noted for review.
+- Tests: web component 0 → **13**, e2e 5 → **6**; API unit 244, integration 276 (no API change),
+  Python 127 unchanged. All checks and the production audit pass.
+

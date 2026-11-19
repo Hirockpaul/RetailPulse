@@ -314,7 +314,7 @@ All endpoints: [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-api-conventions
 npm run check
 ```
 
-Runs format check, lint, typecheck, unit tests and build for the TypeScript apps.
+Runs format check, lint, typecheck, unit tests (API with Jest, web components with Vitest + Testing Library) and build for the TypeScript apps.
 
 Integration tests (real PostgreSQL; every test file gets its own temporary database, created and dropped
 automatically, so your dev data is never touched and two runs can safely overlap):
@@ -435,7 +435,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Memory of the running demo | API ≈ 81 MB, forecasting ≈ 173 MB, Postgres ≈ 146 MB, web ≈ 14 MB |
 | Image sizes | API 336 MB, web 82 MB, forecasting 872 MB (OpenTelemetry, SHAP and MLflow client added in V2) |
 | Backup / restore drill (dev data, 139 MB database) | backup **1.3 s** (5.4 MB dump), restore into a new database **3.8 s**, integrity check **0.2 s**; Control Tower identical from the restored copy |
-| Tests | 244 unit/HTTP + 276 integration (TypeScript), 127 Python, 5 end-to-end |
+| Tests | 244 unit/HTTP + 276 integration (API), 13 web component, 127 Python, 6 end-to-end |
 
 ## Known limitations
 

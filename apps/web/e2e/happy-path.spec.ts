@@ -31,7 +31,8 @@ test('inventory manager: overview → receive → sell → transfer DC to store'
   // Overview is the landing page; without a forecast it says so instead of guessing.
   await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
   await expect(page.getByText('Out of stock now')).toBeVisible();
-  await expect(page.getByText('No forecast yet')).toBeVisible();
+  // The e2e database has a labelled fixture forecast (e2e/forecast-fixture.mjs), so risks show.
+  await expect(page.getByText('At risk within 7 days')).toBeVisible();
   await expect(page.getByText('Synthetic demo data').first()).toBeVisible();
 
   // Find a product.
@@ -116,7 +117,78 @@ test('a large write-off becomes a finding that a manager can investigate', async
   await expect(page.getByText('new → investigating')).toBeVisible();
 });
 
-test('a manager saves a what-if scenario; without a forecast, running it says so clearly', async ({
+test('the nine steps: Control Tower risk → forecast → explanation → recommendation → approved transfer → stock', async ({
+  page,
+}) => {
+  // 1. Sign in.
+  await page.goto('/');
+  await page.getByLabel('Email').fill('inventory@retailpulse.test');
+  await page.getByLabel('Password').fill(process.env.DEMO_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  // 2. Control Tower: the risk is there.
+  await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
+  const soonest = page
+    .locator('div', { has: page.getByRole('heading', { name: /^Soonest to run out/ }) })
+    .last();
+  const firstRisk = soonest.locator('tbody tr').first();
+  await expect(firstRisk).toContainText('STR-01');
+  const sku = (await firstRisk.getByRole('link').first().textContent())!.trim();
+
+  // 3. The product's forecast, at that store.
+  await firstRisk.getByRole('link', { name: sku }).click();
+  const stockRow = page
+    .locator('section[aria-labelledby="stock-heading"] tbody tr')
+    .filter({ hasText: 'STR-01' });
+  const onHandBefore = Number(
+    (await stockRow.locator('td').nth(2).textContent())!.replace(/\D/g, ''),
+  );
+  const forecast = page.locator('section[aria-labelledby="forecast-heading"]');
+  await pick(forecast.getByLabel('Store'), 'STR-01');
+  await expect(forecast.getByRole('img').first()).toBeVisible();
+
+  // 4. Why this forecast?
+  await forecast.getByText('Why this forecast?').click();
+  await expect(forecast.getByText('Average sales, last 56 days')).toBeVisible();
+
+  // 5. A recommendation from the current forecast and stock.
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await nav.getByRole('button', { name: 'Planning' }).click();
+  await nav.getByRole('link', { name: 'Replenishment' }).click();
+  await page.getByRole('button', { name: 'Recalculate' }).click();
+  const recRow = page.getByRole('row').filter({ hasText: sku }).filter({ hasText: 'STR-01' });
+  await expect(recRow).toContainText('Transfer from DC-NORTH');
+  await recRow.getByRole('link', { name: sku }).click();
+  const header = (await page.getByText(/^Transfer from DC-NORTH:/).textContent())!;
+  const quantity = Number(/:\s*([\d,]+) units/.exec(header)![1].replace(/,/g, ''));
+  expect(quantity).toBeGreaterThan(0);
+
+  // 6. Approve: an approved transfer is created, no stock has moved yet.
+  await page.getByRole('button', { name: 'Approve and create transfer' }).click();
+  await expect(page.getByText(/^Approved by Imani Inventory/)).toBeVisible();
+
+  // 7. The transfer: dispatch and receive.
+  await page.getByRole('link', { name: 'View the transfer →' }).click();
+  await expect(page.getByRole('heading', { name: 'DC-NORTH → STR-01' })).toBeVisible();
+  for (const [step, status] of [
+    ['Dispatch', 'In transit'],
+    ['Receive', 'Received'],
+  ]) {
+    await page.getByRole('button', { name: step, exact: true }).click();
+    await expect(page.locator('header').getByText(status, { exact: true })).toBeVisible();
+  }
+
+  // 8–9. The store's stock went up by exactly the approved quantity.
+  await nav.getByRole('button', { name: 'Inventory' }).click();
+  await nav.getByRole('link', { name: 'Products' }).click();
+  await page.getByPlaceholder('Search SKU or name').fill(sku);
+  await page.getByRole('button', { name: 'Search' }).click();
+  await page.getByRole('link', { name: sku }).click();
+  await expect(stockRow.locator('td').nth(2)).toHaveText(
+    new Intl.NumberFormat().format(onHandBefore + quantity),
+  );
+});
+
+test('a what-if scenario runs in the browser and changes no stock, ledger or recommendation', async ({
   page,
 }) => {
   await page.goto('/');
@@ -125,22 +197,36 @@ test('a manager saves a what-if scenario; without a forecast, running it says so
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('heading', { name: 'Control Tower' })).toBeVisible();
 
+  const api = async () => {
+    const overview = await (await page.request.get('/api/v1/overview')).json();
+    const recs = await (
+      await page.request.get('/api/v1/replenishment/recommendations?pageSize=1')
+    ).json();
+    return {
+      onHand: overview.controlTower.kpis.onHand,
+      openTransfers: overview.controlTower.kpis.openTransfers,
+      lastMovementAt: overview.freshness.lastMovementAt,
+      recommendations: recs.total,
+    };
+  };
+  const before = await api();
+
   const nav = page.getByRole('navigation', { name: 'Main' });
   await nav.getByRole('button', { name: 'Planning' }).click();
   await nav.getByRole('link', { name: 'Scenarios' }).click();
-  await expect(page.getByRole('heading', { name: 'What-if scenarios' })).toBeVisible();
-
-  const name = `E2E demand +10 % ${Date.now()}`;
+  const name = `E2E demand +50 % ${Date.now()}`;
   const form = page.getByRole('form', { name: 'New scenario' });
   await form.getByLabel('Name').fill(name);
-  await form.getByLabel('Demand change (%)').fill('10');
+  await form.getByLabel('Demand change (%)').fill('50');
   await form.getByRole('button', { name: 'Save scenario' }).click();
-
   const row = page.getByRole('row').filter({ hasText: name });
-  await expect(row).toContainText('Demand +10 %');
   await expect(row).toContainText('never run');
   await row.getByRole('button', { name: 'Run' }).click();
-  await expect(page.getByRole('alert')).toContainText('There is no forecast yet');
+  await expect(row).not.toContainText('never run');
+  await row.getByRole('checkbox').check();
+  await expect(page.getByRole('heading', { name: 'Comparison' })).toBeVisible();
+
+  expect(await api()).toEqual(before);
 });
 
 test('a manager generates a report, sees its period and generation time, and can print it', async ({

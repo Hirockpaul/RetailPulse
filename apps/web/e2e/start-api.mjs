@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { seedForecastFixture } from './forecast-fixture.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const api = resolve(root, 'services/api');
@@ -38,6 +39,7 @@ const env = {
 };
 execFileSync(process.execPath, [resolve(api, 'scripts/migrate.mjs')], { env, stdio: 'inherit' });
 execFileSync(process.execPath, [resolve(api, 'scripts/seed.mjs')], { env, stdio: 'inherit' });
+await seedForecastFixture(env.DATABASE_URL); // V2 6-1: a labelled fixture forecast for the browser flow
 
 const child = spawn(process.execPath, ['dist/main.js'], { cwd: api, env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
