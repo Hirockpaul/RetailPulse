@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation and 7b–7e explanations built.** RetailPulse remains a
+Status: **Phase 7a foundation and 7b–7f explanations built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -139,3 +139,23 @@ mocked tests so the test suite needs no real key or network access.
 Provider fallback never changes the facts or validation rules: it sends the same minimum backend-
 selected payload to the second configured provider. It cannot call tools or domain services. The
 preferred failure and fallback success are separately auditable without storing either response.
+
+## Read-only assistant (7f)
+
+The **Assistant** page sends one question at a time to `POST /api/v1/assistant/ask`. Questions are
+not stored by RetailPulse and conversation history is not persisted. Unlike the fixed 7b–7d
+explanations, the user’s question must be sent to the configured provider, so the page explicitly
+warns users not to enter names, email addresses, or private notes.
+
+The model may request only four local reads: the scoped Control Tower, scoped location health, open
+anomalies, and pending recommendations. Every tool calls the existing service with the signed-in
+`AuthUser`; store managers therefore receive only their allowed stores. Tool arguments are parsed
+with strict Zod schemas, unknown tools are rejected, at most six calls across four rounds are
+allowed, and results omit notes, actors, user data, raw detector explanations, decision text, and
+internal record IDs.
+
+No inventory, review, approval, order, transfer, or other mutation service is exposed to the tool
+executor. A test supplies write methods that fail if called and proves they remain untouched. The
+final answer uses the same tagged-claim schema and numeric validation as explanations: every numeric
+token must occur in permission-checked tool results. Provider/tool failures return local guidance.
+With `AI_PROVIDER=none`, no database tool or network request runs.

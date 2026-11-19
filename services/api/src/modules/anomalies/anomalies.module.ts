@@ -14,5 +14,6 @@ import { OperationsAnomalyConsumer } from './operations.consumer';
   imports: [EventsModule],
   controllers: [AnomaliesController],
   providers: [AnomaliesService, AnomaliesRepository, OperationsAnomalyConsumer],
+  exports: [AnomaliesService],
 })
 export class AnomaliesModule {}

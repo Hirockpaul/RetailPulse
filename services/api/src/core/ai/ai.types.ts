@@ -69,3 +69,40 @@ export interface AiGeneratedAnswer {
   answer: AiAnswer;
   usage: AiUsage;
 }
+
+export interface AiToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface AiToolExecutionResult {
+  /** Minimum, permission-checked business data returned to the model. */
+  content: unknown;
+  /** Scalar values the final numeric-claim validator may treat as evidence. */
+  facts: AiFact[];
+}
+
+export type AiToolExecutor = (
+  name: string,
+  argumentsJson: string,
+) => Promise<AiToolExecutionResult>;
+
+export interface AiAssistantRequest {
+  userId: string;
+  question: string;
+  tools: AiToolDefinition[];
+  execute: AiToolExecutor;
+  template: AiAnswer;
+}
+
+export interface AiAssistantResult extends AiExplanationResult {
+  toolsUsed: string[];
+}
+
+export interface AiGeneratedAssistant extends AiGeneratedAnswer {
+  toolsUsed: string[];
+}

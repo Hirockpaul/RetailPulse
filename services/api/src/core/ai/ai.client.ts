@@ -1,7 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import { ENV, type Env } from '../config/env';
-import type { AiErrorType, AiFact, AiFeature, AiGeneratedAnswer, AiProvider } from './ai.types';
+import type {
+  AiErrorType,
+  AiFact,
+  AiFeature,
+  AiGeneratedAnswer,
+  AiGeneratedAssistant,
+  AiProvider,
+  AiToolDefinition,
+  AiToolExecutor,
+} from './ai.types';
 import { AI_ANSWER_JSON_SCHEMA, AiValidationError, validateAiAnswer } from './ai.validation';
 
 export const AI_FETCH = Symbol('AI_FETCH');
@@ -18,6 +27,38 @@ const EnvelopeSchema = z.object({
     })
     .optional(),
 });
+
+const ToolCallSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal('function'),
+  function: z.object({ name: z.string().min(1), arguments: z.string() }),
+});
+
+const AssistantEnvelopeSchema = z.object({
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          role: z.string().optional(),
+          content: z.string().nullable().optional(),
+          tool_calls: z.array(ToolCallSchema).optional(),
+        }),
+      }),
+    )
+    .min(1),
+  usage: z
+    .object({
+      prompt_tokens: z.number().int().nonnegative().optional(),
+      completion_tokens: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+});
+
+type AssistantMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls: z.infer<typeof ToolCallSchema>[] }
+  | { role: 'tool'; tool_call_id: string; name: string; content: string };
 
 export class AiProviderError extends Error {
   constructor(readonly type: AiErrorType) {
@@ -52,19 +93,7 @@ export class AiClient {
     feature: AiFeature,
     facts: AiFact[],
   ): Promise<AiGeneratedAnswer> {
-    const config =
-      provider === 'groq'
-        ? {
-            url: 'https://api.groq.com/openai/v1/chat/completions',
-            key: this.env.GROQ_API_KEY,
-            model: this.env.GROQ_MODEL,
-          }
-        : {
-            url: 'https://integrate.api.nvidia.com/v1/chat/completions',
-            key: this.env.NVIDIA_API_KEY,
-            model: this.env.NVIDIA_MODEL,
-          };
-    if (!config.key) throw new AiProviderError('unsupported_provider');
+    const config = this.providerConfig(provider);
 
     const request: Record<string, unknown> = {
       model: config.model,
@@ -164,6 +193,187 @@ export class AiClient {
           continue;
         }
         throw new AiProviderError(type);
+      }
+    }
+    throw new AiProviderError('network');
+  }
+
+  /** Run a bounded local-tool loop. Provider-requested names and arguments are untrusted input. */
+  async assist(
+    provider: AiProvider,
+    question: string,
+    tools: AiToolDefinition[],
+    execute: AiToolExecutor,
+  ): Promise<AiGeneratedAssistant> {
+    const config = this.providerConfig(provider);
+    const messages: AssistantMessage[] = [
+      {
+        role: 'system',
+        content:
+          "You are RetailPulse's read-only manager assistant for synthetic demo data. " +
+          "Use at least one supplied tool before answering. Tools already enforce the caller's permissions. " +
+          'Never claim to change stock, approve or reject work, create orders, or review findings. ' +
+          'Do not infer missing values. Predictions are uncertain and model factors are associations, not causes. ' +
+          'Your final response must be only one JSON object shaped as ' +
+          '{"claims":[{"type":"fact|prediction|estimate|recommendation|unknown","text":"plain-language claim"}]}. ' +
+          'Use only numbers present in tool results, include no other keys, and return no markdown.',
+      },
+      { role: 'user', content: question },
+    ];
+    const knownTools = new Set(tools.map((tool) => tool.function.name));
+    const facts: AiFact[] = [];
+    const toolsUsed: string[] = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let usageKnown = true;
+    let validationFailures = 0;
+
+    for (let round = 0; round < 4; round++) {
+      const envelope = await this.assistantCompletion(provider, config, messages, tools);
+      if (envelope.usage?.prompt_tokens === undefined) usageKnown = false;
+      else inputTokens += envelope.usage.prompt_tokens;
+      if (envelope.usage?.completion_tokens === undefined) usageKnown = false;
+      else outputTokens += envelope.usage.completion_tokens;
+
+      const message = envelope.choices[0].message;
+      const calls = message.tool_calls ?? [];
+      if (calls.length > 0) {
+        if (calls.length > 3 || toolsUsed.length + calls.length > 6) {
+          throw new AiProviderError('invalid_schema');
+        }
+        messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: calls });
+        for (const call of calls) {
+          if (!knownTools.has(call.function.name)) throw new AiProviderError('invalid_schema');
+          let result;
+          try {
+            result = await execute(call.function.name, call.function.arguments);
+          } catch {
+            throw new AiProviderError('invalid_schema');
+          }
+          facts.push(...result.facts);
+          toolsUsed.push(call.function.name);
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            name: call.function.name,
+            content: JSON.stringify(result.content),
+          });
+        }
+        continue;
+      }
+
+      if (facts.length === 0 || !message.content) throw new AiProviderError('invalid_schema');
+      let answer;
+      try {
+        answer = validateAiAnswer(message.content, facts, 'assistant');
+      } catch (error) {
+        const type = error instanceof AiValidationError ? error.type : 'invalid_schema';
+        validationFailures++;
+        if (validationFailures <= 1 && round < 3) {
+          messages.push({ role: 'assistant', content: message.content });
+          messages.push({
+            role: 'user',
+            content:
+              'That response failed the required JSON, claim-tag, or numeric-evidence check. ' +
+              'Retry once using only the tool results already supplied and no new numbers.',
+          });
+          continue;
+        }
+        throw new AiProviderError(type);
+      }
+      return {
+        answer,
+        toolsUsed: [...new Set(toolsUsed)],
+        usage: {
+          inputTokens: usageKnown ? inputTokens : null,
+          outputTokens: usageKnown ? outputTokens : null,
+        },
+      };
+    }
+    throw new AiProviderError('invalid_schema');
+  }
+
+  private providerConfig(provider: AiProvider) {
+    const config =
+      provider === 'groq'
+        ? {
+            url: 'https://api.groq.com/openai/v1/chat/completions',
+            key: this.env.GROQ_API_KEY,
+            model: this.env.GROQ_MODEL,
+          }
+        : {
+            url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+            key: this.env.NVIDIA_API_KEY,
+            model: this.env.NVIDIA_MODEL,
+          };
+    if (!config.key) throw new AiProviderError('unsupported_provider');
+    return config;
+  }
+
+  private async assistantCompletion(
+    provider: AiProvider,
+    config: ReturnType<AiClient['providerConfig']>,
+    messages: AssistantMessage[],
+    tools: AiToolDefinition[],
+  ): Promise<z.infer<typeof AssistantEnvelopeSchema>> {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      temperature: this.env.AI_TEMPERATURE,
+      max_tokens: this.env.AI_MAX_TOKENS,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    };
+    if (provider === 'nvidia') {
+      body.stream = false;
+      body.reasoning_effort = 'none';
+    }
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let response: Response;
+      try {
+        response = await this.fetcher(config.url, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${config.key}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.env.AI_TIMEOUT_MS),
+        });
+      } catch (error) {
+        const type: AiErrorType = isTimeout(error) ? 'timeout' : 'network';
+        if (attempt < 2) {
+          await this.sleep(attempt === 0 ? 1000 : 2000);
+          continue;
+        }
+        throw new AiProviderError(type);
+      }
+      if (response.status === 429) {
+        const wait = retryAfterSeconds(response.headers.get('retry-after'));
+        if (wait !== null && wait <= 10 && attempt < 2) {
+          await this.sleep(wait * 1000);
+          continue;
+        }
+        throw new AiProviderError('rate_limit');
+      }
+      if (response.status >= 500) {
+        if (attempt < 2) {
+          await this.sleep(attempt === 0 ? 1000 : 2000);
+          continue;
+        }
+        throw new AiProviderError('provider_5xx');
+      }
+      if (!response.ok) throw new AiProviderError('provider_4xx');
+      try {
+        return AssistantEnvelopeSchema.parse(await response.json());
+      } catch {
+        if (attempt < 1) {
+          await this.sleep(1000);
+          continue;
+        }
+        throw new AiProviderError('invalid_schema');
       }
     }
     throw new AiProviderError('network');

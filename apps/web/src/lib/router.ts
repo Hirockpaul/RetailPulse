@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react';
  */
 export type Route =
   | { name: 'overview' }
+  | { name: 'assistant' }
   | { name: 'products' }
   | { name: 'product'; id: string }
   | { name: 'stock'; locationId?: string }
@@ -33,6 +34,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 0 || (parts[0] === 'overview' && parts.length === 1)) {
     return { name: 'overview' };
   }
+  if (parts[0] === 'assistant' && parts.length === 1) return { name: 'assistant' };
   if (parts[0] === 'products' && parts.length === 1) return { name: 'products' };
   if (parts[0] === 'products' && parts.length === 2) return { name: 'product', id: parts[1] };
   if (parts[0] === 'stock' && parts.length <= 2) return { name: 'stock', locationId: parts[1] };
@@ -61,6 +63,7 @@ export function parseRoute(hash: string): Route {
 
 export const href = {
   overview: () => '#/',
+  assistant: () => '#/assistant',
   products: () => '#/products',
   product: (id: string) => `#/products/${id}`,
   stock: (locationId?: string) => (locationId ? `#/stock/${locationId}` : '#/stock'),

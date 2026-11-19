@@ -37,6 +37,29 @@ describe('AiService', () => {
     expect(client.generate).not.toHaveBeenCalled();
   });
 
+  it('keeps the assistant fully local when the provider is none', async () => {
+    const repository = { reserve: jest.fn(), complete: jest.fn() };
+    const client = { assist: jest.fn() };
+    const service = new AiService(
+      env({ AI_PROVIDER: 'none' }),
+      repository as unknown as AiRepository,
+      client as unknown as AiClient,
+    );
+    const template = { claims: [{ type: 'unknown' as const, text: 'Assistant offline.' }] };
+
+    await expect(
+      service.assist({
+        userId: request.userId,
+        question: 'What needs attention?',
+        tools: [],
+        execute: jest.fn(),
+        template,
+      }),
+    ).resolves.toEqual({ answer: template, source: 'template', toolsUsed: [] });
+    expect(repository.reserve).not.toHaveBeenCalled();
+    expect(client.assist).not.toHaveBeenCalled();
+  });
+
   it('records token counts and returns a checked provider answer', async () => {
     const repository = {
       reserve: jest.fn().mockResolvedValue({ requestId: 7 }),

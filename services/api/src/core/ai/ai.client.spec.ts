@@ -192,4 +192,179 @@ describe('AiClient', () => {
     });
     expect(String(init.body)).not.toContain('nvidia-test-secret');
   });
+
+  it('executes only a declared read tool and validates the final assistant numbers', async () => {
+    const fetcher = jest
+      .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call-1',
+                      type: 'function',
+                      function: { name: 'get_stock', arguments: '{}' },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { prompt_tokens: 20, completion_tokens: 5 },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: '{"claims":[{"type":"fact","text":"Available stock is 12 units."}]}',
+                },
+              },
+            ],
+            usage: { prompt_tokens: 30, completion_tokens: 10 },
+          }),
+          { status: 200 },
+        ),
+      );
+    const built = client(fetcher);
+    const execute = jest.fn().mockResolvedValue({
+      content: { available: 12 },
+      facts: [{ id: 'stock.available', label: 'available', value: 12 }],
+    });
+
+    await expect(
+      built.client.assist(
+        'groq',
+        'How much stock is available?',
+        [
+          {
+            type: 'function',
+            function: {
+              name: 'get_stock',
+              description: 'Read stock.',
+              parameters: { type: 'object', properties: {}, additionalProperties: false },
+            },
+          },
+        ],
+        execute,
+      ),
+    ).resolves.toEqual({
+      answer: { claims: [{ type: 'fact', text: 'Available stock is 12 units.' }] },
+      toolsUsed: ['get_stock'],
+      usage: { inputTokens: 50, outputTokens: 15 },
+    });
+    expect(execute).toHaveBeenCalledWith('get_stock', '{}');
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1].body));
+    expect(secondBody.messages).toContainEqual({
+      role: 'tool',
+      tool_call_id: 'call-1',
+      name: 'get_stock',
+      content: '{"available":12}',
+    });
+  });
+
+  it('rejects an undeclared assistant tool before executing it', async () => {
+    const fetcher = jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: 'call-1',
+                    type: 'function',
+                    function: { name: 'change_stock', arguments: '{}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const built = client(fetcher);
+    const execute = jest.fn();
+
+    await expect(built.client.assist('groq', 'Change stock.', [], execute)).rejects.toMatchObject({
+      type: 'invalid_schema',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('corrects an invented assistant number once using the existing tool evidence', async () => {
+    const toolCall = new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  type: 'function',
+                  function: { name: 'get_stock', arguments: '{}' },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+    const answer = (units: number) =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: `{"claims":[{"type":"fact","text":"Available stock is ${units} units."}]}`,
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    const fetcher = jest
+      .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+      .mockResolvedValueOnce(toolCall)
+      .mockResolvedValueOnce(answer(99))
+      .mockResolvedValueOnce(answer(12));
+    const built = client(fetcher);
+
+    await expect(
+      built.client.assist(
+        'groq',
+        'How much stock is available?',
+        [
+          {
+            type: 'function',
+            function: {
+              name: 'get_stock',
+              description: 'Read stock.',
+              parameters: { type: 'object', properties: {}, additionalProperties: false },
+            },
+          },
+        ],
+        async () => ({
+          content: { available: 12 },
+          facts: [{ id: 'stock.available', label: 'available', value: 12 }],
+        }),
+      ),
+    ).resolves.toMatchObject({
+      answer: { claims: [{ type: 'fact', text: 'Available stock is 12 units.' }] },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const retryBody = JSON.parse(String(fetcher.mock.calls[2][1].body));
+    expect(retryBody.messages.at(-1).content).toContain('failed the required JSON');
+  });
 });

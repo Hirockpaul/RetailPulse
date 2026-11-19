@@ -5,6 +5,7 @@ import {
   reviewBodySchema,
 } from '../../modules/anomalies/anomalies.schemas';
 import { loginBodySchema } from '../../modules/auth/auth.schemas';
+import { askAssistantBodySchema } from '../../modules/assistant/assistant.schemas';
 import { listProductsQuerySchema } from '../../modules/catalog/catalog.schemas';
 import {
   listClassificationsQuerySchema,
@@ -94,6 +95,13 @@ export const OPENAPI_ROUTES: readonly OpenApiRoute[] = [
     responseStatus: 200,
   }),
   get('auth/me', 'Authentication', 'Get the signed-in user'),
+
+  post('assistant/ask', 'Assistant', 'Ask the permission-scoped read-only assistant', {
+    body: askAssistantBodySchema,
+    responseStatus: 200,
+    description:
+      'One-shot question over fixed read-only tools. Returns local guidance when AI is off or unavailable.',
+  }),
 
   get('products', 'Catalog', 'List products', { query: listProductsQuerySchema }),
   get('products/:id', 'Catalog', 'Get one product'),

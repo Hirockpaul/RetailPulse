@@ -8,6 +8,7 @@ import { DatabaseModule } from './core/database/database.module';
 import { MetricsModule } from './core/metrics/metrics.module';
 import { OpenApiModule } from './core/openapi/openapi.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
+import { AssistantModule } from './modules/assistant/assistant.module';
 import { AnomaliesModule } from './modules/anomalies/anomalies.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
@@ -56,6 +57,7 @@ export class AppModule {
         TransfersModule,
         EventsModule,
         AlertsModule,
+        AssistantModule,
         ForecastsModule,
         PurchasingModule,
         ReplenishmentModule,

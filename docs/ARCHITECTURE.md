@@ -9,7 +9,7 @@ with the "Markdown Preview Mermaid Support" extension).
 V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
-Phase 7a adds an internal, off-by-default AI explanation foundation; 7b–7e add on-demand wording
+Phase 7a adds an internal, off-by-default AI explanation foundation; 7b–7f add on-demand wording
 for forecasts, anomalies and recommendations without changing verified domain facts. See
 [AI explanations](AI-EXPLANATIONS.md).
 
@@ -225,6 +225,7 @@ erDiagram
 | Phase 7c ✅ | — (permission-checked anomaly facts → checked claims; no review or domain write) |
 | Phase 7d ✅ | — (permission-checked stored recommendation inputs → checked claims; no approval or domain write) |
 | Phase 7e ✅ | — (NVIDIA hosted NIM through the same checked client; preferred-provider failover is audited per attempt) |
+| Phase 7f ✅ | — (one-shot assistant over four permission-scoped read tools; no conversation or answer storage) |
 
 ### Key table shapes
 
@@ -989,3 +990,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 78 | Anomaly wording is a lazy POST action over one store-scoped finding (Phase 7c) | The backend supplies the observed/expected values, classification and kind-specific checks; review notes and raw detector text stay local; wording cannot review a case or change stock | The checklist is intentionally generic and a person must still investigate and record the decision |
 | 79 | Recommendation wording is a lazy POST action over the immutable calculation snapshot (Phase 7d) | Stock, forecast, safety stock, rounding and route facts are already stored and permission-checked; the model only rewords them and cannot call approval/order code | It explains the snapshot, which may be stale; managers still use Recalculate and make the decision |
 | 80 | `AI_PROVIDER` selects a preferred provider; the other configured provider is a failover (Phase 7e) | Groq and NVIDIA share one minimum-data, retry, validation and audit path; every actual attempt has its own row and successful wording shows its provider | A failed explanation may consume requests from both providers and two rate-limit slots; if both fail the deterministic template remains the final fallback |
+| 81 | The assistant is one-shot and can call only four local read tools through existing permission-checking services (Phase 7f) | No general SQL, HTTP, MCP or mutation tool exists; strict arguments, bounded rounds, scoped reads and final numeric validation make the model an interpreter rather than an authority | The user’s question is sent to the provider and provider-side retention follows that provider’s terms; RetailPulse stores only request metadata and no conversation history |

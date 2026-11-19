@@ -4,6 +4,7 @@ import { AuthProvider, useAuth, useUser } from './lib/auth';
 import { isStoreScoped, ROLE_LABEL } from './lib/permissions';
 import { href, type Route, useRoute } from './lib/router';
 import { AlertsPage } from './pages/AlertsPage';
+import { AssistantPage } from './pages/AssistantPage';
 import { AnomaliesPage } from './pages/AnomaliesPage';
 import { AnomalyDetailPage } from './pages/AnomalyDetailPage';
 import { ClassificationPage } from './pages/ClassificationPage';
@@ -75,6 +76,11 @@ const NAV: NavEntry[] = [
     label: 'Intelligence',
     items: [
       {
+        label: 'Assistant',
+        to: href.assistant(),
+        active: (r) => r.name === 'assistant',
+      },
+      {
         label: 'Unusual activity',
         to: href.anomalies(),
         active: (r) => r.name === 'anomalies' || r.name === 'anomaly',
@@ -98,6 +104,8 @@ function Page({ route }: { route: Route }) {
   switch (route.name) {
     case 'overview':
       return <OverviewPage />;
+    case 'assistant':
+      return <AssistantPage />;
     case 'products':
       return <ProductsPage />;
     case 'product':
