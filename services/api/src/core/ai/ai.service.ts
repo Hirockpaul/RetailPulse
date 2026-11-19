@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ENV, type Env } from '../config/env';
 import { AiClient, AiProviderError } from './ai.client';
 import { AiRepository } from './ai.repository';
@@ -16,11 +16,20 @@ const NO_USAGE: AiUsage = { inputTokens: null, outputTokens: null };
 
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
+
   constructor(
     @Inject(ENV) private readonly env: Env,
     private readonly repository: AiRepository,
     private readonly client: AiClient,
   ) {}
+
+  /** One line per failed provider attempt: our error type plus the provider's own short code. */
+  private logFallback(provider: AiProvider, model: string, error: unknown): void {
+    const type = error instanceof AiProviderError ? error.type : 'audit_error';
+    const detail = error instanceof AiProviderError && error.detail ? ` (${error.detail})` : '';
+    this.logger.warn(`AI provider ${provider} model ${model} fell back: ${type}${detail}`);
+  }
 
   async explain(request: AiExplanationRequest): Promise<AiExplanationResult> {
     if (this.env.AI_PROVIDER === 'none') {
@@ -56,6 +65,7 @@ export class AiService {
         );
         return { answer: generated.answer, source: 'ai', provider };
       } catch (error) {
+        this.logFallback(provider, model, error);
         const type: AiErrorType = error instanceof AiProviderError ? error.type : 'audit_error';
         await this.repository
           .complete(
@@ -108,6 +118,7 @@ export class AiService {
           toolsUsed: generated.toolsUsed,
         };
       } catch (error) {
+        this.logFallback(provider, model, error);
         const type: AiErrorType = error instanceof AiProviderError ? error.type : 'audit_error';
         await this.repository
           .complete(

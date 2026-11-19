@@ -51,6 +51,7 @@ export type AiErrorType =
   | 'invalid_json'
   | 'invalid_schema'
   | 'invented_number'
+  | 'truncated'
   | 'unsafe_language'
   | 'timeout'
   | 'rate_limit'

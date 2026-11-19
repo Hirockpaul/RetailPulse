@@ -31,7 +31,7 @@ const EnvSchema = z
       .preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional())
       .default('nvidia/nemotron-3-ultra-550b-a55b'),
     AI_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
-    AI_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(500),
+    AI_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(1500),
     AI_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(15_000),
   })
   .superRefine((env, ctx) => {

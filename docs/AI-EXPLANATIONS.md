@@ -16,7 +16,7 @@ AI_PROVIDER=groq
 GROQ_API_KEY=your-server-side-key
 GROQ_MODEL=openai/gpt-oss-20b
 AI_TEMPERATURE=0.2
-AI_MAX_TOKENS=500
+AI_MAX_TOKENS=1500
 AI_TIMEOUT_MS=15000
 ```
 
@@ -27,7 +27,7 @@ AI_PROVIDER=nvidia
 NVIDIA_API_KEY=your-server-side-key
 NVIDIA_MODEL=nvidia/nemotron-3-ultra-550b-a55b
 AI_TEMPERATURE=0.2
-AI_MAX_TOKENS=500
+AI_MAX_TOKENS=1500
 AI_TIMEOUT_MS=15000
 ```
 
@@ -75,6 +75,17 @@ factors are described as associations, never causes, and predictions must remain
   lock makes the limit safe under concurrent requests.
 - `ai_requests` stores user, feature, provider, model, token counts, duration, outcome, error type,
   and timestamps. It never stores facts, prompts, or answers.
+- **Token budget.** `AI_MAX_TOKENS` (default 1500) is the most a provider may generate per call.
+  Groq's gpt-oss models reason before answering and that reasoning counts against the same budget,
+  so for them RetailPulse sends `reasoning_effort: "low"` and `include_reasoning: false`, and uses
+  Groq's `max_completion_tokens` (its replacement for the deprecated `max_tokens`). Other Groq
+  models get no reasoning fields; NVIDIA keeps `max_tokens` with reasoning off. A reply cut off by
+  the limit (`finish_reason: "length"`) is recorded as `truncated` and shown as the template at
+  once: retrying with the same budget cannot help.
+- **Logs.** Each failed provider attempt logs one warning, e.g.
+  `AI provider groq model openai/gpt-oss-20b fell back: provider_4xx (json_validate_failed)`. The
+  part in brackets is the provider's own short error code, kept only when it is code-shaped.
+  Provider error messages are never read out, because they can echo request content.
 
 The only database writes available to the foundation are metadata inserts/updates in `ai_requests`.
 Tests reject any SQL that targets inventory, the ledger, recommendations, orders, or transfers.
@@ -135,6 +146,16 @@ Nemotron 3 Ultra is available through the same server-only client as Groq. A liv
 probe confirmed the configured hosted model accepts non-streaming JSON-object requests with
 reasoning disabled and returns OpenAI-style usage counts. Production code is still covered by
 mocked tests so the test suite needs no real key or network access.
+
+**Tests never call a provider, even when your `.env` enables one.** Unit and integration tests pass
+their settings explicitly, and the browser (e2e) API is started with `AI_PROVIDER=none` and empty
+keys. `test/integration/ai.int-spec.ts` switches a provider on against a real PostgreSQL with the
+provider faked at the `fetch` boundary. It checks what would leave the machine (no review notes, no
+user names or emails, the key only in the `Authorization` header), the metadata-only audit row, the
+invented-number retry and fallback, a long 429, the assistant's store scope, a prompt-injected
+question that asks for writes, invalid tool arguments, and the per-user limit under 25 simultaneous
+requests. Each AI endpoint also has an AI-off integration test (template, store scope, writes
+nothing).
 
 Provider fallback never changes the facts or validation rules: it sends the same minimum backend-
 selected payload to the second configured provider. It cannot call tools or domain services. The

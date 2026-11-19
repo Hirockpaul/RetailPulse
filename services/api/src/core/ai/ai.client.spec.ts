@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { loadEnv, type Env } from '../config/env';
 import { AiClient, AiProviderError, type AiFetch, type AiSleep } from './ai.client';
 import type { AiFact } from './ai.types';
@@ -366,5 +367,207 @@ describe('AiClient', () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
     const retryBody = JSON.parse(String(fetcher.mock.calls[2][1].body));
     expect(retryBody.messages.at(-1).content).toContain('failed the required JSON');
+  });
+
+  describe('token budget and reasoning (Groq gpt-oss reasons before answering)', () => {
+    const fetchOk = () =>
+      jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockResolvedValue(success());
+    const sleepNone = () =>
+      jest.fn<ReturnType<AiSleep>, Parameters<AiSleep>>().mockResolvedValue(undefined);
+
+    it('asks Groq gpt-oss for low, hidden reasoning and uses max_completion_tokens (default 1500)', async () => {
+      const fetcher = fetchOk();
+      await new AiClient(env(), fetcher, sleepNone()).generate('groq', 'forecast', facts);
+      const body = JSON.parse(String(fetcher.mock.calls[0][1].body));
+      expect(body).toMatchObject({
+        max_completion_tokens: 1500,
+        reasoning_effort: 'low',
+        include_reasoning: false,
+      });
+      expect(body).not.toHaveProperty('max_tokens');
+    });
+
+    it('sends no reasoning fields to other Groq models', async () => {
+      const fetcher = fetchOk();
+      await new AiClient(
+        env({ GROQ_MODEL: 'qwen/qwen3.8-27b', AI_MAX_TOKENS: '900' }),
+        fetcher,
+        sleepNone(),
+      ).generate('groq', 'forecast', facts);
+      const body = JSON.parse(String(fetcher.mock.calls[0][1].body));
+      expect(body.max_completion_tokens).toBe(900);
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(body).not.toHaveProperty('include_reasoning');
+      expect(body).not.toHaveProperty('max_tokens');
+    });
+
+    it('keeps max_tokens for NVIDIA, in explanations and in the assistant', async () => {
+      const nvidiaEnv = env({ AI_PROVIDER: 'nvidia', NVIDIA_API_KEY: 'nvidia-test-secret' });
+      const fetcher = fetchOk();
+      await new AiClient(nvidiaEnv, fetcher, sleepNone()).generate('nvidia', 'forecast', facts);
+      const body = JSON.parse(String(fetcher.mock.calls[0][1].body));
+      expect(body).toMatchObject({ max_tokens: 1500, stream: false, reasoning_effort: 'none' });
+      expect(body).not.toHaveProperty('max_completion_tokens');
+
+      const toolFetcher = jest
+        .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+        .mockResolvedValue(success('not used'));
+      await new AiClient(nvidiaEnv, toolFetcher, sleepNone())
+        .assist('nvidia', 'What is low?', [], jest.fn())
+        .catch(() => undefined);
+      const assistBody = JSON.parse(String(toolFetcher.mock.calls[0][1].body));
+      expect(assistBody).toMatchObject({ max_tokens: 1500, stream: false });
+      expect(assistBody).not.toHaveProperty('max_completion_tokens');
+    });
+
+    it('an answer cut off by the token limit fails as truncated, without a pointless retry', async () => {
+      const fetcher = jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"claims":[{"type":"fa' }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 400, completion_tokens: 1500 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      await expect(
+        new AiClient(env(), fetcher, sleepNone()).generate('groq', 'forecast', facts),
+      ).rejects.toMatchObject({ type: 'truncated' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('the assistant also stops on a cut-off answer', async () => {
+      const fetcher = jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: 'assistant', content: '{"cl' }, finish_reason: 'length' }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      await expect(
+        new AiClient(env(), fetcher, sleepNone()).assist('groq', 'What is low?', [], jest.fn()),
+      ).rejects.toMatchObject({ type: 'truncated' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("the provider's error code is kept for the log, nothing else", () => {
+    const failing = (status: number, body: unknown) =>
+      jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    const sleepNone = () =>
+      jest.fn<ReturnType<AiSleep>, Parameters<AiSleep>>().mockResolvedValue(undefined);
+
+    it('keeps a short code such as json_validate_failed on a 400', async () => {
+      const fetcher = failing(400, {
+        error: {
+          message: 'Failed to validate JSON. Generated: {"claims":[{"text":"Tea 500 ...',
+          type: 'invalid_request_error',
+          code: 'json_validate_failed',
+        },
+      });
+      const error = await new AiClient(env(), fetcher, sleepNone())
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AiProviderError);
+      expect(error).toMatchObject({ type: 'provider_4xx', detail: 'json_validate_failed' });
+      expect(String((error as AiProviderError).detail)).not.toContain('Tea 500');
+    });
+
+    it('falls back to the error type, and drops anything that is not code-shaped', async () => {
+      const typed = await new AiClient(
+        env(),
+        failing(401, { error: { message: 'Invalid API Key', type: 'invalid_request_error' } }),
+        sleepNone(),
+      )
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect(typed).toMatchObject({ type: 'provider_4xx', detail: 'invalid_request_error' });
+
+      const prose = await new AiClient(
+        env(),
+        failing(400, { error: { code: 'model said: Tea 500 is low!' } }),
+        sleepNone(),
+      )
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect(prose).toMatchObject({ type: 'provider_4xx' });
+      expect((prose as AiProviderError).detail).toBeUndefined();
+
+      const notJson = await new AiClient(
+        env(),
+        jest
+          .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+          .mockResolvedValue(new Response('<html>bad gateway</html>', { status: 403 })),
+        sleepNone(),
+      )
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect((notJson as AiProviderError).detail).toBeUndefined();
+    });
+  });
+
+  describe('a rejected answer is logged with its reason, never with its text', () => {
+    let warn: jest.SpyInstance;
+    beforeEach(() => {
+      warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    });
+    afterEach(() => warn.mockRestore());
+    const sleepNone = () =>
+      jest.fn<ReturnType<AiSleep>, Parameters<AiSleep>>().mockResolvedValue(undefined);
+    const always = (content: string) =>
+      jest
+        .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+        .mockImplementation(async () => success(content));
+
+    it('names the invented number before the retry and again on the final failure', async () => {
+      const answer =
+        '{"claims":[{"type":"prediction","text":"Tea 500 will sell about 46 units."}]}';
+      const error = await new AiClient(env(), always(answer), sleepNone())
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ type: 'invented_number', detail: '46' });
+      expect(warn.mock.calls.map((c) => c[0])).toEqual([
+        'AI provider groq forecast answer rejected: invented_number (46); retrying once',
+        'AI provider groq forecast answer rejected: invented_number (46)',
+      ]);
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('will sell');
+    });
+
+    it('names the forbidden word for unsafe wording', async () => {
+      const answer =
+        '{"claims":[{"type":"prediction","text":"The weekday CAUSED the forecast of 12."}]}';
+      const error = await new AiClient(env(), always(answer), sleepNone())
+        .generate('groq', 'forecast', facts)
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ type: 'unsafe_language', detail: 'caused' });
+      expect(warn.mock.calls[0][0]).toBe(
+        'AI provider groq forecast answer rejected: unsafe_language (caused); retrying once',
+      );
+    });
+
+    it('logs invalid JSON without any detail', async () => {
+      await new AiClient(env(), always('{"claims": [ oops'), sleepNone())
+        .generate('groq', 'forecast', facts)
+        .catch(() => undefined);
+      expect(warn.mock.calls.map((c) => c[0])).toEqual([
+        'AI provider groq forecast answer rejected: invalid_json; retrying once',
+        'AI provider groq forecast answer rejected: invalid_json',
+      ]);
+    });
+
+    it('a valid answer logs nothing', async () => {
+      await new AiClient(
+        env(),
+        always('{"claims":[{"type":"prediction","text":"Forecast is 12 units."}]}'),
+        sleepNone(),
+      ).generate('groq', 'forecast', facts);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });

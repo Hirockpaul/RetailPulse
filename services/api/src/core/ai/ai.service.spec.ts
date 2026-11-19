@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { loadEnv, type Env } from '../config/env';
 import { AiProviderError, type AiClient } from './ai.client';
 import type { AiRepository } from './ai.repository';
@@ -190,5 +191,39 @@ describe('AiService', () => {
       { inputTokens: 6, outputTokens: 4 },
       null,
     );
+  });
+
+  it("logs each fallback with the provider's short error code — never the key or the facts", async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const repository = {
+      reserve: jest.fn().mockResolvedValue({ requestId: 7 }),
+      complete: jest.fn().mockResolvedValue(undefined),
+    };
+    const client = {
+      generate: jest
+        .fn()
+        .mockRejectedValue(new AiProviderError('provider_4xx', 'json_validate_failed')),
+    };
+    const service = new AiService(
+      env({ AI_PROVIDER: 'groq', GROQ_API_KEY: 'gsk-secret-in-log-test' }),
+      repository as unknown as AiRepository,
+      client as unknown as AiClient,
+    );
+
+    await expect(service.explain(request)).resolves.toMatchObject({ source: 'template' });
+    expect(warn).toHaveBeenCalledWith(
+      'AI provider groq model openai/gpt-oss-20b fell back: provider_4xx (json_validate_failed)',
+    );
+    const logged = warn.mock.calls.flat().join(' ');
+    expect(logged).not.toContain('gsk-secret-in-log-test');
+    expect(logged).not.toContain('The forecast is 12 units');
+    expect(repository.complete).toHaveBeenCalledWith(
+      7,
+      'fallback',
+      expect.any(Number),
+      { inputTokens: null, outputTokens: null },
+      'provider_4xx',
+    );
+    warn.mockRestore();
   });
 });

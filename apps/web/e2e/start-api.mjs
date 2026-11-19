@@ -36,6 +36,11 @@ const env = {
   EVENT_WORKER_ENABLED: 'true',
   HOUSEKEEPING_ENABLED: 'false',
   FORECAST_URL: 'http://127.0.0.1:1', // no forecasting service in this test
+  // Phase 7: the browser tests never call a real AI provider, even when the developer's .env
+  // enables one. Empty keys are treated as unset, so only the local templates can answer.
+  AI_PROVIDER: 'none',
+  GROQ_API_KEY: '',
+  NVIDIA_API_KEY: '',
 };
 execFileSync(process.execPath, [resolve(api, 'scripts/migrate.mjs')], { env, stdio: 'inherit' });
 execFileSync(process.execPath, [resolve(api, 'scripts/seed.mjs')], { env, stdio: 'inherit' });

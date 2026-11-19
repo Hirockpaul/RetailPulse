@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
 import { ENV, type Env } from '../config/env';
 import type {
@@ -19,7 +19,14 @@ export type AiFetch = (url: string, init: RequestInit) => Promise<Response>;
 export type AiSleep = (milliseconds: number) => Promise<void>;
 
 const EnvelopeSchema = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
+  choices: z
+    .array(
+      z.object({
+        message: z.object({ content: z.string() }),
+        finish_reason: z.string().nullable().optional(),
+      }),
+    )
+    .min(1),
   usage: z
     .object({
       prompt_tokens: z.number().int().nonnegative().optional(),
@@ -43,6 +50,7 @@ const AssistantEnvelopeSchema = z.object({
           content: z.string().nullable().optional(),
           tool_calls: z.array(ToolCallSchema).optional(),
         }),
+        finish_reason: z.string().nullable().optional(),
       }),
     )
     .min(1),
@@ -61,10 +69,49 @@ type AssistantMessage =
   | { role: 'tool'; tool_call_id: string; name: string; content: string };
 
 export class AiProviderError extends Error {
-  constructor(readonly type: AiErrorType) {
+  /** `detail` is only ever a short provider error code (e.g. `json_validate_failed`), never text. */
+  constructor(
+    readonly type: AiErrorType,
+    readonly detail?: string,
+  ) {
     super(type);
     this.name = 'AiProviderError';
   }
+}
+
+const SAFE_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/**
+ * The provider's own error code from an error response, for the log. Only a short code-shaped
+ * string is kept: provider messages can echo request content, so they are never read out.
+ */
+async function providerErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as { error?: { code?: unknown; type?: unknown } };
+    const code = body?.error?.code ?? body?.error?.type;
+    return typeof code === 'string' && SAFE_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Provider- and model-specific request fields, as documented by each provider.
+ * - Groq: `max_tokens` is deprecated in favour of `max_completion_tokens`. Its gpt-oss models reason
+ *   before answering and that reasoning counts against the same budget; a cut-off answer is invalid
+ *   JSON. So gpt-oss is asked for little reasoning and none of it in the reply.
+ * - NVIDIA: `max_tokens`, no streaming, reasoning off.
+ */
+function providerFields(provider: AiProvider, model: string, maxTokens: number) {
+  if (provider === 'nvidia') {
+    return { max_tokens: maxTokens, stream: false, reasoning_effort: 'none' };
+  }
+  const fields: Record<string, unknown> = { max_completion_tokens: maxTokens };
+  if (model.startsWith('openai/gpt-oss')) {
+    fields.reasoning_effort = 'low';
+    fields.include_reasoning = false;
+  }
+  return fields;
 }
 
 function retryAfterSeconds(value: string | null): number | null {
@@ -82,6 +129,22 @@ function isTimeout(error: unknown): boolean {
 
 @Injectable()
 export class AiClient {
+  private readonly logger = new Logger(AiClient.name);
+
+  /** One line per rejected answer: which check failed and its short reason, never the answer. */
+  private logRejected(provider: AiProvider, feature: string, error: unknown, retrying: boolean) {
+    const type =
+      error instanceof AiValidationError
+        ? error.type
+        : error instanceof SyntaxError
+          ? 'invalid_json'
+          : 'invalid_schema';
+    const detail = error instanceof AiValidationError && error.detail ? ` (${error.detail})` : '';
+    this.logger.warn(
+      `AI provider ${provider} ${feature} answer rejected: ${type}${detail}${retrying ? '; retrying once' : ''}`,
+    );
+  }
+
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(AI_FETCH) private readonly fetcher: AiFetch,
@@ -98,7 +161,7 @@ export class AiClient {
     const request: Record<string, unknown> = {
       model: config.model,
       temperature: this.env.AI_TEMPERATURE,
-      max_tokens: this.env.AI_MAX_TOKENS,
+      ...providerFields(provider, config.model, this.env.AI_MAX_TOKENS),
       messages: [
         {
           role: 'system',
@@ -124,10 +187,7 @@ export class AiClient {
         },
       };
     } else {
-      // NVIDIA hosted NIM streams and reasons visibly by default. RetailPulse needs one checked JSON
-      // object and never exposes chain-of-thought, so both behaviours are disabled explicitly.
-      request.stream = false;
-      request.reasoning_effort = 'none';
+      // NVIDIA hosted NIM streams and reasons visibly by default; providerFields() turns both off.
       request.response_format = { type: 'json_object' };
     }
     const body = JSON.stringify(request);
@@ -160,19 +220,25 @@ export class AiClient {
           await this.sleep(wait * 1000);
           continue;
         }
-        throw new AiProviderError('rate_limit');
+        throw new AiProviderError('rate_limit', await providerErrorCode(response));
       }
       if (response.status >= 500) {
         if (attempt < 2) {
           await this.sleep(attempt === 0 ? 1000 : 2000);
           continue;
         }
-        throw new AiProviderError('provider_5xx');
+        throw new AiProviderError('provider_5xx', await providerErrorCode(response));
       }
-      if (!response.ok) throw new AiProviderError('provider_4xx');
+      if (!response.ok) {
+        throw new AiProviderError('provider_4xx', await providerErrorCode(response));
+      }
 
       try {
         const envelope = EnvelopeSchema.parse(await response.json());
+        // Out of tokens: the JSON is incomplete, and asking again with the same budget cannot help.
+        if (envelope.choices[0].finish_reason === 'length') {
+          throw new AiProviderError('truncated');
+        }
         return {
           answer: validateAiAnswer(envelope.choices[0].message.content, facts, feature),
           usage: {
@@ -181,6 +247,7 @@ export class AiClient {
           },
         };
       } catch (error) {
+        if (error instanceof AiProviderError) throw error;
         const type =
           error instanceof AiValidationError
             ? error.type
@@ -188,11 +255,16 @@ export class AiClient {
               ? 'invalid_json'
               : 'invalid_schema';
         validationFailures++;
-        if (validationFailures <= 1 && attempt < 2) {
+        const retrying = validationFailures <= 1 && attempt < 2;
+        this.logRejected(provider, feature, error, retrying);
+        if (retrying) {
           await this.sleep(1000);
           continue;
         }
-        throw new AiProviderError(type);
+        throw new AiProviderError(
+          type,
+          error instanceof AiValidationError ? error.detail : undefined,
+        );
       }
     }
     throw new AiProviderError('network');
@@ -234,6 +306,7 @@ export class AiClient {
       else inputTokens += envelope.usage.prompt_tokens;
       if (envelope.usage?.completion_tokens === undefined) usageKnown = false;
       else outputTokens += envelope.usage.completion_tokens;
+      if (envelope.choices[0].finish_reason === 'length') throw new AiProviderError('truncated');
 
       const message = envelope.choices[0].message;
       const calls = message.tool_calls ?? [];
@@ -269,7 +342,9 @@ export class AiClient {
       } catch (error) {
         const type = error instanceof AiValidationError ? error.type : 'invalid_schema';
         validationFailures++;
-        if (validationFailures <= 1 && round < 3) {
+        const retrying = validationFailures <= 1 && round < 3;
+        this.logRejected(provider, 'assistant', error, retrying);
+        if (retrying) {
           messages.push({ role: 'assistant', content: message.content });
           messages.push({
             role: 'user',
@@ -279,7 +354,10 @@ export class AiClient {
           });
           continue;
         }
-        throw new AiProviderError(type);
+        throw new AiProviderError(
+          type,
+          error instanceof AiValidationError ? error.detail : undefined,
+        );
       }
       return {
         answer,
@@ -319,16 +397,12 @@ export class AiClient {
     const body: Record<string, unknown> = {
       model: config.model,
       temperature: this.env.AI_TEMPERATURE,
-      max_tokens: this.env.AI_MAX_TOKENS,
+      ...providerFields(provider, config.model, this.env.AI_MAX_TOKENS),
       messages,
       tools,
       tool_choice: 'auto',
       parallel_tool_calls: false,
     };
-    if (provider === 'nvidia') {
-      body.stream = false;
-      body.reasoning_effort = 'none';
-    }
 
     for (let attempt = 0; attempt < 3; attempt++) {
       let response: Response;
@@ -356,16 +430,18 @@ export class AiClient {
           await this.sleep(wait * 1000);
           continue;
         }
-        throw new AiProviderError('rate_limit');
+        throw new AiProviderError('rate_limit', await providerErrorCode(response));
       }
       if (response.status >= 500) {
         if (attempt < 2) {
           await this.sleep(attempt === 0 ? 1000 : 2000);
           continue;
         }
-        throw new AiProviderError('provider_5xx');
+        throw new AiProviderError('provider_5xx', await providerErrorCode(response));
       }
-      if (!response.ok) throw new AiProviderError('provider_4xx');
+      if (!response.ok) {
+        throw new AiProviderError('provider_4xx', await providerErrorCode(response));
+      }
       try {
         return AssistantEnvelopeSchema.parse(await response.json());
       } catch {

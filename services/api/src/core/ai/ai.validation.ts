@@ -50,13 +50,26 @@ function numbersIn(value: string | number): string[] {
 }
 
 export class AiValidationError extends Error {
+  /**
+   * `detail` names what failed, for the log: the offending number (`invented_number`) or the
+   * matched word from the fixed lists below (`unsafe_language`). Never the answer text.
+   */
   constructor(
     readonly type: 'invalid_json' | 'invalid_schema' | 'invented_number' | 'unsafe_language',
+    readonly detail?: string,
   ) {
     super(type);
     this.name = 'AiValidationError';
   }
 }
+
+/** Wording each feature must not use, checked over all claims together. */
+const FORBIDDEN_WORDS: Record<string, RegExp[]> = {
+  forecast: [/\bcaus(?:e|ed|es|ing|al)\b/i, /\b(?:certain(?:ly)?|guaranteed?|definitely)\b/i],
+  report: [/\b(?:certain(?:ly)?|guaranteed?|definitely)\b/i],
+  anomaly: [/\b(?:certain(?:ly)?|definitely|guaranteed?|proves?|proven)\b/i],
+  recommendation: [/\b(?:approv(?:e|ed|es|ing)|reject(?:ed|s|ing)?)\b/i],
+};
 
 /** Parse the model JSON and reject every number not present in the backend-selected facts. */
 export function validateAiAnswer(content: string, facts: AiFact[], feature?: string): AiAnswer {
@@ -74,35 +87,13 @@ export function validateAiAnswer(content: string, facts: AiFact[], feature?: str
   const allowed = new Set(facts.flatMap((fact) => numbersIn(fact.value)));
   for (const claim of parsed.data.claims) {
     for (const number of numbersIn(claim.text)) {
-      if (!allowed.has(number)) throw new AiValidationError('invented_number');
+      if (!allowed.has(number)) throw new AiValidationError('invented_number', number);
     }
   }
-  if (feature === 'forecast') {
-    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
-    if (/\bcaus(?:e|ed|es|ing|al)\b/i.test(text)) {
-      throw new AiValidationError('unsafe_language');
-    }
-    if (/\b(?:certain(?:ly)?|guaranteed?|definitely)\b/i.test(text)) {
-      throw new AiValidationError('unsafe_language');
-    }
-  }
-  if (feature === 'report') {
-    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
-    if (/\b(?:certain(?:ly)?|guaranteed?|definitely)\b/i.test(text)) {
-      throw new AiValidationError('unsafe_language');
-    }
-  }
-  if (feature === 'anomaly') {
-    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
-    if (/\b(?:certain(?:ly)?|definitely|guaranteed?|proves?|proven)\b/i.test(text)) {
-      throw new AiValidationError('unsafe_language');
-    }
-  }
-  if (feature === 'recommendation') {
-    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
-    if (/\b(?:approv(?:e|ed|es|ing)|reject(?:ed|s|ing)?)\b/i.test(text)) {
-      throw new AiValidationError('unsafe_language');
-    }
+  const text = parsed.data.claims.map((claim) => claim.text).join(' ');
+  for (const pattern of FORBIDDEN_WORDS[feature ?? ''] ?? []) {
+    const match = pattern.exec(text);
+    if (match) throw new AiValidationError('unsafe_language', match[0].toLowerCase());
   }
   return parsed.data;
 }

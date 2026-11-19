@@ -3,6 +3,7 @@
  * ledger trigger keeps balances consistent) so every total — including the UTC day boundary —
  * can be checked by hand.
  */
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import pg from 'pg';
@@ -311,5 +312,33 @@ describe('reports (V2 4c-1)', () => {
     expect(Number((await db.query('SELECT count(*) FROM report_runs')).rows[0].count)).toBe(
       reports + 2,
     );
+  });
+
+  it('Phase 7g: summarises a report in words (AI off) — store-scoped, never edits the snapshot', async () => {
+    const store = (
+      await as('inventory')
+        .post('/reports/generate', { kind: 'DAILY', locationId: str1, periodEnd: day })
+        .expect(201)
+    ).body as Report;
+    const network = (
+      await as('inventory').post('/reports/generate', { kind: 'DAILY', periodEnd: day }).expect(201)
+    ).body as Report;
+    const aiRows = async () =>
+      Number((await db.query('SELECT count(*) FROM ai_requests')).rows[0].count);
+    const aiBefore = await aiRows();
+    const saved = (await as('admin').get(`/reports/${store.id}`).expect(200)).body;
+
+    const words = (await as('store1').post(`/reports/${store.id}/summary/words`).expect(200)).body;
+    expect(words.source).toBe('template');
+    expect(words.provider).toBeUndefined();
+    expect(words.claims.length).toBeGreaterThan(0);
+
+    await as('store2').post(`/reports/${store.id}/summary/words`).expect(403);
+    await as('store1').post(`/reports/${network.id}/summary/words`).expect(403); // network report
+    await as('admin').post(`/reports/${randomUUID()}/summary/words`).expect(404);
+    await as('admin').post('/reports/nope/summary/words').expect(400);
+
+    expect(await aiRows()).toBe(aiBefore);
+    expect((await as('admin').get(`/reports/${store.id}`).expect(200)).body).toEqual(saved);
   });
 });

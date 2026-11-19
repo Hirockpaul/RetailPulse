@@ -347,6 +347,42 @@ describe('recommendations from a forecast', () => {
     expect(all.data.every((r: Rec) => r.status === 'PENDING')).toBe(true);
   });
 
+  it('Phase 7d: explains a recommendation in words (AI off) — store-scoped, approves nothing', async () => {
+    const rec = await recFor(A.sku, loc.str1);
+    const tables = [
+      'ai_requests',
+      'stock_transfers',
+      'purchase_orders',
+      'inventory_ledger',
+      'outbox_events',
+    ];
+    const counts = () =>
+      Promise.all(tables.map((t) => count(`SELECT COUNT(*)::int AS n FROM ${t}`)));
+    const beforeCounts = await counts();
+
+    const words = (
+      await as('store1')
+        .post(`/replenishment/recommendations/${rec.id}/explanation/words`)
+        .expect(200)
+    ).body;
+    expect(words.source).toBe('template');
+    expect(words.provider).toBeUndefined();
+    expect(words.claims.length).toBeGreaterThan(0);
+
+    await as('store2')
+      .post(`/replenishment/recommendations/${rec.id}/explanation/words`, {}, null)
+      .expect(403);
+    await admin()
+      .post(`/replenishment/recommendations/${MISSING_ID}/explanation/words`, {}, null)
+      .expect(404);
+    await admin()
+      .post('/replenishment/recommendations/nope/explanation/words', {}, null)
+      .expect(400);
+
+    expect(await counts()).toEqual(beforeCounts); // no audit row, no document, no movement
+    expect((await recFor(A.sku, loc.str1)).status).toBe('PENDING'); // still waiting for a manager
+  });
+
   it('suggests a transfer from the distribution centre with a hand-checked quantity', async () => {
     const r = await recFor(A.sku, loc.str1);
     expect(r).toMatchObject({ action: 'TRANSFER', sourceCode: 'DC-NORTH', supplierName: null });

@@ -277,8 +277,8 @@ test('a signed-in analyst can read the generated API contract', async ({ page })
   await page.goto('/api/v1/docs');
   await expect(page).toHaveTitle('RetailPulse API documentation');
   await expect(page.locator('#status')).toHaveText(
-    'OpenAPI 3.1.0 · 74 operations · session cookie authentication',
+    'OpenAPI 3.1.0 · 78 operations · session cookie authentication',
   );
-  await expect(page.locator('main article')).toHaveCount(74);
+  await expect(page.locator('main article')).toHaveCount(78);
   await expect(page.getByRole('heading', { name: 'Inventory movements' })).toBeVisible();
 });

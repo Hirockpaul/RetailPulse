@@ -285,3 +285,31 @@ describe('operational anomalies from stock movements (event consumer)', () => {
     ).toBe(0);
   });
 });
+
+describe('explanation in words (Phase 7c, AI off by default)', () => {
+  it('returns the local template, store-scoped, and changes nothing', async () => {
+    const id = await salesFinding(products[6].id, str1);
+    const snapshot = async () => ({
+      ai: await count('SELECT COUNT(*) AS n FROM ai_requests'),
+      ledger: await count('SELECT COUNT(*) AS n FROM inventory_ledger'),
+      reviews: await count('SELECT COUNT(*) AS n FROM anomaly_reviews'),
+      events: await count('SELECT COUNT(*) AS n FROM anomaly_review_events'),
+    });
+    const before = await snapshot();
+
+    const words = (await as('store1').post(`/anomalies/${id}/explanation/words`).expect(200)).body;
+    expect(words.source).toBe('template');
+    expect(words.provider).toBeUndefined();
+    expect(words.claims.length).toBeGreaterThan(0);
+    for (const claim of words.claims) {
+      expect(['fact', 'prediction', 'estimate', 'recommendation', 'unknown']).toContain(claim.type);
+    }
+
+    await as('store2').post(`/anomalies/${id}/explanation/words`).expect(403);
+    await as('admin').post(`/anomalies/${randomUUID()}/explanation/words`).expect(404);
+    await as('admin').post('/anomalies/not-a-uuid/explanation/words').expect(400);
+
+    expect(await snapshot()).toEqual(before); // no audit row, no review, no stock movement
+    expect((await as('store1').get(`/anomalies/${id}`).expect(200)).body.history).toEqual([]);
+  });
+});
