@@ -46,7 +46,9 @@ def configure_tracing(app: FastAPI) -> bool:
     endpoint = traces_endpoint(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     provider: TracerProvider | None = None
     if endpoint:
-        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: "retailpulse-forecasting"}))
+        provider = TracerProvider(
+            resource=Resource.create({SERVICE_NAME: "retailpulse-forecasting"})
+        )
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
         trace.set_tracer_provider(provider)
     app.middleware("http")(correlate_request)
