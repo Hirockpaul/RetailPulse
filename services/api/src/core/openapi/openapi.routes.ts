@@ -231,6 +231,11 @@ export const OPENAPI_ROUTES: readonly OpenApiRoute[] = [
   }),
   get('reports', 'Reports', 'List report snapshots', { query: listReportsQuerySchema }),
   get('reports/:id', 'Reports', 'Get one report snapshot'),
+  post('reports/:id/summary/words', 'Reports', 'Summarise a verified report snapshot', {
+    responseStatus: 200,
+    description:
+      'Returns labelled AI wording or a deterministic local template. Never changes the frozen report or domain data.',
+  }),
   get('reports/:id/export.csv', 'Reports', 'Download a report as CSV', {
     responseContentType: 'text/csv',
   }),

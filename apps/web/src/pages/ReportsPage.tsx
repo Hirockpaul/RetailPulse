@@ -1,12 +1,14 @@
-import { type FormEvent, useCallback, useState } from 'react';
+import { type FormEvent, useCallback, useRef, useState } from 'react';
 import { ApiError } from '../api/client';
 import { listLocations } from '../api/locations';
 import {
   generateReport,
+  fetchReportWords,
   getReport,
   listReports,
   type ReportContent,
   type ReportKind,
+  type ReportWords,
   reportCsvUrl,
 } from '../api/reports';
 import { Badge } from '../components/Badge';
@@ -327,6 +329,8 @@ function ReportView({
         />
       </header>
 
+      <Words id={id} />
+
       <div className="grid gap-4 lg:grid-cols-2 print:grid-cols-2">
         <Block title="Sales in the period">
           <Facts
@@ -457,5 +461,87 @@ function ReportView({
         Days are calendar days in UTC.
       </p>
     </>
+  );
+}
+
+type WordsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; data: ReportWords };
+
+function Words({ id }: { id: string }) {
+  const requestNumber = useRef(0);
+  const [settled, setSettled] = useState<{ id: string; state: WordsState }>({
+    id,
+    state: { status: 'idle' },
+  });
+  const state = settled.id === id ? settled.state : { status: 'idle' as const };
+
+  const load = async () => {
+    const request = ++requestNumber.current;
+    setSettled({ id, state: { status: 'loading' } });
+    try {
+      const data = await fetchReportWords(id);
+      if (request === requestNumber.current) {
+        setSettled({ id, state: { status: 'success', data } });
+      }
+    } catch (caught) {
+      if (request === requestNumber.current) {
+        setSettled({
+          id,
+          state: {
+            status: 'error',
+            message: caught instanceof ApiError ? caught.message : 'Unexpected error.',
+          },
+        });
+      }
+    }
+  };
+
+  return (
+    <section className="space-y-3 rounded-lg border bg-white p-4 print:break-inside-avoid print:border-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold">Report summary in words</h3>
+          <p className="text-xs text-slate-500">
+            Uses the verified snapshot above. It does not change the report or decide what to do.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={state.status === 'loading'}
+          className="rounded bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-800 disabled:cursor-wait disabled:opacity-60 print:hidden"
+        >
+          {state.status === 'loading' ? 'Summarising…' : 'Summarise in words'}
+        </button>
+      </div>
+      <div aria-live="polite">
+        {state.status === 'error' && <ErrorMessage message={state.message} onRetry={load} />}
+        {state.status === 'success' && (
+          <div className="space-y-2 rounded border border-sky-100 bg-sky-50 p-3 text-sm">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
+              {state.data.source === 'ai'
+                ? `AI-generated report summary (${state.data.provider === 'nvidia' ? 'NVIDIA' : 'Groq'})`
+                : 'Template report summary'}
+            </p>
+            {state.data.claims.map((claim, index) => (
+              <p key={`${claim.type}-${index}`}>
+                <span className="mr-2 rounded bg-white px-1.5 py-0.5 text-xs font-medium text-slate-600">
+                  {claim.type}
+                </span>
+                {claim.text}
+              </p>
+            ))}
+            <p className="text-xs text-slate-500">
+              {state.data.source === 'ai'
+                ? 'AI reworded selected report facts; it did not calculate or change them.'
+                : 'This summary was produced locally from the saved report snapshot.'}
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

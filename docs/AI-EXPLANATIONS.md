@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation and 7b–7f explanations built.** RetailPulse remains a
+Status: **Phase 7a foundation and 7b–7g features built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -159,3 +159,21 @@ executor. A test supplies write methods that fail if called and proves they rema
 final answer uses the same tagged-claim schema and numeric validation as explanations: every numeric
 token must occur in permission-checked tool results. Provider/tool failures return local guidance.
 With `AI_PROVIDER=none`, no database tool or network request runs.
+
+## Report summaries (7g)
+
+An immutable report has a lazy **Summarise in words** button. It calls
+`POST /api/v1/reports/{id}/summary/words` only after the API applies the report's existing scope
+permission check. The summary does not run a live report query and never edits the saved snapshot.
+
+The backend sends the period, scope name/code, selected sales and movement totals, selected work
+counts, generation-time stock totals, forecast-based risk figures when present, and at most the
+first three stores and products from the report's existing ranked breakdowns. User identity,
+report/internal location/product IDs, generation actor, and unselected rows are not sent. The
+generation-time stock figures are explicitly distinguished from period-end figures, and stock-risk
+figures remain uncertain predictions rather than outcomes.
+
+The result is visibly labelled **AI-generated report summary (Groq/NVIDIA)** or **Template report
+summary**. With `AI_PROVIDER=none`, it is produced locally without a network request or AI audit
+row. Provider failures and validation failures use the same deterministic template. No answer text
+is persisted, so regenerating a summary never changes the underlying report.

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { accessibleLocationIds, assertLocationAccess } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
+import { AiService } from '../../core/ai/ai.service';
 import { ENV, type Env } from '../../core/config/env';
 import type { Page } from '../../core/http/query';
 import { OverviewService } from '../overview/overview.service';
@@ -23,7 +24,9 @@ import type {
   ReportDetail,
   ReportKind,
   ReportSummary,
+  ReportWords,
 } from './reports.schemas';
+import { reportWords } from './reports.words';
 
 const HOURLY_MS = 60 * 60 * 1000;
 
@@ -48,6 +51,7 @@ export class ReportsService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly repo: ReportsRepository,
     private readonly overview: OverviewService,
     @Inject(ENV) private readonly env: Env,
+    private readonly ai: AiService,
   ) {}
 
   onApplicationBootstrap() {
@@ -179,5 +183,17 @@ export class ReportsService implements OnApplicationBootstrap, OnModuleDestroy {
   async csv(id: string, user: AuthUser): Promise<{ fileName: string; body: string }> {
     const report = await this.get(id, user);
     return { fileName: csvFileName(report.content), body: toCsv(report.content) };
+  }
+
+  async summarizeInWords(id: string, user: AuthUser): Promise<ReportWords> {
+    const report = await this.get(id, user);
+    const prepared = reportWords(report.content);
+    const result = await this.ai.explain({
+      userId: user.id,
+      feature: 'report',
+      facts: prepared.facts,
+      template: prepared.template,
+    });
+    return { source: result.source, provider: result.provider, claims: result.answer.claims };
   }
 }

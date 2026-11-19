@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AiClaim, AiProvider } from '../../core/ai/ai.types';
 import { paginationSchema, uuidSchema } from '../../core/http/query';
 
 export const REPORT_KINDS = ['DAILY', 'WEEKLY'] as const;
@@ -94,4 +95,10 @@ export interface ReportSummary {
 
 export interface ReportDetail extends ReportSummary {
   content: ReportContent;
+}
+
+export interface ReportWords {
+  source: 'ai' | 'template';
+  provider?: AiProvider;
+  claims: AiClaim[];
 }

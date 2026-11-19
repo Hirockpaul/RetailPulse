@@ -475,7 +475,8 @@ progress log: [V2-PLAN](docs/V2-PLAN.md).
 
 ## Optional AI explanations
 
-The Phase 7a foundation and 7b–7f explanation features are present. AI is **off by default**
+The Phase 7a foundation and 7b–7g explanation features are present. AI is **off by default**
 (`AI_PROVIDER=none`): “Explain in words” uses deterministic template text with no network request.
-Groq and NVIDIA setup, the exact data boundary, provider fallback, read-only assistant, validation
-and metadata-only audit log are documented in [AI explanations](docs/AI-EXPLANATIONS.md).
+Groq and NVIDIA setup, the exact data boundary, provider fallback, read-only assistant, report
+summaries, validation and metadata-only audit log are documented in
+[AI explanations](docs/AI-EXPLANATIONS.md).

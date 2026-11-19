@@ -75,9 +75,20 @@ export interface ReportDetail extends ReportSummary {
   content: ReportContent;
 }
 
+export interface ReportWords {
+  source: 'ai' | 'template';
+  provider?: 'groq' | 'nvidia';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}
+
 export const listReports = (p: { page?: number; kind?: ReportKind }) =>
   getJson<Page<ReportSummary>>(`/reports${qs({ pageSize: 20, ...p })}`);
 export const getReport = (id: string) => getJson<ReportDetail>(`/reports/${id}`);
+export const fetchReportWords = (id: string) =>
+  postJson<ReportWords>(`/reports/${id}/summary/words`, {});
 export const generateReport = (body: {
   kind: ReportKind;
   locationId?: string;

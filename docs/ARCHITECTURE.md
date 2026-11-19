@@ -9,8 +9,8 @@ with the "Markdown Preview Mermaid Support" extension).
 V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
-Phase 7a adds an internal, off-by-default AI explanation foundation; 7b–7f add on-demand wording
-for forecasts, anomalies and recommendations without changing verified domain facts. See
+Phase 7a adds an internal, off-by-default AI explanation foundation; 7b–7g add on-demand wording
+for forecasts, anomalies, recommendations and reports, plus a read-only assistant, without changing verified domain facts. See
 [AI explanations](AI-EXPLANATIONS.md).
 
 ---
@@ -226,6 +226,7 @@ erDiagram
 | Phase 7d ✅ | — (permission-checked stored recommendation inputs → checked claims; no approval or domain write) |
 | Phase 7e ✅ | — (NVIDIA hosted NIM through the same checked client; preferred-provider failover is audited per attempt) |
 | Phase 7f ✅ | — (one-shot assistant over four permission-scoped read tools; no conversation or answer storage) |
+| Phase 7g ✅ | — (lazy summary of a permission-checked immutable report snapshot; no report or answer mutation) |
 
 ### Key table shapes
 
@@ -357,6 +358,7 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /scenarios`, `GET /scenarios/:id` | —                                             | each scenario with its latest result / all results; admin, inventory manager, analyst — **store managers 403** (results are network-wide) |
 | `POST /reports/generate`             | body `{ kind: DAILY \| WEEKLY, locationId?, periodEnd? }` (default yesterday, UTC; later than yesterday → 422 `PERIOD_NOT_COMPLETE`) | every role; store managers own stores only (no network reports). Stores one frozen snapshot (V2 4c-1) |
 | `GET /reports`, `GET /reports/:id`    | `kind, locationId, page, pageSize`             | snapshots newest period first; store managers see their stores' reports only |
+| `POST /reports/:id/summary/words`     | —                                              | on-demand checked wording from selected snapshot facts; labelled template when AI is off/unavailable; never changes the report |
 | `GET /reports/:id/export.csv`         | —                                              | `section,metric,location,product,value`, one row per number, RFC 4180, file name with kind, scope and period |
 | `GET /metrics` (no `/api/v1` prefix)  | —                                              | Prometheus text format; public; route templates only, no ids or personal data |
 
@@ -611,7 +613,9 @@ practice — that needs a replay of past lead-time demand (scenarios / monitorin
   movements by type, work done (transfers, orders, recommendations, alerts, anomalies) and the
   Control Tower figures *at generation time* (from `OverviewService.forScope`, not recomputed).
   An hourly job (`HOUSEKEEPING_ENABLED`) creates yesterday's network DAILY report and, on Mondays,
-  last week's WEEKLY one; a unique index makes duplicates impossible.
+  last week's WEEKLY one; a unique index makes duplicates impossible. Phase 7g can reword a small,
+  permission-checked subset of that frozen content on demand; the summary is not stored and cannot
+  alter the snapshot.
 - **"No action required"** is not stored: the product page asks `GET /replenishment/status`, which
   runs the same `plan()` for that product's stores now (DC stock is not shared out between stores
   there, unlike in a generation batch). Measured on the dev data: for all 1,000 pairs it agreed
@@ -991,3 +995,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 79 | Recommendation wording is a lazy POST action over the immutable calculation snapshot (Phase 7d) | Stock, forecast, safety stock, rounding and route facts are already stored and permission-checked; the model only rewords them and cannot call approval/order code | It explains the snapshot, which may be stale; managers still use Recalculate and make the decision |
 | 80 | `AI_PROVIDER` selects a preferred provider; the other configured provider is a failover (Phase 7e) | Groq and NVIDIA share one minimum-data, retry, validation and audit path; every actual attempt has its own row and successful wording shows its provider | A failed explanation may consume requests from both providers and two rate-limit slots; if both fail the deterministic template remains the final fallback |
 | 81 | The assistant is one-shot and can call only four local read tools through existing permission-checking services (Phase 7f) | No general SQL, HTTP, MCP or mutation tool exists; strict arguments, bounded rounds, scoped reads and final numeric validation make the model an interpreter rather than an authority | The user’s question is sent to the provider and provider-side retention follows that provider’s terms; RetailPulse stores only request metadata and no conversation history |
+| 82 | Report summaries are lazy wording over selected fields of the immutable report snapshot (Phase 7g) | Existing report permissions run first; aggregate facts and only three leading stores/products are enough to explain the snapshot without a live query, identity data, internal IDs, or a report write | A generated summary is not persisted and may be worded differently on a later request; generation-time stock is not reconstructed as period-end stock |

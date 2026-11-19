@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { READ_ROLES, Roles } from '../../core/auth/roles';
 import { idParamSchema } from '../../core/http/query';
@@ -36,6 +36,16 @@ export class ReportsController {
     @Ctx() ctx: RequestContext,
   ) {
     return this.reports.list(q, ctx.user);
+  }
+
+  @Roles(...READ_ROLES)
+  @Post(':id/summary/words')
+  @HttpCode(200)
+  summarizeInWords(
+    @Param(new ZodValidationPipe(idParamSchema)) { id }: { id: string },
+    @Ctx() ctx: RequestContext,
+  ) {
+    return this.reports.summarizeInWords(id, ctx.user);
   }
 
   @Roles(...READ_ROLES)
