@@ -63,6 +63,7 @@ export class ForecastsRepository {
     locationId: string,
   ): Promise<{
     isFallback: boolean | null;
+    productName: string;
     categoryName: string;
     locationCode: string;
     row: {
@@ -70,23 +71,35 @@ export class ForecastsRepository {
       targetDay: string;
       baseLog: number;
       forecast: number;
+      lower: number;
+      upper: number;
+      lower95: number | null;
+      upper95: number | null;
       contributions: StoredContribution[];
     } | null;
   } | null> {
     const { rows } = await this.db.query<{
       isFallback: boolean | null;
+      productName: string;
       categoryName: string;
       locationCode: string;
       horizonDay: number | null;
       targetDay: string | null;
       baseLog: number | null;
       forecast: number | null;
+      lower: number | null;
+      upper: number | null;
+      lower95: number | null;
+      upper95: number | null;
       contributions: StoredContribution[] | null;
     }>(
-      `SELECT s.is_fallback AS "isFallback", c.name AS "categoryName", l.code::text AS "locationCode",
+      `SELECT s.is_fallback AS "isFallback", p.name AS "productName",
+              c.name AS "categoryName", l.code::text AS "locationCode",
               e.horizon_day AS "horizonDay",
               (r.history_end + e.horizon_day)::text AS "targetDay",
-              e.base_log::float8 AS "baseLog", e.forecast::float8 AS forecast, e.contributions
+              e.base_log::float8 AS "baseLog", e.forecast::float8 AS forecast, e.contributions,
+              fp.lower::float8 AS lower, fp.upper::float8 AS upper,
+              fp.lower95::float8 AS "lower95", fp.upper95::float8 AS "upper95"
          FROM products p
          JOIN categories c ON c.id = p.category_id
          JOIN locations l ON l.id = $3
@@ -95,6 +108,8 @@ export class ForecastsRepository {
                 ON s.run_id = $1 AND s.product_id = p.id AND s.location_id = l.id
          LEFT JOIN forecast.explanations e
                 ON e.run_id = $1 AND e.product_id = p.id AND e.location_id = l.id AND e.horizon_day = 1
+         LEFT JOIN forecast.points fp
+                ON fp.run_id = $1 AND fp.product_id = p.id AND fp.location_id = l.id AND fp.horizon_day = 1
         WHERE p.id = $2`,
       [runId, productId, locationId],
     );
@@ -102,6 +117,7 @@ export class ForecastsRepository {
     if (!r) return null;
     return {
       isFallback: r.isFallback,
+      productName: r.productName,
       categoryName: r.categoryName,
       locationCode: r.locationCode,
       row:
@@ -109,12 +125,18 @@ export class ForecastsRepository {
         r.horizonDay !== null &&
         r.targetDay &&
         r.baseLog !== null &&
-        r.forecast !== null
+        r.forecast !== null &&
+        r.lower !== null &&
+        r.upper !== null
           ? {
               horizonDay: r.horizonDay,
               targetDay: r.targetDay,
               baseLog: r.baseLog,
               forecast: r.forecast,
+              lower: r.lower,
+              upper: r.upper,
+              lower95: r.lower95,
+              upper95: r.upper95,
               contributions: r.contributions,
             }
           : null,

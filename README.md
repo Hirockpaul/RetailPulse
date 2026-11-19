@@ -436,7 +436,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Memory of the running demo | API ≈ 81 MB, forecasting ≈ 173 MB, Postgres ≈ 146 MB, web ≈ 14 MB |
 | Image sizes | API 336 MB, web 82 MB, forecasting 872 MB (OpenTelemetry, SHAP and MLflow client added in V2) |
 | Backup / restore drill (dev data, 139 MB database) | backup **1.3 s** (5.4 MB dump), restore into a new database **3.8 s**, integrity check **0.2 s**; Control Tower identical from the restored copy |
-| Tests | 258 unit/HTTP + 276 integration (API), 13 web component, 128 Python, 6 end-to-end |
+| Tests | 262 unit/HTTP + 276 integration (API), 14 web component, 128 Python, 6 end-to-end |
 
 ## Known limitations
 
@@ -475,7 +475,7 @@ progress log: [V2-PLAN](docs/V2-PLAN.md).
 
 ## Optional AI explanations
 
-The Phase 7a foundation is present but has no user-visible feature yet. AI is **off by default**
-(`AI_PROVIDER=none`), makes no network request in that mode, and preserves the existing template
-text. Groq setup, the exact data boundary, validation, fallback behaviour and metadata-only audit
-log are documented in [AI explanations](docs/AI-EXPLANATIONS.md).
+The Phase 7a foundation and 7b forecast explanation are present. AI is **off by default**
+(`AI_PROVIDER=none`): “Explain in words” uses deterministic template text with no network request.
+Groq setup, the exact data boundary, validation, fallback behaviour and metadata-only audit log are
+documented in [AI explanations](docs/AI-EXPLANATIONS.md).

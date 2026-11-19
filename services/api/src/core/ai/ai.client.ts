@@ -117,7 +117,7 @@ export class AiClient {
       try {
         const envelope = EnvelopeSchema.parse(await response.json());
         return {
-          answer: validateAiAnswer(envelope.choices[0].message.content, facts),
+          answer: validateAiAnswer(envelope.choices[0].message.content, facts, feature),
           usage: {
             inputTokens: envelope.usage?.prompt_tokens ?? null,
             outputTokens: envelope.usage?.completion_tokens ?? null,

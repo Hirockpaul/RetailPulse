@@ -149,6 +149,9 @@ test('the nine steps: Control Tower risk → forecast → explanation → recomm
   // 4. Why this forecast?
   await forecast.getByText('Why this forecast?').click();
   await expect(forecast.getByText('Average sales, last 56 days')).toBeVisible();
+  await forecast.getByRole('button', { name: 'Explain in words' }).click();
+  await expect(forecast.getByText('Template explanation')).toBeVisible();
+  await expect(forecast.getByText(/measured uncertainty ranges, not guarantees/)).toBeVisible();
 
   // 5. A recommendation from the current forecast and stock.
   const nav = page.getByRole('navigation', { name: 'Main' });
@@ -274,8 +277,8 @@ test('a signed-in analyst can read the generated API contract', async ({ page })
   await page.goto('/api/v1/docs');
   await expect(page).toHaveTitle('RetailPulse API documentation');
   await expect(page.locator('#status')).toHaveText(
-    'OpenAPI 3.1.0 · 73 operations · session cookie authentication',
+    'OpenAPI 3.1.0 · 74 operations · session cookie authentication',
   );
-  await expect(page.locator('main article')).toHaveCount(73);
+  await expect(page.locator('main article')).toHaveCount(74);
   await expect(page.getByRole('heading', { name: 'Inventory movements' })).toBeVisible();
 });

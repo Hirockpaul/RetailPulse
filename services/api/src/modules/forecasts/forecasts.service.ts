@@ -1,13 +1,16 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { AiService } from '../../core/ai/ai.service';
 import { assertLocationAccess } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
 import type { RequestContext } from '../../core/http/request-context';
 import { ForecastClient } from './forecast.client';
 import { describeFactor, featureLabel } from './forecasts.explain';
 import { ForecastsRepository } from './forecasts.repository';
+import { forecastWords, measuredCoverage } from './forecasts.words';
 import type {
   ForecastExplanation,
   ForecastRun,
+  ForecastWords,
   ModelMetric,
   RangeGroup,
   RunForecastBody,
@@ -22,6 +25,7 @@ export class ForecastsService {
   constructor(
     private readonly repo: ForecastsRepository,
     private readonly client: ForecastClient,
+    private readonly ai: AiService,
   ) {}
 
   /** Start a forecast run in the Python service. It only writes forecast data, never stock. */
@@ -98,7 +102,10 @@ export class ForecastsService {
         message: 'No forecast exists for that product at that store yet.',
       });
     }
-    const importance = await this.repo.featureImportance(run.id);
+    const [importance, ranges] = await Promise.all([
+      this.repo.featureImportance(run.id),
+      this.repo.ranges(run.id),
+    ]);
     let status: ForecastExplanation['status'];
     if (found.row) status = 'OK';
     else if (found.isFallback) status = 'FALLBACK';
@@ -114,6 +121,8 @@ export class ForecastsService {
         historyEnd: run.historyEnd,
       },
       servedModel: run.servedModel,
+      productName: found.productName,
+      locationCode: found.locationCode,
       status,
       explanation: found.row
         ? {
@@ -121,10 +130,47 @@ export class ForecastsService {
             targetDay: found.row.targetDay,
             startingPoint: Math.exp(found.row.baseLog),
             forecast: found.row.forecast,
+            range80: {
+              lower: found.row.lower,
+              upper: found.row.upper,
+              measuredCoverage: measuredCoverage(ranges, 80, found.row.forecast),
+            },
+            range95:
+              found.row.lower95 === null || found.row.upper95 === null
+                ? null
+                : {
+                    lower: found.row.lower95,
+                    upper: found.row.upper95,
+                    measuredCoverage: measuredCoverage(ranges, 95, found.row.forecast),
+                  },
             factors: found.row.contributions.map((c) => describeFactor(c, ctx)),
           }
         : null,
+      ranges,
       globalImportance: importance.map((i) => ({ ...i, label: featureLabel(i.feature) })),
     };
+  }
+
+  /** Reword the already-verified explanation. The AI receives no ids, user data, or free text. */
+  async explainInWords(query: SeriesQuery, ctx: RequestContext): Promise<ForecastWords> {
+    const explanation = await this.explanation(query, ctx.user);
+    if (!explanation.explanation) {
+      throw new NotFoundException({
+        code: 'NOT_FOUND',
+        message: 'This forecast does not have model factors to explain in words.',
+      });
+    }
+    const prepared = forecastWords({
+      productName: explanation.productName,
+      locationCode: explanation.locationCode,
+      explanation: explanation.explanation,
+    });
+    const result = await this.ai.explain({
+      userId: ctx.user.id,
+      feature: 'forecast',
+      facts: prepared.facts,
+      template: prepared.template,
+    });
+    return { source: result.source, claims: result.answer.claims };
   }
 }

@@ -163,6 +163,12 @@ export const OPENAPI_ROUTES: readonly OpenApiRoute[] = [
   get('forecasts/explanation', 'Forecasts', 'Explain the served forecast for one series', {
     query: seriesQuerySchema,
   }),
+  post('forecasts/explanation/words', 'Forecasts', 'Reword verified forecast facts', {
+    body: seriesQuerySchema,
+    responseStatus: 200,
+    description:
+      'Returns template text when AI is off or unavailable. Never changes forecasts, stock, or orders.',
+  }),
 
   get('purchase-orders', 'Purchasing', 'List purchase orders', {
     query: listPurchaseOrdersQuerySchema,

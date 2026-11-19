@@ -86,6 +86,22 @@ describe('AiClient', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects causal or certain wording for a forecast after one retry', async () => {
+    const fetcher = jest
+      .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+      .mockImplementation(async () =>
+        success(
+          '{"claims":[{"type":"prediction","text":"The input definitely caused the forecast of 12 units."}]}',
+        ),
+      );
+    const built = client(fetcher);
+
+    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+      type: 'unsafe_language',
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('retries timeouts at most twice', async () => {
     const timeout = new Error('secret provider detail');
     timeout.name = 'TimeoutError';

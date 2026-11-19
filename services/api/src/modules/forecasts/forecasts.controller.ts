@@ -50,4 +50,15 @@ export class ForecastsController {
   ) {
     return this.forecasts.explanation(query, ctx.user);
   }
+
+  /** Reword only the verified explanation facts; may use the optional server-side AI provider. */
+  @Roles(...READ_ROLES)
+  @Post('explanation/words')
+  @HttpCode(200)
+  explainInWords(
+    @Body(new ZodValidationPipe(seriesQuerySchema)) body: SeriesQuery,
+    @Ctx() ctx: RequestContext,
+  ) {
+    return this.forecasts.explainInWords(body, ctx);
+  }
 }

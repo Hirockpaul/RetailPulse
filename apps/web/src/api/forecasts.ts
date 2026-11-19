@@ -124,16 +124,32 @@ export interface ForecastExplanation {
     historyEnd: string | null;
   };
   servedModel: string | null;
+  productName: string;
+  locationCode: string;
   status: 'OK' | 'NOT_ML' | 'FALLBACK' | 'FAILED_CHECK' | 'NOT_AVAILABLE';
   explanation: {
     horizonDay: number;
     targetDay: string;
     startingPoint: number;
     forecast: number;
+    range80: { lower: number; upper: number; measuredCoverage: number | null } | null;
+    range95: { lower: number; upper: number; measuredCoverage: number | null } | null;
     factors: ExplanationFactor[];
   } | null;
+  ranges: RangeGroup[];
   globalImportance: { feature: string; label: string; meanAbsContribution: number; rank: number }[];
 }
 
 export const fetchForecastExplanation = (productId: string, locationId: string) =>
   getJson<ForecastExplanation>(`/forecasts/explanation${qs({ productId, locationId })}`);
+
+export interface ForecastWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}
+
+export const fetchForecastWords = (productId: string, locationId: string) =>
+  postJson<ForecastWords>('/forecasts/explanation/words', { productId, locationId });

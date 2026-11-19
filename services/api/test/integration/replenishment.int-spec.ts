@@ -1257,11 +1257,30 @@ describe('forecasts API', () => {
       },
       { feature: 'weekday', label: 'Day of the week', meanAbsContribution: 0.12, rank: 2 },
     ]);
+
+    const before = await db.query(`SELECT count(*)::int AS count FROM ai_requests`);
+    const words = (
+      await as('store2')
+        .post('/forecasts/explanation/words', { productId: P.id, locationId: loc.str2 })
+        .expect(200)
+    ).body;
+    expect(words.source).toBe('template');
+    expect(words.claims.map((claim: { text: string }) => claim.text).join(' ')).toContain(
+      'measured uncertainty ranges, not guarantees',
+    );
+    expect(words.claims.map((claim: { text: string }) => claim.text).join(' ')).toContain(
+      'not customer behaviour',
+    );
+    const after = await db.query(`SELECT count(*)::int AS count FROM ai_requests`);
+    expect(after.rows[0].count).toBe(before.rows[0].count); // AI_PROVIDER=none: no audit or network work
   });
 
   it('V2 1c: explanations respect store scope and need an existing forecast', async () => {
     await as('store1')
       .get(`/forecasts/explanation?productId=${P.id}&locationId=${loc.str2}`)
+      .expect(403);
+    await as('store1')
+      .post('/forecasts/explanation/words', { productId: P.id, locationId: loc.str2 })
       .expect(403);
     await admin()
       .get(`/forecasts/explanation?productId=${P.id}&locationId=${loc.str1}`)

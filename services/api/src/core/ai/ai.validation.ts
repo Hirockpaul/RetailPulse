@@ -50,14 +50,16 @@ function numbersIn(value: string | number): string[] {
 }
 
 export class AiValidationError extends Error {
-  constructor(readonly type: 'invalid_json' | 'invalid_schema' | 'invented_number') {
+  constructor(
+    readonly type: 'invalid_json' | 'invalid_schema' | 'invented_number' | 'unsafe_language',
+  ) {
     super(type);
     this.name = 'AiValidationError';
   }
 }
 
 /** Parse the model JSON and reject every number not present in the backend-selected facts. */
-export function validateAiAnswer(content: string, facts: AiFact[]): AiAnswer {
+export function validateAiAnswer(content: string, facts: AiFact[], feature?: string): AiAnswer {
   let json: unknown;
   try {
     json = JSON.parse(content);
@@ -73,6 +75,15 @@ export function validateAiAnswer(content: string, facts: AiFact[]): AiAnswer {
   for (const claim of parsed.data.claims) {
     for (const number of numbersIn(claim.text)) {
       if (!allowed.has(number)) throw new AiValidationError('invented_number');
+    }
+  }
+  if (feature === 'forecast') {
+    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
+    if (/\bcaus(?:e|ed|es|ing|al)\b/i.test(text)) {
+      throw new AiValidationError('unsafe_language');
+    }
+    if (/\b(?:certain(?:ly)?|guaranteed?|definitely)\b/i.test(text)) {
+      throw new AiValidationError('unsafe_language');
     }
   }
   return parsed.data;

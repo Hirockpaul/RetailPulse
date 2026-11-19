@@ -105,6 +105,8 @@ export interface SeriesForecast {
 export interface ForecastExplanation {
   run: { id: string; dataLabel: string | null; finishedAt: Date | null; historyEnd: string | null };
   servedModel: string | null;
+  productName: string;
+  locationCode: string;
   /**
    * OK: explained. NOT_ML: a simple method made the forecast (its rule is the explanation).
    * FALLBACK: too little history, a category average was used. FAILED_CHECK: the explanation did
@@ -118,8 +120,20 @@ export interface ForecastExplanation {
     startingPoint: number;
     /** = startingPoint × every factor (units). */
     forecast: number;
+    range80: { lower: number; upper: number; measuredCoverage: number | null } | null;
+    range95: { lower: number; upper: number; measuredCoverage: number | null } | null;
     factors: Factor[];
   } | null;
+  /** Calibration groups used to attach measured coverage to this forecast's range. */
+  ranges: RangeGroup[];
   /** What the model relies on most across all products (mean |contribution|, days 1-7). */
   globalImportance: { feature: string; label: string; meanAbsContribution: number; rank: number }[];
+}
+
+export interface ForecastWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
 }

@@ -9,8 +9,8 @@ with the "Markdown Preview Mermaid Support" extension).
 V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
-Phase 7a adds an internal, off-by-default AI explanation foundation. It has no route or UI yet; see
-[AI explanations](AI-EXPLANATIONS.md).
+Phase 7a adds an internal, off-by-default AI explanation foundation; 7b adds on-demand forecast
+wording without changing the verified forecast. See [AI explanations](AI-EXPLANATIONS.md).
 
 ---
 
@@ -220,6 +220,7 @@ erDiagram
 | V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
 | Phase 7a ✅ | `ai_requests` (metadata only: user, feature, provider/model, tokens, duration, outcome/error; never prompt, facts, or answer text) |
+| Phase 7b ✅ | — (permission-checked forecast facts → checked claims; no forecast or domain write) |
 
 ### Key table shapes
 
@@ -320,6 +321,7 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /forecasts/runs/latest`          | —                                              | `{ latest, current, metrics, ranges, importance }`: progress of the newest run, and the newest successful one with accuracy (WAPE, bias, range coverage) and range calibration per sales level |
 | `GET /forecasts/series`               | `productId, locationId`                        | history + forecast + 80 % and 95 % ranges + the run's range calibration, for one product at one store |
 | `GET /forecasts/explanation`          | `productId, locationId`                        | why the first forecast day is what it is: starting point × factors (SHAP), or the reason there is none (`NOT_ML`, `FALLBACK`, `FAILED_CHECK`, `NOT_AVAILABLE`); plus the run's global importance. Store-scoped |
+| `POST /forecasts/explanation/words`   | body `{ productId, locationId }`               | store-scoped, on-demand wording of verified forecast/range/factor facts; template when AI is off or unavailable; metadata is the only write |
 | `GET /ml/models`                      | —                                              | registry states, latest synthetic validation/test WAPE, artifact/training metadata and activation history; every read role |
 | `POST /ml/models/:id/activate`        | body `{ reason }`                              | admin / inventory manager; ELIGIBLE only; affects the next run |
 | `POST /ml/models/:id/rollback`        | body `{ reason }`                              | admin / inventory manager; immediately previous ACTIVE model only |
@@ -977,3 +979,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 74 | Backups are `pg_dump` custom-format files with a SHA-256 manifest; restores only ever create a new database and must pass a read-only integrity check (V2 5e) | A restore can never overwrite the data it is meant to rescue; a damaged or edited dump is refused before anything happens; "restored" means "balances equal the ledger, outbox and migrations consistent", not just "no error" | Logical dumps are not point-in-time recovery (no WAL archiving); a backup is as fresh as the last `npm run db:backup`; switching the app to the restored database is manual |
 | 75 | End-to-end tests use a labelled fixture forecast instead of starting the forecasting service (V2 6-1) | The browser flow (risk → forecast → explanation → recommendation → transfer → stock) can be tested in seconds and deterministically; the Python service has its own suite and live checks | The e2e run does not exercise the Python service; a forecast-service regression is caught by `npm run forecast:test`, not by e2e |
 | 76 | One server-only OpenAI-compatible client for optional explanations; `AI_PROVIDER=none` by default (Phase 7a) | Later features share one timeout/retry/rate-limit/validation path; the backend selects facts and every output number is checked before display | Groq is the only implemented provider in 7a; strict JSON shape does not guarantee semantic truth, so local checks and template fallback remain mandatory |
+| 77 | Forecast wording is a POST action over the existing explanation read model; the button is lazy (Phase 7b) | Store scope is checked first; only display-ready forecast/range/factor facts leave the server; opening the panel never spends a provider request | Available only when checked SHAP factors exist; simple/fallback forecasts keep their existing rule-based explanation |

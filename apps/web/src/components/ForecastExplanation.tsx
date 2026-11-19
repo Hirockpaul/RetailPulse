@@ -1,5 +1,11 @@
-import { useCallback } from 'react';
-import { type ExplanationFactor, fetchForecastExplanation } from '../api/forecasts';
+import { useCallback, useRef, useState } from 'react';
+import { ApiError } from '../api/client';
+import {
+  type ExplanationFactor,
+  fetchForecastExplanation,
+  fetchForecastWords,
+  type ForecastWords,
+} from '../api/forecasts';
 import { formatDay, formatDecimal } from '../lib/format';
 import { useAsync } from '../lib/useAsync';
 import { ErrorMessage, Loading } from './Status';
@@ -39,12 +45,88 @@ export function ForecastExplanation({
         )}
         {result.status === 'success' &&
           (result.data.explanation ? (
-            <Factors e={result.data.explanation} />
+            <>
+              <Factors e={result.data.explanation} />
+              <Words productId={productId} locationId={locationId} />
+            </>
           ) : (
             <p className="text-slate-600">{NOT_EXPLAINED[result.data.status]}</p>
           ))}
       </div>
     </details>
+  );
+}
+
+type WordsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; data: ForecastWords };
+
+function Words({ productId, locationId }: { productId: string; locationId: string }) {
+  const key = `${productId}:${locationId}`;
+  const requestNumber = useRef(0);
+  const [settled, setSettled] = useState<{ key: string; state: WordsState }>({
+    key,
+    state: { status: 'idle' },
+  });
+  const state = settled.key === key ? settled.state : { status: 'idle' as const };
+
+  const load = async () => {
+    const request = ++requestNumber.current;
+    setSettled({ key, state: { status: 'loading' } });
+    try {
+      const data = await fetchForecastWords(productId, locationId);
+      if (request === requestNumber.current) {
+        setSettled({ key, state: { status: 'success', data } });
+      }
+    } catch (error) {
+      if (request === requestNumber.current) {
+        setSettled({
+          key,
+          state: {
+            status: 'error',
+            message: error instanceof ApiError ? error.message : 'Unexpected error.',
+          },
+        });
+      }
+    }
+  };
+
+  return (
+    <div className="border-t pt-3">
+      <button
+        type="button"
+        onClick={() => void load()}
+        disabled={state.status === 'loading'}
+        className="rounded bg-sky-700 px-3 py-1.5 font-medium text-white hover:bg-sky-800 disabled:cursor-wait disabled:opacity-60"
+      >
+        {state.status === 'loading' ? 'Explaining…' : 'Explain in words'}
+      </button>
+      <div className="mt-3" aria-live="polite">
+        {state.status === 'error' && <ErrorMessage message={state.message} onRetry={load} />}
+        {state.status === 'success' && (
+          <div className="space-y-2 rounded border border-sky-100 bg-sky-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
+              {state.data.source === 'ai' ? 'AI-generated explanation' : 'Template explanation'}
+            </p>
+            {state.data.claims.map((claim, index) => (
+              <p key={`${claim.type}-${index}`}>
+                <span className="mr-2 rounded bg-white px-1.5 py-0.5 text-xs font-medium text-slate-600">
+                  {claim.type}
+                </span>
+                {claim.text}
+              </p>
+            ))}
+            {state.data.source === 'ai' && (
+              <p className="text-xs text-slate-500">
+                AI reworded the verified values shown above; it did not calculate or change them.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

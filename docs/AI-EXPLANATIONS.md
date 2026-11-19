@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation built; no user-visible AI feature yet.** RetailPulse remains a
+Status: **Phase 7a foundation and 7b forecast explanations built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -42,9 +42,9 @@ calculated values, measured ranges, and model-factor labels as needed. They must
 The model returns JSON claims tagged `fact`, `prediction`, `estimate`, `recommendation`, or
 `unknown`. Zod validates the JSON even when the provider promises strict output. Every numeric token
 in every claim must occur in an explicit fact value sent by the backend (a number in a label does
-not count). A schema failure or invented number is
-retried once, then the template is used. Model factors are described as associations, never causes,
-and predictions must remain uncertain.
+not count). Forecast output is also rejected if it uses causal or certainty wording. A schema
+failure, invented number, or unsafe wording is retried once, then the template is used. Model
+factors are described as associations, never causes, and predictions must remain uncertain.
 
 ## Reliability and audit
 
@@ -61,8 +61,20 @@ and predictions must remain uncertain.
 The only database writes available to the foundation are metadata inserts/updates in `ai_requests`.
 Tests reject any SQL that targets inventory, the ledger, recommendations, orders, or transfers.
 
-## Phase boundary
+## Forecast explanations (7b)
 
-7a intentionally adds no route, button, or page. The service is an internal dependency for 7b–7d.
-Those steps will load permission-checked facts in their existing backend modules and pass only the
-minimal fact array to this service.
+“Why this forecast?” keeps its exact SHAP factors and adds an on-demand **Explain in words** button.
+The button calls `POST /api/v1/forecasts/explanation/words`; opening the panel alone does not spend
+an AI request. Store access is checked before facts are loaded.
+
+The backend sends only the product name, store code, first forecast day and value, 80/95% bounds,
+measured range coverage where available, the model starting point, and at most three displayed
+factor labels/values/multipliers. It does not send a user name, email, correlation ID, browser text,
+or free-text note. The output keeps visible claim labels and explicitly says that uncertainty ranges
+are not guarantees and model factors describe model behaviour, not customer behaviour.
+
+With `AI_PROVIDER=none`, pressing the button returns the deterministic template and makes no network
+request or `ai_requests` row. Provider errors, invalid JSON, invented numbers, and user rate limits
+also return that same template. No forecast, range, factor, stock value, or order is changed.
+
+7c–7e are not built yet.

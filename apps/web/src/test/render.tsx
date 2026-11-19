@@ -24,7 +24,8 @@ export type Answer = { status?: number; body: unknown } | 'pending';
  * Returns the spy so tests can count calls.
  */
 export function fakeApi(role: Role, routes: Record<string, Answer | (() => Answer)>) {
-  const spy = vi.fn(async (input: RequestInfo | URL) => {
+  const spy = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    void _init; // retained in the spy signature so tests can inspect request method/body
     const path = String(input).replace(/^\/api\/v1/, '');
     if (path === '/auth/me') return json({ user: userFor(role) });
     const key = Object.keys(routes).find((k) => path.startsWith(k));
