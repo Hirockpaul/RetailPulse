@@ -224,6 +224,11 @@ export const OPENAPI_ROUTES: readonly OpenApiRoute[] = [
     query: listAnomaliesQuerySchema,
   }),
   get('anomalies/:id', 'Anomalies', 'Get one anomaly and its review history'),
+  post('anomalies/:id/explanation/words', 'Anomalies', 'Explain verified anomaly facts', {
+    responseStatus: 200,
+    description:
+      'Returns template text when AI is off or unavailable. Never reviews a finding or changes stock.',
+  }),
   post('anomalies/:id/review', 'Anomalies', 'Record an anomaly review decision', {
     body: reviewBodySchema,
     responseStatus: 200,

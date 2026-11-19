@@ -38,6 +38,14 @@ export interface AnomalyDetail extends AnomalyFinding {
   nextSteps: AnomalyStatus[];
 }
 
+export interface AnomalyWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}
+
 export const listAnomalies = (p: {
   status?: AnomalyStatus | 'OPEN';
   severity?: 'HIGH' | 'MEDIUM';
@@ -47,6 +55,9 @@ export const listAnomalies = (p: {
 }) => getJson<Page<AnomalyFinding>>(`/anomalies${qs({ ...p })}`);
 
 export const getAnomaly = (id: string) => getJson<AnomalyDetail>(`/anomalies/${id}`);
+
+export const fetchAnomalyWords = (id: string) =>
+  postJson<AnomalyWords>(`/anomalies/${id}/explanation/words`, {});
 
 export const reviewAnomaly = (id: string, status: AnomalyStatus, note?: string) =>
   postJson<AnomalyDetail>(`/anomalies/${id}/review`, { status, note });

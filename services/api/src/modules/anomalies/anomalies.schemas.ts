@@ -95,3 +95,11 @@ export interface AnomalyDetail extends AnomalyFinding {
   /** Steps the caller may take next (empty when final or not allowed for their role/store). */
   nextSteps: AnomalyStatus[];
 }
+
+export interface AnomalyWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}

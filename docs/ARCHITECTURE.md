@@ -10,7 +10,8 @@ V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
 Phase 7a adds an internal, off-by-default AI explanation foundation; 7b adds on-demand forecast
-wording without changing the verified forecast. See [AI explanations](AI-EXPLANATIONS.md).
+wording and 7c adds on-demand anomaly wording without changing verified domain facts. See
+[AI explanations](AI-EXPLANATIONS.md).
 
 ---
 
@@ -221,6 +222,7 @@ erDiagram
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
 | Phase 7a ✅ | `ai_requests` (metadata only: user, feature, provider/model, tokens, duration, outcome/error; never prompt, facts, or answer text) |
 | Phase 7b ✅ | — (permission-checked forecast facts → checked claims; no forecast or domain write) |
+| Phase 7c ✅ | — (permission-checked anomaly facts → checked claims; no review or domain write) |
 
 ### Key table shapes
 
@@ -337,6 +339,7 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 
 | `GET /anomalies`                      | `status (… or OPEN), severity, source, kind, locationId, productId, sort (severity·day·score), page, pageSize` | unusual sales (forecasting service) and unusual adjustments/returns (event consumer), HIGH first; store-scoped |
 | `GET /anomalies/:id`                  | —                                              | the finding, its explanation, review history and the steps the caller may take |
+| `POST /anomalies/:id/explanation/words` | —                                            | store-scoped, on-demand wording of verified finding facts and suggested checks; template when AI is off or unavailable; never reviews or changes stock |
 | `POST /anomalies/:id/review`          | body `{ status, note? }`                       | NEW → INVESTIGATING → CONFIRMED → RESOLVED, or → DISMISSED; note required to confirm, dismiss or resolve; guarded by status (409), no Idempotency-Key; admin, inventory mgr, store mgr (own store). Never changes stock |
 | `GET /suppliers/performance`          | —                                              | per supplier: deliveries, lead time mean / median / spread, on-time, late, days late, fill rate, reliability score (or "too few to judge" under 5 deliveries); every role |
 | `GET /suppliers/:id/performance`      | —                                              | the same per product, plus the 20 latest deliveries (store managers: their stores only) |
@@ -980,3 +983,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 75 | End-to-end tests use a labelled fixture forecast instead of starting the forecasting service (V2 6-1) | The browser flow (risk → forecast → explanation → recommendation → transfer → stock) can be tested in seconds and deterministically; the Python service has its own suite and live checks | The e2e run does not exercise the Python service; a forecast-service regression is caught by `npm run forecast:test`, not by e2e |
 | 76 | One server-only OpenAI-compatible client for optional explanations; `AI_PROVIDER=none` by default (Phase 7a) | Later features share one timeout/retry/rate-limit/validation path; the backend selects facts and every output number is checked before display | Groq is the only implemented provider in 7a; strict JSON shape does not guarantee semantic truth, so local checks and template fallback remain mandatory |
 | 77 | Forecast wording is a POST action over the existing explanation read model; the button is lazy (Phase 7b) | Store scope is checked first; only display-ready forecast/range/factor facts leave the server; opening the panel never spends a provider request | Available only when checked SHAP factors exist; simple/fallback forecasts keep their existing rule-based explanation |
+| 78 | Anomaly wording is a lazy POST action over one store-scoped finding (Phase 7c) | The backend supplies the observed/expected values, classification and kind-specific checks; review notes and raw detector text stay local; wording cannot review a case or change stock | The checklist is intentionally generic and a person must still investigate and record the decision |

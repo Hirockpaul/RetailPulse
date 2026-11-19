@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation and 7b forecast explanations built.** RetailPulse remains a
+Status: **Phase 7a foundation, 7b forecast explanations, and 7c anomaly explanations built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -77,4 +77,20 @@ With `AI_PROVIDER=none`, pressing the button returns the deterministic template 
 request or `ai_requests` row. Provider errors, invalid JSON, invented numbers, and user rate limits
 also return that same template. No forecast, range, factor, stock value, or order is changed.
 
-7c–7e are not built yet.
+## Anomaly explanations (7c)
+
+Each unusual-activity detail page has a lazy **Explain in words** button. It calls
+`POST /api/v1/anomalies/{id}/explanation/words` only when pressed, after the API checks that the
+caller may access the finding's store.
+
+The backend sends the product name, store code, day, finding kind/source/severity, observed and
+expected-or-threshold values, score, and one kind-specific checklist. It does not send the raw
+detector explanation or rule, review history, review notes, actor names, user identity, or
+correlation ID. The answer separates what happened, the comparison, why the rule flagged it, and
+what a manager can check. It must describe the flag as a signal to investigate, never proof of a
+problem, wrongdoing, or a known cause.
+
+With `AI_PROVIDER=none`, the same button returns the deterministic template entirely offline. The
+endpoint does not review, confirm, dismiss, or resolve the finding and cannot change inventory.
+
+7d–7e are not built yet.

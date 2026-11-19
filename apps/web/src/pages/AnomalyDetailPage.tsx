@@ -1,5 +1,11 @@
-import { type ReactNode, useCallback, useState } from 'react';
-import { type AnomalyStatus, getAnomaly, reviewAnomaly } from '../api/anomalies';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
+import {
+  type AnomalyStatus,
+  type AnomalyWords,
+  fetchAnomalyWords,
+  getAnomaly,
+  reviewAnomaly,
+} from '../api/anomalies';
 import { ApiError } from '../api/client';
 import {
   AnomalyStatusBadge,
@@ -88,6 +94,8 @@ export function AnomalyDetailPage({ id }: { id: string }) {
             </dl>
           </header>
 
+          <Words id={id} />
+
           {finding.data.nextSteps.length > 0 && (
             <section
               aria-labelledby="review-heading"
@@ -156,6 +164,89 @@ export function AnomalyDetailPage({ id }: { id: string }) {
           </section>
         </>
       )}
+    </section>
+  );
+}
+
+type WordsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; data: AnomalyWords };
+
+function Words({ id }: { id: string }) {
+  const requestNumber = useRef(0);
+  const [settled, setSettled] = useState<{ id: string; state: WordsState }>({
+    id,
+    state: { status: 'idle' },
+  });
+  const state = settled.id === id ? settled.state : { status: 'idle' as const };
+
+  const load = async () => {
+    const request = ++requestNumber.current;
+    setSettled({ id, state: { status: 'loading' } });
+    try {
+      const data = await fetchAnomalyWords(id);
+      if (request === requestNumber.current) {
+        setSettled({ id, state: { status: 'success', data } });
+      }
+    } catch (caught) {
+      if (request === requestNumber.current) {
+        setSettled({
+          id,
+          state: {
+            status: 'error',
+            message: caught instanceof ApiError ? caught.message : 'Unexpected error.',
+          },
+        });
+      }
+    }
+  };
+
+  return (
+    <section
+      aria-labelledby="plain-language-heading"
+      className="space-y-3 rounded-lg border bg-white p-5"
+    >
+      <div>
+        <h3 id="plain-language-heading" className="font-semibold">
+          Plain-language explanation
+        </h3>
+        <p className="text-sm text-slate-600">
+          Summarises what happened, the comparison, why it was flagged, and what to check.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => void load()}
+        disabled={state.status === 'loading'}
+        className="rounded bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-800 disabled:cursor-wait disabled:opacity-60"
+      >
+        {state.status === 'loading' ? 'Explaining…' : 'Explain in words'}
+      </button>
+      <div aria-live="polite">
+        {state.status === 'error' && <ErrorMessage message={state.message} onRetry={load} />}
+        {state.status === 'success' && (
+          <div className="space-y-2 rounded border border-sky-100 bg-sky-50 p-3 text-sm">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
+              {state.data.source === 'ai' ? 'AI-generated explanation' : 'Template explanation'}
+            </p>
+            {state.data.claims.map((claim, index) => (
+              <p key={`${claim.type}-${index}`}>
+                <span className="mr-2 rounded bg-white px-1.5 py-0.5 text-xs font-medium text-slate-600">
+                  {claim.type}
+                </span>
+                {claim.text}
+              </p>
+            ))}
+            <p className="text-xs text-slate-500">
+              {state.data.source === 'ai'
+                ? 'AI reworded verified finding values; it did not review the case or change stock.'
+                : 'This explanation was produced locally from the verified finding values.'}
+            </p>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

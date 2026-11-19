@@ -33,6 +33,14 @@ export class AnomaliesController {
     return this.anomalies.get(id, ctx.user);
   }
 
+  /** Reword only backend-selected finding facts; reviewing and stock remain untouched. */
+  @Roles(...READ_ROLES)
+  @Post(':id/explanation/words')
+  @HttpCode(200)
+  explainInWords(@Param(idParam) { id }: { id: string }, @Ctx() ctx: RequestContext) {
+    return this.anomalies.explainInWords(id, ctx);
+  }
+
   /** One review step, e.g. { status: 'INVESTIGATING' } or { status: 'DISMISSED', note }. */
   @Roles(...WRITE_ROLES)
   @Post(':id/review')

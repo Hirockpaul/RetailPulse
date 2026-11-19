@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
+import { AiService } from '../../core/ai/ai.service';
 import {
   accessibleLocationIds,
   assertLocationAccess,
@@ -16,10 +17,12 @@ import { frequentAdjustments, highReturnRate, largeWriteOff } from './anomalies.
 import {
   type AnomalyDetail,
   type AnomalyFinding,
+  type AnomalyWords,
   type ListAnomaliesQuery,
   type ReviewBody,
   TRANSITIONS,
 } from './anomalies.schemas';
+import { anomalyWords } from './anomalies.words';
 
 interface MovementPayload {
   ledgerId: string;
@@ -40,6 +43,7 @@ export class AnomaliesService {
   constructor(
     private readonly repo: AnomaliesRepository,
     private readonly db: DatabaseService,
+    private readonly ai: AiService,
   ) {}
 
   async list(q: ListAnomaliesQuery, user: AuthUser): Promise<Page<AnomalyFinding>> {
@@ -53,6 +57,21 @@ export class AnomaliesService {
     if (!finding) throw notFound();
     assertLocationAccess(user, finding.locationId);
     return this.withHistory(finding, user);
+  }
+
+  /** Reword this store-scoped finding without sending review notes or raw detector text. */
+  async explainInWords(id: string, ctx: RequestContext): Promise<AnomalyWords> {
+    const finding = await this.repo.find(id);
+    if (!finding) throw notFound();
+    assertLocationAccess(ctx.user, finding.locationId);
+    const prepared = anomalyWords(finding);
+    const result = await this.ai.explain({
+      userId: ctx.user.id,
+      feature: 'anomaly',
+      facts: prepared.facts,
+      template: prepared.template,
+    });
+    return { source: result.source, claims: result.answer.claims };
   }
 
   /** Move a finding one step in its review (NEW → INVESTIGATING → CONFIRMED → RESOLVED, …). */

@@ -61,7 +61,8 @@ export class AiClient {
           role: 'system',
           content:
             'Explain only the supplied verified facts in plain language. Do not add numbers. ' +
-            'Tag every claim. Predictions are uncertain. Model factors are associations, never causes.',
+            'Tag every claim. Predictions are uncertain. Model factors are associations, never causes. ' +
+            'Anomaly flags are signals to investigate, never proof of wrongdoing or a known cause.',
         },
         { role: 'user', content: JSON.stringify({ feature, facts }) },
       ],
