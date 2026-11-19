@@ -16,6 +16,34 @@ const EnvSchema = z
     FORECAST_URL: z.string().url().default('http://127.0.0.1:8000'),
     /** How often the event worker looks for new events. */
     EVENT_POLL_MS: z.coerce.number().int().min(50).max(60_000).default(1000),
+    /** Optional explanation provider. `none` is offline and is always the default. */
+    AI_PROVIDER: z.enum(['none', 'groq', 'nvidia']).default('none'),
+    GROQ_API_KEY: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    GROQ_MODEL: z.string().min(1).default('openai/gpt-oss-20b'),
+    /** Reserved for Phase 7e; selecting nvidia before then produces template text. */
+    NVIDIA_API_KEY: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    NVIDIA_MODEL: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    AI_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
+    AI_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(500),
+    AI_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(15_000),
+  })
+  .superRefine((env, ctx) => {
+    if (env.AI_PROVIDER === 'groq' && !env.GROQ_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GROQ_API_KEY'],
+        message: 'is required when AI_PROVIDER=groq',
+      });
+    }
   })
   .transform((env) => ({
     ...env,

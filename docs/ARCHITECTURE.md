@@ -9,6 +9,9 @@ with the "Markdown Preview Mermaid Support" extension).
 V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
+Phase 7a adds an internal, off-by-default AI explanation foundation. It has no route or UI yet; see
+[AI explanations](AI-EXPLANATIONS.md).
+
 ---
 
 ## 1. System context
@@ -115,6 +118,7 @@ flowchart TB
 | Versioning       | `bootstrap.ts`                             | Global prefix `/api/v1` (except `/metrics`)       |
 | Metrics          | `core/metrics/`                            | Prometheus registry per app; request latency by route **template**; `GET /metrics` (public, counts only) |
 | Tracing          | `core/tracing/`, forecasting `tracing.py`  | Optional OTLP/HTTP; W3C context API → FastAPI; HTTP/Express/pg + FastAPI spans |
+| AI explanations  | `core/ai/`                                 | Off by default; checked JSON claims over backend-selected facts; metadata-only audit |
 | Housekeeping     | `modules/housekeeping/`                    | Hourly: delete processed outbox events and idempotency keys older than 7 days (`HOUSEKEEPING_ENABLED`) |
 
 ---
@@ -215,6 +219,7 @@ erDiagram
 | V2 1e-1 ✅ | `forecast.anomaly_detections` (unique per product, store, day, kind) |
 | V2 1c ✅ | `forecast.explanations`, `forecast.feature_importance`; `explanation_status` on `forecast.runs` |
 | V2 1b ✅ | `forecast.interval_calibration`; `lower95`/`upper95` on `forecast.points` (CHECK: nested ranges); `interval95_*` on `forecast.model_metrics` |
+| Phase 7a ✅ | `ai_requests` (metadata only: user, feature, provider/model, tokens, duration, outcome/error; never prompt, facts, or answer text) |
 
 ### Key table shapes
 
@@ -971,3 +976,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 73 | Same-origin unsafe browser requests plus explicit API/Nginx headers and CSP (V2 5c) | SameSite is defence in depth; Origin/Fetch Metadata blocks cross-site writes, while nonce CSP protects the inline docs reader and static-location tests prevent Nginx header inheritance regressions | Non-browser clients without browser origin headers remain supported; React inline style attributes still require `style-src 'unsafe-inline'` |
 | 74 | Backups are `pg_dump` custom-format files with a SHA-256 manifest; restores only ever create a new database and must pass a read-only integrity check (V2 5e) | A restore can never overwrite the data it is meant to rescue; a damaged or edited dump is refused before anything happens; "restored" means "balances equal the ledger, outbox and migrations consistent", not just "no error" | Logical dumps are not point-in-time recovery (no WAL archiving); a backup is as fresh as the last `npm run db:backup`; switching the app to the restored database is manual |
 | 75 | End-to-end tests use a labelled fixture forecast instead of starting the forecasting service (V2 6-1) | The browser flow (risk → forecast → explanation → recommendation → transfer → stock) can be tested in seconds and deterministically; the Python service has its own suite and live checks | The e2e run does not exercise the Python service; a forecast-service regression is caught by `npm run forecast:test`, not by e2e |
+| 76 | One server-only OpenAI-compatible client for optional explanations; `AI_PROVIDER=none` by default (Phase 7a) | Later features share one timeout/retry/rate-limit/validation path; the backend selects facts and every output number is checked before display | Groq is the only implemented provider in 7a; strict JSON shape does not guarantee semantic truth, so local checks and template fallback remain mandatory |

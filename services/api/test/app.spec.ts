@@ -488,6 +488,18 @@ describe('loadEnv', () => {
     expect(loadEnv({ DATABASE_URL: 'postgresql://u:p@h:5432/db' })).toMatchObject({
       API_PORT: 3000,
       NODE_ENV: 'development',
+      AI_PROVIDER: 'none',
+      AI_TIMEOUT_MS: 15_000,
     });
+  });
+
+  it('requires a Groq key without printing its value', () => {
+    expect(() =>
+      loadEnv({
+        DATABASE_URL: 'postgresql://u:p@h:5432/db',
+        AI_PROVIDER: 'groq',
+        GROQ_API_KEY: '',
+      }),
+    ).toThrow(/GROQ_API_KEY/);
   });
 });

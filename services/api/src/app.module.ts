@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { AiModule } from './core/ai/ai.module';
 import { AuthCoreModule } from './core/auth/auth-core.module';
 import { AuthGuard } from './core/auth/auth.guard';
 import { ENV, type Env } from './core/config/env';
@@ -41,6 +42,7 @@ export class AppModule {
       global: true,
       imports: [
         DatabaseModule,
+        AiModule,
         MetricsModule,
         OpenApiModule,
         AuthCoreModule,
