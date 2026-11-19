@@ -71,7 +71,7 @@ export class AnomaliesService {
       facts: prepared.facts,
       template: prepared.template,
     });
-    return { source: result.source, claims: result.answer.claims };
+    return { source: result.source, provider: result.provider, claims: result.answer.claims };
   }
 
   /** Move a finding one step in its review (NEW → INVESTIGATING → CONFIRMED → RESOLVED, …). */

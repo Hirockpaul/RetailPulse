@@ -6,6 +6,7 @@ export const AI_FEATURES = [
   'report',
 ] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
+export type AiProvider = 'groq' | 'nvidia';
 
 export const AI_CLAIM_TYPES = [
   'fact',
@@ -42,6 +43,8 @@ export interface AiExplanationRequest {
 export interface AiExplanationResult {
   answer: AiAnswer;
   source: 'ai' | 'template';
+  /** Present only for model-generated wording; templates remain provider-independent. */
+  provider?: AiProvider;
 }
 
 export type AiErrorType =

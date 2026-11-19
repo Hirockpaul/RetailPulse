@@ -132,6 +132,7 @@ export interface ForecastExplanation {
 
 export interface ForecastWords {
   source: 'ai' | 'template';
+  provider?: 'groq' | 'nvidia';
   claims: {
     type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
     text: string;

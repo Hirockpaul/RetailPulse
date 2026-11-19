@@ -636,7 +636,7 @@ export class ReplenishmentService {
       facts: prepared.facts,
       template: prepared.template,
     });
-    return { source: result.source, claims: result.answer.claims };
+    return { source: result.source, provider: result.provider, claims: result.answer.claims };
   }
 
   /**

@@ -69,4 +69,22 @@ describe('forecast explanation in words', () => {
       locationId: STR1,
     });
   });
+
+  it('shows the provider for AI-generated wording', async () => {
+    fakeApi('ANALYST', {
+      '/forecasts/explanation/words': {
+        body: {
+          source: 'ai',
+          provider: 'nvidia',
+          claims: [{ type: 'prediction', text: 'The forecast is 4.9 units.' }],
+        },
+      },
+      '/forecasts/explanation': { body: explanation },
+    });
+    render(<ForecastExplanation productId="product-1" locationId={STR1} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Explain in words' }));
+
+    expect(await screen.findByText('AI-generated explanation (NVIDIA)')).toBeInTheDocument();
+  });
 });

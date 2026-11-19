@@ -121,6 +121,7 @@ export interface RecommendationDetail extends Recommendation {
 
 export interface RecommendationWords {
   source: 'ai' | 'template';
+  provider?: 'groq' | 'nvidia';
   claims: {
     type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
     text: string;

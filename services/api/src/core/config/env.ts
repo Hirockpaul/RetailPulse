@@ -23,15 +23,13 @@ const EnvSchema = z
       z.string().min(1).optional(),
     ),
     GROQ_MODEL: z.string().min(1).default('openai/gpt-oss-20b'),
-    /** Reserved for Phase 7e; selecting nvidia before then produces template text. */
     NVIDIA_API_KEY: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().min(1).optional(),
     ),
-    NVIDIA_MODEL: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.string().min(1).optional(),
-    ),
+    NVIDIA_MODEL: z
+      .preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional())
+      .default('nvidia/nemotron-3-ultra-550b-a55b'),
     AI_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
     AI_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(500),
     AI_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(15_000),
@@ -42,6 +40,13 @@ const EnvSchema = z
         code: 'custom',
         path: ['GROQ_API_KEY'],
         message: 'is required when AI_PROVIDER=groq',
+      });
+    }
+    if (env.AI_PROVIDER === 'nvidia' && !env.NVIDIA_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['NVIDIA_API_KEY'],
+        message: 'is required when AI_PROVIDER=nvidia',
       });
     }
   })

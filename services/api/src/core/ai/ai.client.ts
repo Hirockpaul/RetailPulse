@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import { ENV, type Env } from '../config/env';
-import type { AiErrorType, AiFact, AiFeature, AiGeneratedAnswer } from './ai.types';
+import type { AiErrorType, AiFact, AiFeature, AiGeneratedAnswer, AiProvider } from './ai.types';
 import { AI_ANSWER_JSON_SCHEMA, AiValidationError, validateAiAnswer } from './ai.validation';
 
 export const AI_FETCH = Symbol('AI_FETCH');
@@ -47,13 +47,27 @@ export class AiClient {
     @Inject(AI_SLEEP) private readonly sleep: AiSleep,
   ) {}
 
-  async generate(feature: AiFeature, facts: AiFact[]): Promise<AiGeneratedAnswer> {
-    if (this.env.AI_PROVIDER !== 'groq') {
-      throw new AiProviderError('unsupported_provider');
-    }
+  async generate(
+    provider: AiProvider,
+    feature: AiFeature,
+    facts: AiFact[],
+  ): Promise<AiGeneratedAnswer> {
+    const config =
+      provider === 'groq'
+        ? {
+            url: 'https://api.groq.com/openai/v1/chat/completions',
+            key: this.env.GROQ_API_KEY,
+            model: this.env.GROQ_MODEL,
+          }
+        : {
+            url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+            key: this.env.NVIDIA_API_KEY,
+            model: this.env.NVIDIA_MODEL,
+          };
+    if (!config.key) throw new AiProviderError('unsupported_provider');
 
-    const body = JSON.stringify({
-      model: this.env.GROQ_MODEL,
+    const request: Record<string, unknown> = {
+      model: config.model,
       temperature: this.env.AI_TEMPERATURE,
       max_tokens: this.env.AI_MAX_TOKENS,
       messages: [
@@ -61,30 +75,42 @@ export class AiClient {
           role: 'system',
           content:
             'Explain only the supplied verified facts in plain language. Do not add numbers. ' +
-            'Tag every claim. Predictions are uncertain. Model factors are associations, never causes. ' +
+            'Return exactly one JSON object shaped as ' +
+            '{"claims":[{"type":"fact|prediction|estimate|recommendation|unknown","text":"plain-language claim"}]}. ' +
+            'Use only those five type values, include no other keys, and return no markdown. ' +
+            'Predictions are uncertain. Model factors are associations, never causes. ' +
             'Anomaly flags are signals to investigate, never proof of wrongdoing or a known cause. ' +
             'For recommendations, explain the existing suggestion but never approve, reject, or create an order.',
         },
         { role: 'user', content: JSON.stringify({ feature, facts }) },
       ],
-      response_format: {
+    };
+    if (provider === 'groq') {
+      request.response_format = {
         type: 'json_schema',
         json_schema: {
           name: 'retailpulse_explanation',
           strict: true,
           schema: AI_ANSWER_JSON_SCHEMA,
         },
-      },
-    });
+      };
+    } else {
+      // NVIDIA hosted NIM streams and reasons visibly by default. RetailPulse needs one checked JSON
+      // object and never exposes chain-of-thought, so both behaviours are disabled explicitly.
+      request.stream = false;
+      request.reasoning_effort = 'none';
+      request.response_format = { type: 'json_object' };
+    }
+    const body = JSON.stringify(request);
 
     let validationFailures = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       let response: Response;
       try {
-        response = await this.fetcher('https://api.groq.com/openai/v1/chat/completions', {
+        response = await this.fetcher(config.url, {
           method: 'POST',
           headers: {
-            authorization: `Bearer ${this.env.GROQ_API_KEY}`,
+            authorization: `Bearer ${config.key}`,
             'content-type': 'application/json',
           },
           body,

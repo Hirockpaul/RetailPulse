@@ -1,5 +1,5 @@
 import { loadEnv, type Env } from '../config/env';
-import type { AiClient } from './ai.client';
+import { AiProviderError, type AiClient } from './ai.client';
 import type { AiRepository } from './ai.repository';
 import { AiService } from './ai.service';
 import type { AiExplanationRequest } from './ai.types';
@@ -55,7 +55,12 @@ describe('AiService', () => {
       client as unknown as AiClient,
     );
 
-    await expect(service.explain(request)).resolves.toEqual({ answer, source: 'ai' });
+    await expect(service.explain(request)).resolves.toEqual({
+      answer,
+      source: 'ai',
+      provider: 'groq',
+    });
+    expect(client.generate).toHaveBeenCalledWith('groq', 'forecast', request.facts);
     expect(repository.complete).toHaveBeenCalledWith(
       7,
       'ok',
@@ -109,5 +114,58 @@ describe('AiService', () => {
     const result = await service.explain(request);
     expect(JSON.stringify(result)).not.toContain(key);
     expect(result).toEqual({ answer: request.template, source: 'template' });
+  });
+
+  it('falls back to the other configured provider and audits both attempts', async () => {
+    const repository = {
+      reserve: jest
+        .fn()
+        .mockResolvedValueOnce({ requestId: 10 })
+        .mockResolvedValueOnce({ requestId: 11 }),
+      complete: jest.fn().mockResolvedValue(undefined),
+    };
+    const answer = { claims: [{ type: 'prediction' as const, text: 'Forecast is 12 units.' }] };
+    const client = {
+      generate: jest
+        .fn()
+        .mockRejectedValueOnce(new AiProviderError('provider_5xx'))
+        .mockResolvedValueOnce({
+          answer,
+          usage: { inputTokens: 6, outputTokens: 4 },
+        }),
+    };
+    const service = new AiService(
+      env({
+        AI_PROVIDER: 'nvidia',
+        NVIDIA_API_KEY: 'nvidia-key',
+        GROQ_API_KEY: 'groq-key',
+      }),
+      repository as unknown as AiRepository,
+      client as unknown as AiClient,
+    );
+
+    await expect(service.explain(request)).resolves.toEqual({
+      answer,
+      source: 'ai',
+      provider: 'groq',
+    });
+    expect(client.generate).toHaveBeenNthCalledWith(1, 'nvidia', 'forecast', request.facts);
+    expect(client.generate).toHaveBeenNthCalledWith(2, 'groq', 'forecast', request.facts);
+    expect(repository.complete).toHaveBeenNthCalledWith(
+      1,
+      10,
+      'fallback',
+      expect.any(Number),
+      { inputTokens: null, outputTokens: null },
+      'provider_5xx',
+    );
+    expect(repository.complete).toHaveBeenNthCalledWith(
+      2,
+      11,
+      'ok',
+      expect.any(Number),
+      { inputTokens: 6, outputTokens: 4 },
+      null,
+    );
   });
 });

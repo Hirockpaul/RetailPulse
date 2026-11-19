@@ -502,4 +502,21 @@ describe('loadEnv', () => {
       }),
     ).toThrow(/GROQ_API_KEY/);
   });
+
+  it('requires an NVIDIA key and defaults the hosted Nemotron model', () => {
+    expect(() =>
+      loadEnv({
+        DATABASE_URL: 'postgresql://u:p@h:5432/db',
+        AI_PROVIDER: 'nvidia',
+        NVIDIA_API_KEY: '',
+      }),
+    ).toThrow(/NVIDIA_API_KEY/);
+    expect(
+      loadEnv({
+        DATABASE_URL: 'postgresql://u:p@h:5432/db',
+        AI_PROVIDER: 'nvidia',
+        NVIDIA_API_KEY: 'server-only-key',
+      }),
+    ).toMatchObject({ NVIDIA_MODEL: 'nvidia/nemotron-3-ultra-550b-a55b' });
+  });
 });

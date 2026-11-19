@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation and 7b–7d explanations built.** RetailPulse remains a
+Status: **Phase 7a foundation and 7b–7e explanations built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -9,7 +9,7 @@ changes stock, approves recommendations, or creates orders.
 AI is off by default. With `AI_PROVIDER=none`, the API makes no AI network request and returns the
 existing backend template unchanged. This is also the safe setting when running fully offline.
 
-To enable the Groq client, set these server-side values in `.env` and restart the API:
+Choose a preferred provider with server-side values in `.env`, then restart the API. Groq:
 
 ```dotenv
 AI_PROVIDER=groq
@@ -20,19 +20,37 @@ AI_MAX_TOKENS=500
 AI_TIMEOUT_MS=15000
 ```
 
+NVIDIA hosted NIM:
+
+```dotenv
+AI_PROVIDER=nvidia
+NVIDIA_API_KEY=your-server-side-key
+NVIDIA_MODEL=nvidia/nemotron-3-ultra-550b-a55b
+AI_TEMPERATURE=0.2
+AI_MAX_TOKENS=500
+AI_TIMEOUT_MS=15000
+```
+
 The key is read only by the API process. It is never returned to the browser, stored in
-`ai_requests`, included in errors, or logged by the AI module. `NVIDIA_API_KEY` and `NVIDIA_MODEL`
-are reserved configuration for Phase 7e; the NVIDIA provider is not implemented in 7a.
+`ai_requests`, included in errors, or logged by the AI module.
 
 Groq uses its OpenAI-compatible chat-completions endpoint with strict JSON Schema output. The model
-stays configurable because provider model availability changes. References:
+stays configurable because provider model availability changes. NVIDIA uses its OpenAI-compatible
+hosted NIM endpoint with streaming disabled, reasoning disabled, and JSON-object output; the same
+local schema, numeric, and safety checks still apply. References:
 [Groq OpenAI compatibility](https://console.groq.com/docs/openai) and
-[Groq structured outputs](https://console.groq.com/docs/structured-outputs).
+[Groq structured outputs](https://console.groq.com/docs/structured-outputs), plus the
+[Nemotron 3 Ultra API reference](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/apireference).
+
+If both keys are configured, `AI_PROVIDER` is the preferred provider and the other provider is
+tried only after the preferred provider exhausts its safe retries or fails validation. Each
+provider attempt gets its own metadata-only `ai_requests` row. If neither succeeds, RetailPulse
+returns the local template. The UI labels successful model wording with `Groq` or `NVIDIA`.
 
 ## Data boundary
 
 The backend, not the model, selects the facts. A request can contain only a short feature name and
-an array of `{ id, label, value }` facts. Future 7b–7d callers will provide product name, store code,
+an array of `{ id, label, value }` facts. The 7b–7d callers provide product name, store code,
 calculated values, measured ranges, and model-factor labels as needed. They must not provide:
 
 - user names, email addresses, session data, or API keys;
@@ -108,7 +126,16 @@ are not sent.
 
 The output describes the existing suggestion and labels forecast values as predictions and safety
 stock as an estimate. It cannot approve or reject the suggestion, create a transfer or purchase
-order, or change stock. With `AI_PROVIDER=none` or any provider/validation failure, the same button
-returns the local template.
+order, or change stock. With `AI_PROVIDER=none`, or when all configured provider attempts fail, the
+same button returns the local template.
 
-7e is not built yet.
+## NVIDIA provider and fallback (7e)
+
+Nemotron 3 Ultra is available through the same server-only client as Groq. A live compatibility
+probe confirmed the configured hosted model accepts non-streaming JSON-object requests with
+reasoning disabled and returns OpenAI-style usage counts. Production code is still covered by
+mocked tests so the test suite needs no real key or network access.
+
+Provider fallback never changes the facts or validation rules: it sends the same minimum backend-
+selected payload to the second configured provider. It cannot call tools or domain services. The
+preferred failure and fallback success are separately auditable without storing either response.

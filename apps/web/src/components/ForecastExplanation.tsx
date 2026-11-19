@@ -108,7 +108,9 @@ function Words({ productId, locationId }: { productId: string; locationId: strin
         {state.status === 'success' && (
           <div className="space-y-2 rounded border border-sky-100 bg-sky-50 p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
-              {state.data.source === 'ai' ? 'AI-generated explanation' : 'Template explanation'}
+              {state.data.source === 'ai'
+                ? `AI-generated explanation (${state.data.provider === 'nvidia' ? 'NVIDIA' : 'Groq'})`
+                : 'Template explanation'}
             </p>
             {state.data.claims.map((claim, index) => (
               <p key={`${claim.type}-${index}`}>

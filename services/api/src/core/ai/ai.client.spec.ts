@@ -42,7 +42,7 @@ describe('AiClient', () => {
       .mockResolvedValue(success());
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).resolves.toEqual({
+    await expect(built.client.generate('groq', 'forecast', facts)).resolves.toEqual({
       answer: { claims: [{ type: 'prediction', text: 'Forecast is 12 units.' }] },
       usage: { inputTokens: 41, outputTokens: 9 },
     });
@@ -64,7 +64,7 @@ describe('AiClient', () => {
       .mockImplementation(async () => success('not-json'));
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+    await expect(built.client.generate('groq', 'forecast', facts)).rejects.toMatchObject({
       type: 'invalid_json',
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -80,7 +80,7 @@ describe('AiClient', () => {
       );
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+    await expect(built.client.generate('groq', 'forecast', facts)).rejects.toMatchObject({
       type: 'invented_number',
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -96,7 +96,7 @@ describe('AiClient', () => {
       );
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+    await expect(built.client.generate('groq', 'forecast', facts)).rejects.toMatchObject({
       type: 'unsafe_language',
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -108,7 +108,7 @@ describe('AiClient', () => {
     const fetcher = jest.fn<ReturnType<AiFetch>, Parameters<AiFetch>>().mockRejectedValue(timeout);
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+    await expect(built.client.generate('groq', 'forecast', facts)).rejects.toMatchObject({
       type: 'timeout',
       message: 'timeout',
     });
@@ -124,7 +124,7 @@ describe('AiClient', () => {
       .mockResolvedValueOnce(success());
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).resolves.toBeDefined();
+    await expect(built.client.generate('groq', 'forecast', facts)).resolves.toBeDefined();
     expect(built.sleep).toHaveBeenCalledWith(2000);
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -135,7 +135,7 @@ describe('AiClient', () => {
       .mockResolvedValue(new Response('', { status: 429, headers: { 'retry-after': '11' } }));
     const built = client(fetcher);
 
-    await expect(built.client.generate('forecast', facts)).rejects.toMatchObject({
+    await expect(built.client.generate('groq', 'forecast', facts)).rejects.toMatchObject({
       type: 'rate_limit',
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -150,7 +150,7 @@ describe('AiClient', () => {
 
     let error: unknown;
     try {
-      await built.client.generate('forecast', facts);
+      await built.client.generate('groq', 'forecast', facts);
     } catch (caught) {
       error = caught;
     }
@@ -158,5 +158,38 @@ describe('AiClient', () => {
     expect(JSON.stringify(error)).not.toContain('test-secret-key');
     expect(error).toMatchObject({ type: 'provider_5xx', message: 'provider_5xx' });
     expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('calls NVIDIA NIM without streaming or visible reasoning and checks its JSON', async () => {
+    const fetcher = jest
+      .fn<ReturnType<AiFetch>, Parameters<AiFetch>>()
+      .mockResolvedValue(success());
+    const sleep = jest.fn<ReturnType<AiSleep>, Parameters<AiSleep>>().mockResolvedValue(undefined);
+    const nvidiaClient = new AiClient(
+      env({
+        AI_PROVIDER: 'nvidia',
+        NVIDIA_API_KEY: 'nvidia-test-secret',
+        NVIDIA_MODEL: 'nvidia/nemotron-3-ultra-550b-a55b',
+      }),
+      fetcher,
+      sleep,
+    );
+
+    await expect(nvidiaClient.generate('nvidia', 'forecast', facts)).resolves.toEqual({
+      answer: { claims: [{ type: 'prediction', text: 'Forecast is 12 units.' }] },
+      usage: { inputTokens: 41, outputTokens: 9 },
+    });
+
+    const [url, init] = fetcher.mock.calls[0];
+    expect(url).toBe('https://integrate.api.nvidia.com/v1/chat/completions');
+    expect(init.headers).toMatchObject({ authorization: 'Bearer nvidia-test-secret' });
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({
+      model: 'nvidia/nemotron-3-ultra-550b-a55b',
+      stream: false,
+      reasoning_effort: 'none',
+      response_format: { type: 'json_object' },
+    });
+    expect(String(init.body)).not.toContain('nvidia-test-secret');
   });
 });

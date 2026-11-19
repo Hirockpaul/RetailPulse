@@ -145,6 +145,7 @@ export const fetchForecastExplanation = (productId: string, locationId: string) 
 
 export interface ForecastWords {
   source: 'ai' | 'template';
+  provider?: 'groq' | 'nvidia';
   claims: {
     type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
     text: string;
