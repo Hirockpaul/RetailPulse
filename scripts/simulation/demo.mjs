@@ -129,4 +129,4 @@ if (classes.status === 200) {
   console.log(`  ABC/XYZ skipped (${classes.status} ${classes.body.error?.code ?? ''}).`);
 }
 
-console.log('\n✓ Demo data ready (synthetic). Open the web app and start at Overview.');
+console.log('\n✓ Demo data ready (synthetic). Open the web app and start at the Control Tower.');

@@ -95,7 +95,8 @@ docker compose --profile full up --build -d --wait
 That builds three images, migrates and seeds the database with **synthetic** data, generates
 12 months of synthetic sales history, and starts the API, the forecasting service and the web
 app. Open **http://localhost:8080** and sign in as `inventory@retailpulse.test` with the
-`DEMO_PASSWORD` from your `.env`. The first build takes a few minutes (2.5 min measured on a laptop).
+`DEMO_PASSWORD` from your `.env`. The first build takes a few minutes (about 3 min from scratch, measured on a laptop:
+135 s build + 49 s start).
 
 Then, in the app: **Replenishment → Refresh forecasts** (about 30 s), and start at the **Control Tower**.
 To also simulate shop traffic and fill in alerts and recommendations from the command line
@@ -435,7 +436,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Memory of the running demo | API ≈ 81 MB, forecasting ≈ 173 MB, Postgres ≈ 146 MB, web ≈ 14 MB |
 | Image sizes | API 336 MB, web 82 MB, forecasting 872 MB (OpenTelemetry, SHAP and MLflow client added in V2) |
 | Backup / restore drill (dev data, 139 MB database) | backup **1.3 s** (5.4 MB dump), restore into a new database **3.8 s**, integrity check **0.2 s**; Control Tower identical from the restored copy |
-| Tests | 244 unit/HTTP + 276 integration (API), 13 web component, 127 Python, 6 end-to-end |
+| Tests | 244 unit/HTTP + 276 integration (API), 13 web component, 128 Python, 6 end-to-end |
 
 ## Known limitations
 
@@ -467,3 +468,7 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 ## Build plan
 
 The project is built in 7 days (A = build, B = verify). See [AGENT.md](AGENT.md#7-seven-day-build-plan).
+
+**V2 is complete** — what it adds, how to run it and its limits: [V2 release notes](docs/V2-RELEASE-NOTES.md).
+Every acceptance criterion with its evidence: [V2 traceability](docs/V2-TRACEABILITY.md). Plan and
+progress log: [V2-PLAN](docs/V2-PLAN.md).

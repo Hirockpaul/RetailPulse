@@ -5,6 +5,8 @@
 **/dist
 **/coverage
 **/.venv
+backups
+**/.artifacts
 **/__pycache__
 **/.pytest_cache
 **/.ruff_cache

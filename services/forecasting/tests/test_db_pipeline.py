@@ -331,6 +331,54 @@ def test_real_sales_override_synthetic_rows_for_the_same_day(catalog: dict) -> N
     assert (units, source) == (9, "LEDGER")
 
 
+def test_reloading_history_keeps_real_sales_and_skips_their_days(catalog: dict) -> None:
+    """Restarting the Docker demo regenerates history up to yesterday; real sales already rolled
+    up for those days must win (this crashed with a duplicate key before 6-2)."""
+    url = catalog["url"]
+    first = load_history(url, days=120, new_share=0.0)
+    with psycopg.connect(url) as conn:
+        product, store = conn.execute(
+            "SELECT p.id, l.id FROM products p, locations l WHERE p.sku = 'T-0000' AND l.code = 'S-1'"
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO inventory_ledger (product_id, location_id, movement_type, on_hand_delta) VALUES (%s,%s,'RECEIPT',500)",
+            (product, store),
+        )
+        conn.execute(
+            "INSERT INTO inventory_ledger (product_id, location_id, movement_type, on_hand_delta, occurred_at) VALUES (%s,%s,'SALE',-9, now() - interval '1 day')",
+            (product, store),
+        )
+        conn.commit()
+    with connect() as conn:
+        repository.aggregate_ledger(conn)
+        conn.commit()
+    with psycopg.connect(url) as conn:
+        yesterday = conn.execute(
+            "SELECT day FROM forecast.demand_daily WHERE source = 'LEDGER'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO forecast.injected_anomalies (product_id, location_id, day, kind, expected_units, actual_units, source) "
+            "VALUES (%s,%s,%s,'SPIKE',1,30,'SYNTHETIC') ON CONFLICT DO NOTHING",
+            (product, store, yesterday),
+        )
+        conn.commit()
+
+    second = load_history(url, days=120, new_share=0.0)
+
+    assert second == first - 1  # the one product-day with real sales is skipped
+    with psycopg.connect(url) as conn:
+        rows = conn.execute(
+            "SELECT units, source FROM forecast.demand_daily WHERE product_id = %s AND location_id = %s AND day = %s",
+            (product, store, yesterday),
+        ).fetchall()
+        labels = conn.execute(
+            "SELECT count(*) FROM forecast.injected_anomalies WHERE product_id = %s AND location_id = %s AND day = %s",
+            (product, store, yesterday),
+        ).fetchone()[0]
+    assert rows == [(9, "LEDGER")]
+    assert labels == 0  # no ground-truth label for a day whose synthetic sales were not written
+
+
 def test_a_second_run_does_not_duplicate_or_rewrite_anomaly_findings(catalog: dict) -> None:
     url = catalog["url"]
     load_history(url)

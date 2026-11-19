@@ -79,6 +79,7 @@ services:
       DATABASE_URL: *database-url
       MODEL_ARTIFACT_DIR: /var/lib/retailpulse/models
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+      MLFLOW_DISABLE_TELEMETRY: 'true' # no usage reporting from the MLflow client
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - model_artifacts:/var/lib/retailpulse/models
@@ -166,6 +167,11 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: 'true'
       GF_USERS_ALLOW_SIGN_UP: 'false'
+      # Local demo: no usage reporting, update checks or news feed calls to grafana.com.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-retailpulse}
     volumes:
@@ -203,6 +209,7 @@ services:
       # MLflow 3.x otherwise starts ~8 background job workers (~150 MB each) for GenAI
       # features this project doesn't use; together they exhausted WSL's RAM.
       MLFLOW_SERVER_ENABLE_JOB_EXECUTION: 'false'
+      MLFLOW_DISABLE_TELEMETRY: 'true' # no usage reporting
     mem_limit: 768m
     volumes:
       - mlflow_data:/mlflow

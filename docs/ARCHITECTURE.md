@@ -6,6 +6,9 @@ with the "Markdown Preview Mermaid Support" extension).
 
 > All data is synthetic. RetailPulse is an independent portfolio project.
 
+V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
+[acceptance traceability](V2-TRACEABILITY.md).
+
 ---
 
 ## 1. System context

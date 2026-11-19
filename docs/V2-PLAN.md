@@ -1,8 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3, Phase 4 and Phase 5 (5a–5e) are built** (see §9); next is step 6, final verification and
-release notes.
+Phase 3, Phase 4, Phase 5 (5a–5e) and Phase 6 are built** (see §9). **V2 is complete**:
+[release notes](V2-RELEASE-NOTES.md), [acceptance traceability](V2-TRACEABILITY.md).
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1775,3 +1775,65 @@ mocked at the module boundary. Production dependency audits stay clean (dev depe
 - Tests: web component 0 → **13**, e2e 5 → **6**; API unit 244, integration 276 (no API change),
   Python 127 unchanged. All checks and the production audit pass.
 
+
+### Step 6-2 — final verification, traceability, release notes: rules (written 2026-11-19, BEFORE verifying)
+
+**Fresh install.** A clean `git clone` of the pushed commit into a new folder (`rp-fresh`, so Compose
+creates *new, empty* volumes under its own project name; the dev volumes are only stopped, never
+read or deleted). Before starting, the dev database is backed up with `npm run db:backup` and the
+model artifacts are copied out. The install follows the README **word for word**, nothing else:
+`cp .env.example .env` → `docker compose --profile full up --build -d --wait` → in the app
+*Replenishment → Refresh forecasts* → `npm install && npm run demo`. Pass when:
+- every command exits 0 and the volumes are confirmed new and empty before the first start;
+  build and start time are measured;
+- `npm run db:verify` passes on the fresh database;
+- every page opens as the inventory manager at 1280 and 390 px with no console error and data
+  where data is expected; a store manager sees only STR-01;
+- in the same clone, the developer checks give the known counts: `npm run check` (244 API unit +
+  13 web), `npm run test:int` (276), `npm run forecast:test` (127, ruff), `npm run test:e2e` (6).
+
+Any step the README does not describe, or any failure, is a finding: fixed in the repository and
+reported, never worked around silently.
+
+**Traceability.** `docs/V2-TRACEABILITY.md`: one row per acceptance criterion of §3 and per item of
+the testing plan (§6) → evidence (test file, measured number with its §9 entry, or document) and a
+status: *Met*, *Met differently* (what and why) or *Not done*.
+
+**Release notes.** `docs/V2-RELEASE-NOTES.md`: what V2 adds, how to run it, how data gets in,
+measured results, known limitations and what is not done. README and ARCHITECTURE status lines
+point to it.
+
+### Step 6-2 — final verification, traceability, release notes ✅ (2026-11-19)
+
+- **Fresh install passed** (clean clone of `48bef2d`, project `rp-fresh`, new empty volumes; the dev
+  database was backed up first and its volumes were never touched): `build --no-cache` 135 s, `up
+  --wait` 49 s, *Refresh forecasts* in the browser 53 s (261 recommendations), `npm install` 34 s,
+  `npm run demo` 59 s — all exit 0. `db:verify` 7/7 PASS. All 15 pages and 5 detail pages as the
+  inventory manager at 1280 and 390 px: no console error, no failed request, no horizontal scroll;
+  store1 sees only STR-01 (other locations appear only as "From" choices for a transfer request).
+  In the clone: `check` 244 + 13, `test:int` 276, `forecast:test` 127, `test:e2e` 6 — all pass.
+- **Defect found and fixed — restart on an existing database.** Starting the dev stack again
+  (`up` after `down`) failed: `forecast-history` regenerates 12 months ending *yesterday*, and on a
+  database whose real sales were already rolled up for those days (`source = LEDGER`) its COPY hit
+  the primary key, so `forecasting` never started. A fresh install cannot show it; earlier sessions
+  used `--no-deps`. Fix in `app/synthetic/load.py`: product-days that already have real sales are
+  skipped (real sales win, as in the ledger roll-up) and their synthetic anomaly labels are removed;
+  the write guard is unchanged (a first attempt with a temporary table was caught by it). New test
+  `test_reloading_history_keeps_real_sales_and_skips_their_days` failed with the same
+  UniqueViolation before the fix. Re-verified on the dev data: `down` → `up` exit 0, 519 LEDGER rows
+  kept, `db:verify` PASS. Python 127 → **128**.
+- **Findings** (small, fixed): the demo script still said "start at Overview" (now "the Control
+  Tower"); the README build time is re-measured (≈ 3 min from scratch). `app/tracing.py` reformatted with
+  `ruff format` (layout only). Noted, not changed: one
+  expected 401 before sign-in (the session check); a Starlette deprecation warning in the Python
+  tests; npm's notice about two packages' install scripts (known since 6-1).
+- **Environment review (read-only, then fixed):** removed the unused `FORECAST_PORT` from
+  `.env.example`; `backups/` and model artifacts excluded from Docker build contexts (API context
+  11 MB → 955 kB); Grafana usage reporting, update checks and news feed off; MLflow telemetry off
+  (server and client, verified in the containers); `.env.example` states which characters
+  `POSTGRES_PASSWORD` may use (it goes into connection URLs unencoded). No external API keys or
+  cloud services are used; nothing at runtime needs the internet.
+- **Traceability:** [V2-TRACEABILITY.md](V2-TRACEABILITY.md) — every criterion of §3, every testing-plan
+  item and D1–D7 is *Met*; one is *Met differently* (the e2e forecast is a labelled fixture; the
+  real service ran in the fresh install).
+- **Release notes:** [V2-RELEASE-NOTES.md](V2-RELEASE-NOTES.md); README and ARCHITECTURE point to them.

@@ -30,16 +30,28 @@ def replace_synthetic(
 ) -> int:
     """Replace all SYNTHETIC demand rows with `history`, and the synthetic promotion calendar and
     anomaly labels with `promotions` / `anomalies`, in one transaction. Real (LEDGER) rows are
-    never touched."""
+    never touched: a product-day that already has real sales keeps them, gets no synthetic row
+    and no anomaly label. Returns the number of synthetic rows written."""
     conn.execute("DELETE FROM forecast.demand_daily WHERE source = 'SYNTHETIC'")
     conn.execute("DELETE FROM forecast.promotions WHERE source = 'SYNTHETIC'")
     conn.execute("DELETE FROM forecast.injected_anomalies WHERE source = 'SYNTHETIC'")
+    real_days = {
+        (product_id, location_id, day)
+        for product_id, location_id, day in conn.execute(
+            "SELECT product_id::text, location_id::text, day FROM forecast.demand_daily "
+            "WHERE source = 'LEDGER'"
+        ).fetchall()
+    }
+    written = 0
     with conn.cursor() as cur:
         with cur.copy(
             "COPY forecast.demand_daily (product_id, location_id, day, units, source) FROM STDIN"
         ) as copy:
             for product_id, location_id, day, units in history.itertuples(index=False):
+                if (product_id, location_id, day) in real_days:
+                    continue
                 copy.write_row((product_id, location_id, day, int(units), "SYNTHETIC"))
+                written += 1
         if promotions is not None and not promotions.empty:
             with cur.copy(
                 "COPY forecast.promotions (product_id, location_id, day, uplift, source) FROM STDIN"
@@ -64,5 +76,10 @@ def replace_synthetic(
                             "SYNTHETIC",
                         )
                     )
+            cur.execute(
+                "DELETE FROM forecast.injected_anomalies a USING forecast.demand_daily d "
+                "WHERE a.source = 'SYNTHETIC' AND d.source = 'LEDGER' AND d.product_id = a.product_id "
+                "AND d.location_id = a.location_id AND d.day = a.day"
+            )
     conn.commit()
-    return len(history)
+    return written
