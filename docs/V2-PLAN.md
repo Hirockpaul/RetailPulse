@@ -1,7 +1,7 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3, steps 4a–4d and 5a–5b are built** (see §9); next is 5c, the security review.
+Phase 3, steps 4a–4d and 5a–5d are built** (see §9); next is 5e, backup and restore.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -320,6 +320,28 @@ anomalies, intervals, ABC/XYZ and supplier statistics all depend on it.
   IDs are joined to spans/response headers, and the forecasting middleware accepts/returns the same
   correlation ID. A live profile check must show one trace spanning API and forecasting in Jaeger,
   while stopping Jaeger must not stop either application service.
+
+### Step 5c — security review: rules (written 2026-11-18, BEFORE building)
+
+- Produce `docs/SECURITY-REVIEW.md`: threat model, an evidence-linked checklist, fixed findings,
+  accepted local-demo risks and repeatable verification commands. It must not call the synthetic
+  localhost demo production-ready or hide the trust boundaries around Grafana, Jaeger, MLflow,
+  Prometheus and the internal forecasting service.
+- Re-verify authentication and authorization: deny-by-default route metadata, anonymous rejection,
+  role and store scope, scrypt password storage, server-side hashed sessions, expiry/logout,
+  production cookie flags, login throttling and indistinguishable bad-login errors. Existing tests
+  count as evidence; add a focused test for every uncovered behaviour.
+- Treat `SameSite=Strict` as defence in depth. Reject unsafe browser requests when `Origin` does not
+  match the effective host or Fetch Metadata says `cross-site`; keep non-browser/API clients that
+  omit both headers operational. Do not enable permissive CORS.
+- Add response hardening to the API and every Nginx response location. The application reader gets
+  a per-response nonce CSP; the React app gets a restrictive CSP compatible with its existing
+  inline style attributes. HSTS remains a TLS-terminator responsibility and is deliberately absent
+  from the localhost HTTP demo.
+- Re-verify validation, parameterized SQL, stable error envelopes, output escaping, secret/log/span
+  hygiene and private service exposure. Add dependency-vulnerability checks to CI and record the
+  clean audit result. Security checks must pass alongside the full unit, integration, forecasting,
+  browser, build and Compose checks; no secret may be added to the repository.
 
 ### Phase 6 — Final verification and release notes (as in the brief).
 
@@ -1547,4 +1569,91 @@ looked at page by page; store manager sees only own-store scopes.
 - Verification: API unit **229 → 234**, integration **270**, forecasting **124 → 127**, browser e2e
   **5**; formatting, lint, typecheck, both production builds, Compose validation and Docker images
   all pass.
+
+### Step 5c — security review ✅ (2026-11-18)
+
+- `docs/SECURITY-REVIEW.md` records the threat model, evidence-linked executable checklist, six
+  fixed findings, accepted local-demo risks, deployment requirements and repeatable commands. It
+  explicitly keeps forecasting and the optional infrastructure inside their current trust boundary
+  and does not describe the synthetic localhost demo as production-ready.
+- Unsafe browser writes now reject a mismatched/malformed `Origin` or Fetch Metadata
+  `cross-site`, while same-origin browser calls and service/CLI clients without browser headers keep
+  working. The API adds no-store, nosniff, frame, referrer and permissions headers. The signed-in
+  docs page uses a random per-response nonce CSP; the React app has an explicit CSP and complete
+  headers in both Nginx static locations.
+- PostgreSQL now binds to `127.0.0.1` like every other published Compose port; forecasting remains
+  unpublished. Grafana no longer creates an administrator from a committed fallback password: the
+  local synthetic dashboards use anonymous read-only viewing and the already restricted reporting
+  database role.
+- CI now fails on high-severity Node production dependency advisories and any known forecasting
+  production advisory (`pip-audit` is pinned). Both audits are clean as of the review. Focused tests
+  cover headers, CSP nonce matching, cross-site denial, allowed proxy/service calls, production
+  cookie options, Nginx inheritance, loopback port bindings and the absence of a default Grafana
+  administrator.
+- Verification: API unit/HTTP **234 → 244**, integration **270**, forecasting **127**, browser e2e
+  **5**; formatting, lint, typecheck, both production builds, Compose validation, Node/Python
+  dependency audits and all three Docker image builds pass.
+
+
+### Step 5d — performance verification: rules (written 2026-11-19, BEFORE measuring)
+
+**Where:** the production Docker API (port 3000) on the dev data (200 products × 7 locations,
+~349,000 daily demand rows, 1 forecast run of 1,000 series), one laptop (WSL2). Local numbers, not a
+benchmark claim. Everything is repeatable with `npm run measure` (extended, below).
+
+**`npm run measure`** is extended, not replaced:
+1. *Reads* — every V2 read path is added to the Day-7 list (Control Tower and locations,
+   replenishment status, forecast series / explanation, classifications, suppliers, anomalies,
+   model registry and monitoring, scenarios, reports, OpenAPI document). 200 sequential requests
+   after 10 warm-ups; p50 / p95 / max.
+2. *Operations* (`--ops`) — the heavy actions an approver triggers, 5 runs each, median and max:
+   generate recommendations, run a scenario, generate a report, recalculate ABC/XYZ. They are run
+   on the dev data exactly as a user would (recommendation generation replaces pending ones — that
+   is its normal behaviour).
+3. *Load* (`--load`) — 20 concurrent signed-in readers for 30 s over a mix of the read paths;
+   requests per second, p95, errors.
+
+**Targets, fixed now:**
+- simple list / detail reads: **p95 ≤ 100 ms**; aggregate read models (`/overview`,
+  `/overview/locations`, `/replenishment/status`, `/ml/monitoring`, `/forecasts/series`): **p95 ≤
+  300 ms**;
+- operations (median): recommendation generation ≤ 5 s, scenario run ≤ 2 s, report ≤ 2 s,
+  ABC/XYZ recalculation ≤ 5 s;
+- load: **0 errors**, p95 ≤ 1 s;
+- POS simulator (500 sales, 8 at a time, as on Day 7): 0 unexpected errors.
+
+**SQL check:** during the measurement PostgreSQL logs every statement slower than **20 ms**
+(`log_min_duration_statement`, set on the database for the run and reset afterwards). Each logged
+statement is run again under `EXPLAIN (ANALYZE, BUFFERS)`; a sequential scan of more than 100,000
+rows, or a statement over 50 ms, gets an index or a written reason. Anything over its target is
+investigated and fixed or reported as found — targets are not changed after measuring.
+
+### Step 5d — performance verification ✅ (2026-11-19)
+
+- `npm run measure` now covers **23 read paths** with their targets (was 7), plus `--ops` (heavy
+  operations, 5 runs each) and `--load` (20 concurrent readers, 30 s). Measured against the
+  production Docker images rebuilt from the current code, with tracing **off** (the demo had been
+  left with Jaeger tracing on after 5b; the default demo has it off).
+- **All targets met.** Reads: simple p95 7.5–17 ms (≤ 100); aggregates `/overview` 187 ms,
+  `/overview/locations` 44, `/replenishment/status` 18, `/forecasts/series` 12, `/ml/monitoring` 9
+  (≤ 300). Operations (median): recommendations 547 ms, scenario 96, report 143, ABC/XYZ 597.
+  Load: 190 req/s, p95 237 ms, 0 errors. POS simulator: 500 sales in 2.9 s, 0 unexpected errors.
+- **SQL check — one real fix.** With `log_min_duration_statement = 20` (reset afterwards), 1,253
+  slow executions of 14 statements were logged. The Control Tower's 28-day sales series ran 479
+  times at a median of 150 ms: `EXPLAIN (ANALYZE, BUFFERS)` showed a sequential scan of all 349,084
+  demand rows with a hash spilling to disk, because the day range was only implied by the join on
+  `generate_series`. Stating the range on `forecast.demand_daily` lets the existing `day` index work:
+  **186.8 → 12.7 ms**, identical results (checksums equal). Re-measured: `/overview` p50 129.7 →
+  **33.3 ms**, p95 187 → **66 ms**; load **334 req/s**, p95 109 ms, 0 errors.
+- **Written reasons for the rest:** ABC/XYZ weekly aggregation (171 ms), its window/label query
+  (137 ms), first-sale days (42 ms) and the classification insert (78 ms) read or write a whole year
+  for ~1,200 results by design, once a day (total 597 ms, target 5 s). The position query of the
+  Control Tower is 26 ms median; its 819 ms maximum occurred only under the 20-client load on a
+  laptop sharing CPU with all containers. Recommendation loading (40 ms) and the scenario/report
+  queries are under 50 ms.
+- Measurement trap found: `docker logs --since` and large `--tail` values returned old or no lines
+  on this machine (the Docker VM clock disagrees with WSL); the slow log was read with `--tail 50000`
+  and PostgreSQL's own timestamps.
+- Tests: API unit 244, integration 270 (Overview tests re-run after the fix: 13 pass), Python 127,
+  e2e 5 — unchanged. Docker API, web and forecasting images rebuilt.
 

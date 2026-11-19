@@ -1,7 +1,8 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Header, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { READ_ROLES, Roles } from '../auth/roles';
 import { OPENAPI_DOCUMENT } from './openapi.document';
-import { OPENAPI_PAGE } from './openapi.page';
+import { renderOpenApiPage } from './openapi.page';
 
 /** Generated contract and dependency-free reader. Both intentionally require a signed-in user. */
 @Roles(...READ_ROLES)
@@ -14,7 +15,7 @@ export class OpenApiController {
 
   @Get('docs')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  page() {
-    return OPENAPI_PAGE;
+  page(@Res({ passthrough: true }) res: Response) {
+    return renderOpenApiPage(res.locals.cspNonce as string);
   }
 }

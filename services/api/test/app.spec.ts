@@ -12,6 +12,7 @@ import { loadEnv } from '../src/core/config/env';
 import { DatabaseService } from '../src/core/database/database.service';
 import { OPENAPI_DOCUMENT } from '../src/core/openapi/openapi.document';
 import { OPENAPI_ROUTES, routeKey } from '../src/core/openapi/openapi.routes';
+import { sessionCookieOptions } from '../src/modules/auth/auth.controller';
 
 const env = loadEnv({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://u:p@localhost:1/none' });
 
@@ -39,7 +40,10 @@ async function buildApp(ping: () => Promise<number>): Promise<INestApplication> 
     .overrideProvider(DatabaseService)
     .useValue({ ping, onModuleDestroy: async () => undefined })
     .overrideProvider(SessionService)
-    .useValue({ validate: async (token: string) => SESSIONS[token] ?? null })
+    .useValue({
+      validate: async (token: string) => SESSIONS[token] ?? null,
+      destroy: async () => undefined,
+    })
     .compile();
   const app = configureApp(moduleRef.createNestApplication({ logger: false }));
   await app.init();
@@ -171,6 +175,61 @@ describe('authentication and roles (global guard)', () => {
   });
 });
 
+describe('HTTP security boundary', () => {
+  let app: INestApplication;
+  beforeAll(async () => {
+    app = await buildApp(async () => 1);
+  });
+  afterAll(async () => app.close());
+
+  it('sets browser hardening headers without enabling cross-origin access', async () => {
+    const res = await request(app.getHttpServer()).get('/api/v1/health').expect(200);
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['referrer-policy']).toBe('no-referrer');
+    expect(res.headers['permissions-policy']).toBe('camera=(), geolocation=(), microphone=()');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it.each([
+    ['Origin', 'https://evil.example'],
+    ['Sec-Fetch-Site', 'cross-site'],
+  ])('rejects unsafe cross-site browser requests identified by %s', async (header, value) => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/logout')
+      .set(header, value)
+      .expect(403);
+    expect(res.body).toEqual({
+      error: {
+        code: 'CROSS_SITE_REQUEST',
+        message: 'Cross-site browser requests are not allowed.',
+      },
+      correlationId: expect.any(String),
+    });
+  });
+
+  it('accepts same-origin browser writes and non-browser clients without Origin', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/logout')
+      .set('Origin', 'https://retail.example')
+      .set('X-Forwarded-Proto', 'https')
+      .set('X-Forwarded-Host', 'retail.example')
+      .expect(200);
+    await request(app.getHttpServer()).post('/api/v1/auth/logout').expect(200);
+  });
+
+  it('uses Secure, HttpOnly and SameSite=Strict for production sessions', () => {
+    expect(sessionCookieOptions('production')).toMatchObject({
+      secure: true,
+      httpOnly: true,
+      sameSite: 'strict',
+      path: '/',
+    });
+    expect(sessionCookieOptions('test').secure).toBe(false);
+  });
+});
+
 describe('generated OpenAPI', () => {
   let app: INestApplication;
   beforeAll(async () => {
@@ -235,6 +294,14 @@ describe('generated OpenAPI', () => {
     expect(res.text).toContain('RetailPulse API documentation');
     expect(res.text).toContain('/api/v1/openapi.json');
     expect(res.text).toMatch(/synthetic/i);
+    const policy = res.headers['content-security-policy'] as string;
+    const nonce = policy.match(/script-src 'nonce-([^']+)'/)?.[1];
+    expect(nonce).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+    expect(policy).toContain(`style-src 'nonce-${nonce}'`);
+    expect(policy).not.toContain('unsafe-inline');
+    expect(res.text).toContain(`<style nonce="${nonce}">`);
+    expect(res.text).toContain(`<script nonce="${nonce}">`);
+    expect(res.text).not.toContain(' style=');
   });
 
   it('covers every real Nest route exactly once and has unique operation ids', () => {

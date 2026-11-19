@@ -1,16 +1,19 @@
-export const OPENAPI_PAGE = `<!doctype html>
+/** Render the protected API reader with a per-response CSP nonce. */
+export function renderOpenApiPage(nonce: string): string {
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>RetailPulse API documentation</title>
-  <style>
+  <style nonce="${nonce}">
     :root { color-scheme: light; font: 15px/1.5 system-ui, sans-serif; color: #172033; background: #f6f8fb; }
     body { margin: 0; }
     header { background: #172033; color: white; padding: 2rem max(1rem, calc((100% - 70rem)/2)); }
     header p { color: #cdd6e5; max-width: 55rem; }
     main { max-width: 70rem; margin: auto; padding: 1.5rem 1rem 4rem; }
     a { color: #1559a6; }
+    .download { color: #a9d4ff; }
     #status { color: #526078; }
     section { margin-top: 2rem; }
     article { background: white; border: 1px solid #dce2eb; border-radius: .55rem; margin: .65rem 0; overflow: hidden; }
@@ -28,13 +31,13 @@ export const OPENAPI_PAGE = `<!doctype html>
   <header>
     <h1>RetailPulse API</h1>
     <p>Generated OpenAPI 3.1 documentation for an independent inventory simulation. All demo and forecast data is synthetic.</p>
-    <a href="/api/v1/openapi.json" style="color:#a9d4ff">Download openapi.json</a>
+    <a class="download" href="/api/v1/openapi.json">Download openapi.json</a>
   </header>
   <main>
     <p id="status">Loading the signed-in API contract…</p>
     <div id="routes"></div>
   </main>
-  <script>
+  <script nonce="${nonce}">
     const status = document.querySelector('#status');
     const routes = document.querySelector('#routes');
     const esc = (value) => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -71,3 +74,4 @@ export const OPENAPI_PAGE = `<!doctype html>
   </script>
 </body>
 </html>`;
+}

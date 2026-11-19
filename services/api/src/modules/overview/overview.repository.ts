@@ -204,11 +204,17 @@ export class OverviewRepository {
     if (!runId || !historyEnd) return { history: [], forecast: [] };
     const [history, forecast] = await Promise.all([
       this.db.query<DayUnits>(
-        `SELECT g.day::date::text AS day, COALESCE(SUM(dd.units), 0)::int AS units
+        // The day range is stated on demand_daily itself so its day index is used (V2 5d:
+        // joining on the generated series alone read all ~349,000 rows; 187 → 13 ms).
+        `WITH sold AS (
+           SELECT day, SUM(units)::int AS units FROM forecast.demand_daily
+            WHERE day BETWEEN $1::date - ($2::int - 1) AND $1::date
+              AND ($3::uuid[] IS NULL OR location_id = ANY($3))
+            GROUP BY day)
+         SELECT g.day::date::text AS day, COALESCE(s.units, 0)::int AS units
            FROM generate_series($1::date - ($2::int - 1), $1::date, interval '1 day') AS g(day)
-           LEFT JOIN forecast.demand_daily dd ON dd.day = g.day::date
-                 AND ($3::uuid[] IS NULL OR dd.location_id = ANY($3))
-          GROUP BY g.day ORDER BY g.day`,
+           LEFT JOIN sold s ON s.day = g.day::date
+          ORDER BY g.day`,
         [historyEnd, days, locationIds],
       ),
       this.db.query<DayUnits>(

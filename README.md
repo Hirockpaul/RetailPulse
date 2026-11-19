@@ -211,7 +211,9 @@ npm run demo
 
 > **Security note:** every API route needs a session and an allowed role (see
 > [Roles and access](docs/ARCHITECTURE.md#roles-and-access)). The demo accounts and their shared
-> password are for local use only. Failed logins are rate-limited per email and IP.
+> password are for local use only. Failed logins are rate-limited per email and IP. Unsafe browser
+> writes must also be same-origin. The complete threat model, checklist and accepted local-demo
+> limitations are in [the V2 security review](docs/SECURITY-REVIEW.md).
 
 ### Forecasting and replenishment (Day 6)
 
@@ -392,14 +394,16 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 
 | What | Result |
 | ---- | ------ |
-| Read latency, 200 sequential requests each (products search, stock, ledger, alerts, recommendations) | p95 **6–10 ms** |
-| `GET /overview` (classifies all 1,000 product × store positions) | p50 19 ms, p95 **24 ms** |
-| 500 simulated POS sales, 8 at a time | **2.4 s** (≈ 200 sales/s), 0 unexpected errors |
+| Read latency, 200 sequential requests each, 23 read paths (V2 5d, `npm run measure`) | simple reads p95 **7.5–17 ms**; all within target |
+| `GET /overview` — Control Tower (KPIs, risks, charts over 1,000 positions) | p50 33 ms, p95 **66 ms** (was 187 ms before the 5d query fix) |
+| Heavy operations, median of 5 (`npm run measure -- --ops`) | recommendations 547 ms · scenario 96 ms · report 143 ms · ABC/XYZ 597 ms |
+| 20 concurrent readers for 30 s (`npm run measure -- --load`) | **334 req/s**, p95 109 ms, 0 errors |
+| 500 simulated POS sales, 8 at a time | **2.9 s**, 0 unexpected errors (168 refused for lack of stock — the demo stores have been drained by earlier runs) |
 | Forecast run, 1,000 series (3 models + backtest) | 35–40 s |
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
-| Memory of the running demo | API ≈ 45–95 MB, forecasting ≈ 195 MB, Postgres ≈ 160 MB, web ≈ 15 MB |
-| Image sizes | API 288 MB, web 82 MB, forecasting 744 MB |
-| Tests | 234 unit/HTTP + 270 integration (TypeScript), 127 Python, 5 end-to-end |
+| Memory of the running demo | API ≈ 81 MB, forecasting ≈ 173 MB, Postgres ≈ 146 MB, web ≈ 14 MB |
+| Image sizes | API 336 MB, web 82 MB, forecasting 872 MB (OpenTelemetry, SHAP and MLflow client added in V2) |
+| Tests | 244 unit/HTTP + 270 integration (TypeScript), 127 Python, 5 end-to-end |
 
 ## Known limitations
 
@@ -413,6 +417,9 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
   Grafana's database credential is restricted to `reporting` views, but anonymous business data is
   still suitable only for this synthetic localhost demo. The session cookie is `Secure` in the
   container, which browsers accept on `http://localhost` only.
+- **Production edge not included.** The local HTTP demo has no HSTS. A real deployment must add a
+  trusted TLS reverse proxy, allowed hosts, HSTS after HTTPS is proven, infrastructure
+  authentication and shared rate-limit storage; see the [security review](docs/SECURITY-REVIEW.md).
 - **Retention.** Processed outbox events and idempotency keys are deleted after 7 days (a retry
   with the same key after that counts as a new request). Dead letters are kept until replayed.
 - **Not built:** manual purchase orders, partial transfer deliveries, Redis/Superset, hosting.
