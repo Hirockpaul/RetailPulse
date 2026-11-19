@@ -64,6 +64,7 @@ RetailPulse/
 ├── services/api/
 │   ├── migrations/           Plain SQL migrations (0001_*.sql, 0002_*.sql …)
 │   ├── scripts/migrate.mjs   Tiny migration runner (checksums + advisory lock)
+│   ├── scripts/verify.mjs    Read-only integrity check (`npm run db:verify`)
 │   └── src/
 │       ├── core/             config, database, http (no business logic)
 │       └── modules/          one folder per domain: health, catalog, inventory, …
@@ -73,6 +74,7 @@ RetailPulse/
 ├── docker-compose.yml        PostgreSQL; optional `full`, `observability`, `mlops`, `tracing` profiles
 ├── ops/observability/        Prometheus config + Grafana dashboard
 ├── scripts/simulation/       POS simulator, `npm run demo`, `npm run measure`
+├── scripts/db/               `npm run db:backup` / `npm run db:restore` (into a new database only)
 ├── .env.example
 ├── AGENT.md                  Rules + 7-day build plan for AI coding agents
 └── README.md
@@ -386,6 +388,35 @@ npm run test:e2e
     It requires the same signed-in session as the app; `/api/v1/openapi.json` is the machine-readable
     OpenAPI 3.1 document.
 
+## Backup and restore
+
+```bash
+npm run db:backup
+```
+
+writes `backups/retailpulse-<UTC time>.dump` (PostgreSQL custom format) and a `.manifest.json`
+(SHA-256, size, last migration, row counts, whether the integrity check passed). `backups/` is
+git-ignored: a dump contains all data, including user accounts and password hashes.
+
+```bash
+npm run db:restore -- backups/retailpulse-<UTC time>.dump --target=retailpulse_restored
+```
+
+restores **only into a new database**: it refuses the live database, an existing database, and a
+dump whose SHA-256 does not match its manifest. It restores in one transaction, then runs the
+integrity check and compares row counts with the manifest. Nothing is switched over automatically:
+to use the restored copy, stop the API, set `POSTGRES_DB` / `DATABASE_URL` to the new name and
+start it again.
+
+```bash
+npm run db:verify
+```
+
+checks any database at any time (read-only; `-- --db=<name>` for another one): balances equal the
+ledger, no negative stock, outbox consistent, migrations equal to the files. Exit code 1 on a
+failure. Backups are logical dumps — there is no point-in-time recovery; a backup is as recent as
+the last `npm run db:backup`.
+
 ## Measured numbers
 
 Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with the seeded synthetic data
@@ -403,7 +434,8 @@ Measured on one laptop (WSL2, 16 logical CPUs, 3.5 GB RAM given to Linux) with t
 | Forecast accuracy (test window, WAPE) | gradient boosting 51.6 %, best baseline 54.4 %, noise floor 51.0 % (`npm run forecast:measure`); 80 % / 95 % ranges held 80.0 % / 94.9 % — see [ARCHITECTURE §7.3](docs/ARCHITECTURE.md#73-measured-accuracy-synthetic-data--not-a-claim-about-real-retail) |
 | Memory of the running demo | API ≈ 81 MB, forecasting ≈ 173 MB, Postgres ≈ 146 MB, web ≈ 14 MB |
 | Image sizes | API 336 MB, web 82 MB, forecasting 872 MB (OpenTelemetry, SHAP and MLflow client added in V2) |
-| Tests | 244 unit/HTTP + 270 integration (TypeScript), 127 Python, 5 end-to-end |
+| Backup / restore drill (dev data, 139 MB database) | backup **1.3 s** (5.4 MB dump), restore into a new database **3.8 s**, integrity check **0.2 s**; Control Tower identical from the restored copy |
+| Tests | 244 unit/HTTP + 276 integration (TypeScript), 127 Python, 5 end-to-end |
 
 ## Known limitations
 

@@ -839,11 +839,13 @@ RetailPulse/
 │           ├── lib/ ✅              router.ts (hash routes), useAsync.ts, format.ts
 │           └── pages/ ✅            Overview (landing), ABC/XYZ, Suppliers (+ detail), Unusual activity (+ detail), Products, ProductDetail, Stock, Transfers, Alerts, Replenishment, Purchase orders, Health
 │
+├── scripts/db/ ✅                  V2 5e: backup.sh (npm run db:backup), restore.sh (npm run db:restore,
+│                                    new database only), lib.sh; the check is services/api/scripts/verify.mjs
 └── scripts/simulation/ ✅
     ├── pos-sim.mjs                  POS traffic simulator (npm run sim:pos; signs in)
     ├── suspicious-sim.mjs           npm run sim:suspicious: a write-off, repeated corrections, many returns (via the API)
     ├── demo.mjs                     npm run demo: POS traffic, alert re-scan, unusual activity, forecast, recommendations
-    └── measure.mjs                  npm run measure: sequential read-latency percentiles
+    └── measure.mjs                  npm run measure: 23 read paths with targets; --ops; --load (V2 5d)
 ```
 
 ### Module file convention (API)
@@ -963,3 +965,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 71 | One route registry generates OpenAPI request contracts from the controllers' existing Zod schemas; Nest discovery checks complete coverage (V2 5a) | No duplicate validation decorators or new library; adding, removing or changing a route without its contract fails CI | Responses without runtime Zod validators have accurate status/media type but no invented field schema; the dependency-free reader is intentionally simpler than Swagger UI |
 | 72 | OpenTelemetry export is opt-in; W3C context and correlation IDs cross API → forecasting; Jaeger is a localhost-only Compose profile (V2 5b) | Traces diagnose one request across Nest, PostgreSQL and FastAPI without making observability a runtime dependency | Jaeger uses ephemeral in-memory storage; URL values and SQL text are stripped, reducing trace detail to protect data |
 | 73 | Same-origin unsafe browser requests plus explicit API/Nginx headers and CSP (V2 5c) | SameSite is defence in depth; Origin/Fetch Metadata blocks cross-site writes, while nonce CSP protects the inline docs reader and static-location tests prevent Nginx header inheritance regressions | Non-browser clients without browser origin headers remain supported; React inline style attributes still require `style-src 'unsafe-inline'` |
+| 74 | Backups are `pg_dump` custom-format files with a SHA-256 manifest; restores only ever create a new database and must pass a read-only integrity check (V2 5e) | A restore can never overwrite the data it is meant to rescue; a damaged or edited dump is refused before anything happens; "restored" means "balances equal the ledger, outbox and migrations consistent", not just "no error" | Logical dumps are not point-in-time recovery (no WAL archiving); a backup is as fresh as the last `npm run db:backup`; switching the app to the restored database is manual |

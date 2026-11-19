@@ -1,7 +1,8 @@
 # RetailPulse V2 — Phase 0 audit and implementation plan
 
 Status: decisions D1, D2, D4 confirmed; built one step at a time (§0). **Phases 1 and 2 and
-Phase 3, steps 4a–4d and 5a–5d are built** (see §9); next is 5e, backup and restore.
+Phase 3, Phase 4 and Phase 5 (5a–5e) are built** (see §9); next is step 6, final verification and
+release notes.
 Written 2026-11-17 against commit `887047f` (Day 7; CI green: node, e2e, docker, forecasting).
 All data in RetailPulse is synthetic.
 
@@ -1488,7 +1489,7 @@ the CSV link points at the export, and in print media the navigation and buttons
 check on the demo data at 1280 / 768 / 390 / 320 px (0 px overflow) plus a print-to-PDF of one report
 looked at page by page; store manager sees only own-store scopes.
 
-### Step 4c-2 — Reports page and print layout ✅ (2026-11-18, not committed yet)
+### Step 4c-2 — Reports page and print layout ✅ (2026-11-18)
 
 - **Intelligence → Reports** (`#/reports`): generate form (kind, scope — store managers see only
   their stores and no network choice — optional last day), list of reports (period, kind, scope,
@@ -1505,7 +1506,7 @@ looked at page by page; store manager sees only own-store scopes.
   listed, a network report refused with "Store managers can only use reports for their own stores."
   API unit 225 and integration 266 unchanged (no API change); Docker web rebuilt.
 
-### Step 4d — Grafana business dashboards ✅ (2026-11-18, not committed yet)
+### Step 4d — Grafana business dashboards ✅ (2026-11-18)
 
 - Migrations `0023_business_intelligence.sql` and `0024_supplier_score_zero_lead.sql` add
   owner-executed, security-barrier views in the
@@ -1527,7 +1528,7 @@ looked at page by page; store manager sees only own-store scopes.
   migrations all pass. The four new integration tests cover view facts, the zero-day supplier-score
   edge, the database boundary and the provisioned dashboard JSON.
 
-### Step 5a — generated OpenAPI ✅ (2026-11-18, not committed yet)
+### Step 5a — generated OpenAPI ✅ (2026-11-18)
 
 - `core/openapi/openapi.routes.ts` registers all **73** Nest operations (70 paths) with method,
   internal path, tag, summary, success status/media type and references to the same Zod body/query
@@ -1548,7 +1549,7 @@ looked at page by page; store manager sees only own-store scopes.
 - Verification: API unit **225 → 229**, integration **270**, forecasting **124**, browser e2e
   **4 → 5**; formatting, lint, typecheck and both production builds pass.
 
-### Step 5b — OpenTelemetry tracing ✅ (2026-11-18, not committed yet)
+### Step 5b — OpenTelemetry tracing ✅ (2026-11-18)
 
 - The API starts the optional Node SDK before Nest, with HTTP, Express and PostgreSQL
   instrumentation and OTLP/HTTP export. FastAPI has matching optional OTLP export and inbound W3C
@@ -1656,4 +1657,62 @@ investigated and fixed or reported as found — targets are not changed after me
   and PostgreSQL's own timestamps.
 - Tests: API unit 244, integration 270 (Overview tests re-run after the fix: 13 pass), Python 127,
   e2e 5 — unchanged. Docker API, web and forecasting images rebuilt.
+
+### Step 5e — backup, restore and integrity check: rules (written 2026-11-19, BEFORE building)
+
+**Backup** — `npm run db:backup` → `backups/retailpulse-<UTC time>.dump` (PostgreSQL custom format,
+compressed, all three schemas) plus `.manifest.json`: source database, server and `pg_dump`
+versions, SHA-256 and size of the dump, the last applied migration, and row counts of the key
+tables. It uses the host's `pg_dump` when its major version matches the server, otherwise the
+`postgres` Compose container's. `backups/` is git-ignored (dumps hold the data and its users).
+
+**Restore** — `npm run db:restore -- <dump> [--target=<new database>]` **only into a new database**:
+it refuses when the target exists or is the live database, checks the SHA-256 against the manifest
+before touching anything, makes sure the cluster-wide reporting role exists (a database dump does
+not contain roles; created `NOLOGIN` exactly as migration 0023 does), restores in one transaction,
+then runs the integrity check and compares row counts with the manifest. Switching the application
+to the restored database is a manual, documented step (change `DATABASE_URL` / `POSTGRES_DB`).
+
+**Integrity check** — `npm run db:verify [-- --db=<name>] [--json]`, read-only, exit code 1 on any
+failure:
+1. every balance equals the sum of its ledger rows (on hand and reserved) and its latest
+   `on_hand_after` / `reserved_after`; no ledger row without a balance;
+2. no negative stock, nothing reserved beyond on hand;
+3. outbox: `PROCESSED` ⇔ `processed_at`; consumer receipts only for existing events; events still
+   pending or failed after one hour are reported as warnings (not failures — the worker retries);
+4. migrations: every file applied, checksums equal to the files, nothing unknown applied.
+
+**Checks:** integration tests run the real CLI against a fresh test database (all pass) and after
+deliberately breaking each rule in a transaction-free copy (each named failure, exit code 1);
+restore refuses an existing target, the live database and a dump whose checksum does not match.
+**Restore drill** on the dev data with measured times for backup, restore and check, row counts equal
+to the manifest, and the Control Tower answering identically from the restored database.
+
+### Step 5e — backup, restore and integrity check ✅ (2026-11-19)
+
+- `npm run db:backup` / `db:restore` (`scripts/db/backup.sh`, `restore.sh`, shared `lib.sh`) and
+  `npm run db:verify` (`services/api/scripts/verify.mjs`, read-only `REPEATABLE READ READ ONLY`
+  transaction, exit 1 on failure). The client tools come from the `postgres` container (no
+  PostgreSQL client on this machine); a host `pg_dump` of the same major version is used when present.
+  `backups/` is git-ignored.
+- **Refusals checked by hand:** restoring onto the live database, onto an existing database, with a
+  name that is not a plain identifier (`x; drop database …`), and from a dump with one changed byte
+  (SHA-256 mismatch) — all refused with exit code 2 and nothing created.
+- **Restore drill on the dev data** (139 MB database): backup **1.3 s** → 5.4 MB dump, manifest with
+  passing check; restore into the new database `retailpulse_restore_drill` **3.8 s** (one
+  transaction), integrity check **0.2 s** — all 7 checks PASS, row counts equal to the manifest in
+  10 tables; 5.7 s end to end. An API pointed at the restored database answered `/overview` and
+  `/overview/locations` **byte-identical** to the live demo (KPIs, risks, sales series, 7 locations).
+  The Grafana reporting role kept exactly its rights on the restored copy (reporting views yes,
+  application tables no, no writes). The drill database was dropped afterwards.
+- Found while building: my first backup stopped before the manifest (`pg_dump --version` was given a
+  user flag) — fixed, the half backup deleted; `npm run` inside the scripts would have mixed its own
+  header lines into the JSON — the check is called directly.
+- Tests: integration 270 → **276** (`db-verify.int-spec.ts`: a fresh database passes; a balance
+  that disagrees with the ledger, a reservation beyond stock with its constraint temporarily removed,
+  a ledger row without a balance, a receipt for a missing event and an edited / unknown migration each
+  FAIL by name; an event pending for hours only WARNs; each break is undone and the check passes
+  again). API unit 244, Python 127, e2e 5 unchanged. `shellcheck` is not installed here: the shell
+  scripts were checked with `bash -n` and exercised end to end, not linted.
+- Not done (stated): point-in-time recovery (WAL archiving) and automatic scheduled backups.
 
