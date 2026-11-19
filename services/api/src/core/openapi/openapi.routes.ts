@@ -192,6 +192,16 @@ export const OPENAPI_ROUTES: readonly OpenApiRoute[] = [
     query: listRecommendationsQuerySchema,
   }),
   get('replenishment/recommendations/:id', 'Replenishment', 'Get one recommendation'),
+  post(
+    'replenishment/recommendations/:id/explanation/words',
+    'Replenishment',
+    'Explain verified recommendation facts',
+    {
+      responseStatus: 200,
+      description:
+        'Returns template text when AI is off or unavailable. Never approves, orders, transfers, or changes stock.',
+    },
+  ),
   post('replenishment/recommendations/:id/approve', 'Replenishment', 'Approve a recommendation', {
     body: approveBodySchema,
     responseStatus: 200,

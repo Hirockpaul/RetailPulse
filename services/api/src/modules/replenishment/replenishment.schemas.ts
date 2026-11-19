@@ -213,6 +213,14 @@ export interface RecommendationDetail extends RecommendationSummary {
   inputs: RecommendationInputs;
 }
 
+export interface RecommendationWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}
+
 /** One product at one store, with everything the calculation needs. */
 export interface PairRow {
   productId: string;

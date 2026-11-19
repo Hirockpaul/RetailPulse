@@ -62,7 +62,8 @@ export class AiClient {
           content:
             'Explain only the supplied verified facts in plain language. Do not add numbers. ' +
             'Tag every claim. Predictions are uncertain. Model factors are associations, never causes. ' +
-            'Anomaly flags are signals to investigate, never proof of wrongdoing or a known cause.',
+            'Anomaly flags are signals to investigate, never proof of wrongdoing or a known cause. ' +
+            'For recommendations, explain the existing suggestion but never approve, reject, or create an order.',
         },
         { role: 'user', content: JSON.stringify({ feature, facts }) },
       ],

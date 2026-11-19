@@ -119,6 +119,14 @@ export interface RecommendationDetail extends Recommendation {
   inputs: RecommendationInputs;
 }
 
+export interface RecommendationWords {
+  source: 'ai' | 'template';
+  claims: {
+    type: 'fact' | 'prediction' | 'estimate' | 'recommendation' | 'unknown';
+    text: string;
+  }[];
+}
+
 export interface GenerateResult {
   forecastRunId: string;
   forecastHistoryEnd: string | null;
@@ -148,6 +156,9 @@ export const listRecommendations = (p: {
 
 export const getRecommendation = (id: string) =>
   getJson<RecommendationDetail>(`/replenishment/recommendations/${id}`);
+
+export const fetchRecommendationWords = (id: string) =>
+  postJson<RecommendationWords>(`/replenishment/recommendations/${id}/explanation/words`, {});
 
 export const generateRecommendations = () =>
   postJson<GenerateResult>('/replenishment/generate', {});

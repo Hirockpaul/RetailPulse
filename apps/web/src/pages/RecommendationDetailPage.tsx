@@ -1,11 +1,13 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ApiError } from '../api/client';
 import {
   approveRecommendation,
+  fetchRecommendationWords,
   getRecommendation,
   rejectRecommendation,
   type ExcessInputs,
   type NeedInputs,
+  type RecommendationWords,
 } from '../api/replenishment';
 import { Badge } from '../components/Badge';
 import {
@@ -214,6 +216,7 @@ export function RecommendationDetailPage({ id }: { id: string }) {
               The calculation is deterministic arithmetic on the forecast and current stock — no
               hidden model decides the quantity.
             </p>
+            <Words id={id} />
           </section>
 
           {rec.data.inputs.kind === 'EXCESS' ? (
@@ -228,6 +231,78 @@ export function RecommendationDetailPage({ id }: { id: string }) {
         </>
       )}
     </section>
+  );
+}
+
+type WordsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; data: RecommendationWords };
+
+function Words({ id }: { id: string }) {
+  const requestNumber = useRef(0);
+  const [settled, setSettled] = useState<{ id: string; state: WordsState }>({
+    id,
+    state: { status: 'idle' },
+  });
+  const state = settled.id === id ? settled.state : { status: 'idle' as const };
+
+  const load = async () => {
+    const request = ++requestNumber.current;
+    setSettled({ id, state: { status: 'loading' } });
+    try {
+      const data = await fetchRecommendationWords(id);
+      if (request === requestNumber.current) {
+        setSettled({ id, state: { status: 'success', data } });
+      }
+    } catch (caught) {
+      if (request === requestNumber.current) {
+        setSettled({
+          id,
+          state: {
+            status: 'error',
+            message: caught instanceof ApiError ? caught.message : 'Unexpected error.',
+          },
+        });
+      }
+    }
+  };
+
+  return (
+    <div className="border-t pt-3">
+      <button
+        type="button"
+        onClick={() => void load()}
+        disabled={state.status === 'loading'}
+        className="rounded bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-800 disabled:cursor-wait disabled:opacity-60"
+      >
+        {state.status === 'loading' ? 'Explaining…' : 'Explain in words'}
+      </button>
+      <div className="mt-3" aria-live="polite">
+        {state.status === 'error' && <ErrorMessage message={state.message} onRetry={load} />}
+        {state.status === 'success' && (
+          <div className="space-y-2 rounded border border-sky-100 bg-sky-50 p-3 text-sm">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
+              {state.data.source === 'ai' ? 'AI-generated explanation' : 'Template explanation'}
+            </p>
+            {state.data.claims.map((claim, index) => (
+              <p key={`${claim.type}-${index}`}>
+                <span className="mr-2 rounded bg-white px-1.5 py-0.5 text-xs font-medium text-slate-600">
+                  {claim.type}
+                </span>
+                {claim.text}
+              </p>
+            ))}
+            <p className="text-xs text-slate-500">
+              {state.data.source === 'ai'
+                ? 'AI reworded the stored calculation; it did not choose the quantity or approve anything.'
+                : 'This explanation was produced locally from the stored calculation.'}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

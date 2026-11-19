@@ -92,5 +92,11 @@ export function validateAiAnswer(content: string, facts: AiFact[], feature?: str
       throw new AiValidationError('unsafe_language');
     }
   }
+  if (feature === 'recommendation') {
+    const text = parsed.data.claims.map((claim) => claim.text).join(' ');
+    if (/\b(?:approv(?:e|ed|es|ing)|reject(?:ed|s|ing)?)\b/i.test(text)) {
+      throw new AiValidationError('unsafe_language');
+    }
+  }
   return parsed.data;
 }

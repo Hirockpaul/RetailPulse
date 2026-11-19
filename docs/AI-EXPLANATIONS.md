@@ -1,6 +1,6 @@
 # RetailPulse AI explanations
 
-Status: **Phase 7a foundation, 7b forecast explanations, and 7c anomaly explanations built.** RetailPulse remains a
+Status: **Phase 7a foundation and 7b–7d explanations built.** RetailPulse remains a
 synthetic-data portfolio project. AI explains backend-verified numbers; it never chooses quantities,
 changes stock, approves recommendations, or creates orders.
 
@@ -93,4 +93,22 @@ problem, wrongdoing, or a known cause.
 With `AI_PROVIDER=none`, the same button returns the deterministic template entirely offline. The
 endpoint does not review, confirm, dismiss, or resolve the finding and cannot change inventory.
 
-7d–7e are not built yet.
+## Recommendation explanations (7d)
+
+The recommendation detail page keeps its complete deterministic calculation and adds a lazy
+**Explain in words** button. It calls
+`POST /api/v1/replenishment/recommendations/{id}/explanation/words` after store access is checked.
+
+The backend selects values from the stored recommendation snapshot: product/store, stock position,
+forecast demand and error, lead/review periods, safety stock, reorder and order-up-to levels,
+unrounded and rounded quantities, pack/minimum rules, and the selected transfer source or supplier.
+Excess redistribution sends its keep level, movable excess, and destination instead. The raw stored
+explanation, manager notes, decision actor, user identity, correlation ID, and internal record IDs
+are not sent.
+
+The output describes the existing suggestion and labels forecast values as predictions and safety
+stock as an estimate. It cannot approve or reject the suggestion, create a transfer or purchase
+order, or change stock. With `AI_PROVIDER=none` or any provider/validation failure, the same button
+returns the local template.
+
+7e is not built yet.

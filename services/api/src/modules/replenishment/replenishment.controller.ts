@@ -54,6 +54,14 @@ export class ReplenishmentController {
     return this.replenishment.get(id, ctx.user);
   }
 
+  /** Reword the verified calculation snapshot; never approves or creates a document. */
+  @Roles(...READ_ROLES)
+  @Post('recommendations/:id/explanation/words')
+  @HttpCode(200)
+  explainInWords(@Param(idParam) { id }: { id: string }, @Ctx() ctx: RequestContext) {
+    return this.replenishment.explainInWords(id, ctx);
+  }
+
   @Roles(...APPROVER_ROLES)
   @Post('recommendations/:id/approve')
   @HttpCode(200)

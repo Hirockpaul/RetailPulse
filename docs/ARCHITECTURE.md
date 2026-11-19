@@ -9,8 +9,8 @@ with the "Markdown Preview Mermaid Support" extension).
 V2 is complete: see the [V2 release notes](V2-RELEASE-NOTES.md) and the
 [acceptance traceability](V2-TRACEABILITY.md).
 
-Phase 7a adds an internal, off-by-default AI explanation foundation; 7b adds on-demand forecast
-wording and 7c adds on-demand anomaly wording without changing verified domain facts. See
+Phase 7a adds an internal, off-by-default AI explanation foundation; 7b–7d add on-demand wording
+for forecasts, anomalies and recommendations without changing verified domain facts. See
 [AI explanations](AI-EXPLANATIONS.md).
 
 ---
@@ -223,6 +223,7 @@ erDiagram
 | Phase 7a ✅ | `ai_requests` (metadata only: user, feature, provider/model, tokens, duration, outcome/error; never prompt, facts, or answer text) |
 | Phase 7b ✅ | — (permission-checked forecast facts → checked claims; no forecast or domain write) |
 | Phase 7c ✅ | — (permission-checked anomaly facts → checked claims; no review or domain write) |
+| Phase 7d ✅ | — (permission-checked stored recommendation inputs → checked claims; no approval or domain write) |
 
 ### Key table shapes
 
@@ -333,6 +334,7 @@ Stock reads (`/locations/:id/stock`, `/products/:id/stock`) also return `inbound
 | `GET /replenishment/recommendations`  | `status, action, risk, needsReview, locationId, productId, page, pageSize` | most urgent first; each with its expected stockout date and review flag; store managers: own stores |
 | `GET /replenishment/status`           | `productId`                                    | per store, evaluated now with the generation calculation: NO_ACTION_REQUIRED / NEEDS_STOCK / NO_SOURCE / EXCESS, position, reorder point, movable excess, expected stockout, review flag, pending recommendation. Writes nothing; store-scoped (V2 2d) |
 | `GET /replenishment/recommendations/:id` | —                                           | includes `explanation` and every `inputs` value |
+| `POST /replenishment/recommendations/:id/explanation/words` | —                         | store-scoped, on-demand wording of the stored calculation snapshot; template when AI is off or unavailable; never approves, creates a document, or changes stock |
 | `POST /replenishment/recommendations/:id/approve` · `/reject` | body `{ note?, quantity? }` (approve) · `{ note? }` (reject) | approve creates the approved transfer / purchase order (including store → store and excess → DC); a recommendation flagged for review needs `quantity` and `note` (`422 QUANTITY_REQUIRED`), an unflagged one refuses another quantity (`422 QUANTITY_NOT_ALLOWED`) |
 | `GET /purchase-orders`, `GET /purchase-orders/:id` | `status, locationId, productId, page, pageSize` | |
 | `POST /purchase-orders/:id/receive` · `/cancel` | —                                   | receive writes `RECEIPT` movements; cancel is for unreceived orders |
@@ -984,3 +986,4 @@ Inventory tests listed in AGENT.md §9 are mandatory before Day 3 is done.
 | 76 | One server-only OpenAI-compatible client for optional explanations; `AI_PROVIDER=none` by default (Phase 7a) | Later features share one timeout/retry/rate-limit/validation path; the backend selects facts and every output number is checked before display | Groq is the only implemented provider in 7a; strict JSON shape does not guarantee semantic truth, so local checks and template fallback remain mandatory |
 | 77 | Forecast wording is a POST action over the existing explanation read model; the button is lazy (Phase 7b) | Store scope is checked first; only display-ready forecast/range/factor facts leave the server; opening the panel never spends a provider request | Available only when checked SHAP factors exist; simple/fallback forecasts keep their existing rule-based explanation |
 | 78 | Anomaly wording is a lazy POST action over one store-scoped finding (Phase 7c) | The backend supplies the observed/expected values, classification and kind-specific checks; review notes and raw detector text stay local; wording cannot review a case or change stock | The checklist is intentionally generic and a person must still investigate and record the decision |
+| 79 | Recommendation wording is a lazy POST action over the immutable calculation snapshot (Phase 7d) | Stock, forecast, safety stock, rounding and route facts are already stored and permission-checked; the model only rewords them and cannot call approval/order code | It explains the snapshot, which may be stale; managers still use Recalculate and make the decision |

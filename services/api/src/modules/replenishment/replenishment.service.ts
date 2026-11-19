@@ -4,6 +4,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { AiService } from '../../core/ai/ai.service';
 import { accessibleLocationIds, assertLocationAccess } from '../../core/auth/access';
 import type { AuthUser } from '../../core/auth/auth.types';
 import { DatabaseService } from '../../core/database/database.service';
@@ -48,7 +49,9 @@ import type {
   PairRow,
   RecommendationDetail,
   RecommendationSummary,
+  RecommendationWords,
 } from './replenishment.schemas';
+import { recommendationWords } from './replenishment.words';
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
@@ -487,6 +490,7 @@ export class ReplenishmentService {
     private readonly suppliers: SuppliersService,
     private readonly classifications: ClassificationsService,
     private readonly db: DatabaseService,
+    private readonly ai: AiService,
   ) {}
 
   async generate(): Promise<GenerateResult> {
@@ -618,6 +622,21 @@ export class ReplenishmentService {
     if (!rec) throw notFound();
     assertLocationAccess(user, rec.locationId);
     return rec;
+  }
+
+  /** Reword the stored calculation snapshot without sending decision notes or raw free text. */
+  async explainInWords(id: string, ctx: RequestContext): Promise<RecommendationWords> {
+    const rec = await this.repo.find(id);
+    if (!rec) throw notFound();
+    assertLocationAccess(ctx.user, rec.locationId);
+    const prepared = recommendationWords(rec);
+    const result = await this.ai.explain({
+      userId: ctx.user.id,
+      feature: 'recommendation',
+      facts: prepared.facts,
+      template: prepared.template,
+    });
+    return { source: result.source, claims: result.answer.claims };
   }
 
   /**
