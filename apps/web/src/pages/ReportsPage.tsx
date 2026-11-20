@@ -166,7 +166,7 @@ function GenerateForm() {
     <form
       onSubmit={submit}
       aria-labelledby="generate-heading"
-      className="space-y-3 rounded-lg border bg-white p-4"
+      className="space-y-3 rounded-xl border bg-card shadow-sm p-4"
     >
       <h3 id="generate-heading" className="font-semibold">
         Generate a report
@@ -271,7 +271,7 @@ function Facts({ rows }: { rows: [string, string][] }) {
 
 function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-2 rounded-lg border bg-white p-4 print:break-inside-avoid print:border-slate-400">
+    <section className="space-y-2 rounded-xl border bg-card shadow-sm p-4 print:break-inside-avoid print:border-slate-400">
       <h3 className="font-semibold">{title}</h3>
       {children}
     </section>
@@ -292,7 +292,7 @@ function ReportView({
   const n = (v: number | null) => (v === null ? 'needs a forecast' : formatInt(v));
   return (
     <>
-      <header className="space-y-2 rounded-lg border bg-white p-5 print:border-slate-400">
+      <header className="space-y-2 rounded-xl border bg-card shadow-sm p-5 print:border-slate-400">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm text-slate-500">
@@ -500,7 +500,7 @@ function Words({ id }: { id: string }) {
   };
 
   return (
-    <section className="space-y-3 rounded-lg border bg-white p-4 print:break-inside-avoid print:border-slate-400">
+    <section className="space-y-3 rounded-xl border bg-card shadow-sm p-4 print:break-inside-avoid print:border-slate-400">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold">Report summary in words</h3>

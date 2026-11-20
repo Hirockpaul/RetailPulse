@@ -186,11 +186,11 @@ function Shell() {
   const signedIn = state.status === 'authenticated';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 print:bg-white">
-      <header className="border-b bg-white print:hidden">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+    <div className="min-h-screen bg-page text-slate-900 print:bg-white">
+      <header className="border-b bg-card print:hidden">
+        <div className="mx-auto flex w-full max-w-[96rem] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
           <div className="flex items-center gap-6">
-            <h1 className="text-lg font-semibold">RetailPulse</h1>
+            <h1 className="text-lg font-bold tracking-tight">RetailPulse</h1>
             {state.status === 'authenticated' && (
               <MainNav
                 entries={isStoreScoped(state.user) ? withoutNetworkOnly(NAV) : NAV}
@@ -207,7 +207,7 @@ function Shell() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main className="mx-auto w-full max-w-[96rem] px-4 py-8 sm:px-6 lg:px-8">
         {state.status === 'loading' && <Loading />}
         {state.status === 'anonymous' && <LoginPage />}
         {state.status === 'authenticated' && <Page route={route} />}

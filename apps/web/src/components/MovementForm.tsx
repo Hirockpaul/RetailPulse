@@ -146,7 +146,7 @@ export function MovementForm({ productId, onDone }: { productId: string; onDone:
       <h3 id="movement-heading" className="font-semibold">
         Record a stock movement
       </h3>
-      <form onSubmit={submit} className="space-y-3 rounded-lg border bg-white p-4">
+      <form onSubmit={submit} className="space-y-3 rounded-xl border bg-card shadow-sm p-4">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col text-xs text-slate-500">
             Action

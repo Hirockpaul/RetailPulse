@@ -73,7 +73,7 @@ function StoreForecast({ productId, locationId }: { productId: string; locationI
 
   const f = forecast.data;
   return (
-    <div className="space-y-3 rounded-lg border bg-white p-4">
+    <div className="space-y-3 rounded-xl border bg-card shadow-sm p-4">
       <ForecastChart history={f.history} points={f.points} />
       <RangeExplanation f={f} />
       <ForecastExplanation productId={productId} locationId={locationId} />

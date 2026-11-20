@@ -9,7 +9,7 @@ export function EventsCard() {
   const stats = useAsync(fetchEventStats);
 
   return (
-    <section aria-labelledby="events-heading" className="rounded-lg border bg-white p-5">
+    <section aria-labelledby="events-heading" className="rounded-xl border bg-card shadow-sm p-5">
       <div className="mb-4 flex items-center justify-between">
         <h2 id="events-heading" className="font-semibold">
           Event processing

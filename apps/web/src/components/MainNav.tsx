@@ -99,7 +99,7 @@ export function MainNav({ entries, route }: { entries: NavEntry[]; route: Route 
             {expanded && (
               <ul
                 id={id}
-                className={`absolute z-20 mt-1 w-52 max-w-[calc(100vw-2rem)] space-y-0.5 rounded-lg border bg-white p-1 shadow-lg ${
+                className={`absolute z-20 mt-1 w-52 max-w-[calc(100vw-2rem)] space-y-0.5 rounded-lg border bg-card p-1 shadow-lg ${
                   alignRight ? 'right-0' : 'left-0'
                 }`}
               >

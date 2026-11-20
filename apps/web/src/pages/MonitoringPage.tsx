@@ -192,7 +192,7 @@ export function MonitoringPage() {
         <>
           <section
             aria-labelledby="health-heading"
-            className="space-y-3 rounded-lg border bg-white p-5"
+            className="space-y-3 rounded-xl border bg-card shadow-sm p-5"
           >
             <div className="flex items-center gap-2">
               <h3 id="health-heading" className="font-semibold">
@@ -218,7 +218,7 @@ export function MonitoringPage() {
           {latest && (
             <section
               aria-labelledby="latest-heading"
-              className="space-y-4 rounded-lg border bg-white p-5"
+              className="space-y-4 rounded-xl border bg-card shadow-sm p-5"
             >
               <div className="space-y-1">
                 <h3 id="latest-heading" className="font-semibold">

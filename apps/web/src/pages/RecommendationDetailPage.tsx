@@ -67,7 +67,7 @@ export function RecommendationDetailPage({ id }: { id: string }) {
       )}
       {rec.status === 'success' && (
         <>
-          <header className="rounded-lg border bg-white p-5">
+          <header className="rounded-xl border bg-card shadow-sm p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm text-slate-500">
@@ -202,7 +202,7 @@ export function RecommendationDetailPage({ id }: { id: string }) {
 
           <section
             aria-labelledby="why-heading"
-            className="space-y-2 rounded-lg border bg-white p-5"
+            className="space-y-2 rounded-xl border bg-card shadow-sm p-5"
           >
             <h3 id="why-heading" className="font-semibold">
               Why this suggestion
@@ -424,7 +424,7 @@ function ExcessCards({ inputs }: { inputs: ExcessInputs }) {
 
 function InputsCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border bg-white p-4">
+    <section className="rounded-xl border bg-card shadow-sm p-4">
       <h4 className="mb-2 text-sm font-semibold">{title}</h4>
       <dl className="space-y-1 text-sm">{children}</dl>
     </section>

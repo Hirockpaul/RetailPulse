@@ -39,7 +39,7 @@ export function ProductDetailPage({ id }: { id: string }) {
       )}
       {product.status === 'success' && (
         <>
-          <header className="rounded-lg border bg-white p-5">
+          <header className="rounded-xl border bg-card shadow-sm p-5">
             <p className="text-sm text-slate-500">
               {product.data.sku} · {product.data.categoryName}
             </p>

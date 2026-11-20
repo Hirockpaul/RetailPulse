@@ -158,7 +158,7 @@ function Tile(props: {
       </p>
     </>
   );
-  const cls = `block rounded-lg border-2 bg-white p-4 ${TILE_TONES[props.tone]}`;
+  const cls = `block rounded-xl border-2 bg-card shadow-sm p-4 ${TILE_TONES[props.tone]}`;
   return props.to ? (
     <a href={props.to} className={`${cls} hover:bg-slate-50 focus:outline-2 focus:outline-sky-500`}>
       {body}
@@ -186,7 +186,7 @@ function PositionTable(props: {
         )}
       </h3>
       {props.items.length === 0 ? (
-        <div className="rounded-lg border bg-white">
+        <div className="rounded-xl border bg-card shadow-sm">
           <Empty>{props.empty}</Empty>
         </div>
       ) : (
@@ -236,7 +236,10 @@ function Freshness({ o }: { o: Overview }) {
   const f = o.freshness;
   const when = (iso: string | null) => (iso ? formatDateTime(iso) : '—');
   return (
-    <section aria-labelledby="freshness-heading" className="rounded-lg border bg-white p-5">
+    <section
+      aria-labelledby="freshness-heading"
+      className="rounded-xl border bg-card shadow-sm p-5"
+    >
       <h3 id="freshness-heading" className="mb-3 font-semibold">
         How fresh is this?
       </h3>

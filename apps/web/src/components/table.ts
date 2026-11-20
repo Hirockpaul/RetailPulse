@@ -1,7 +1,7 @@
 /** Shared table classes so every data table looks and behaves the same. */
 export const table = {
   // relative: keeps absolutely positioned children (sr-only labels) inside the scroll box.
-  wrap: 'relative overflow-x-auto rounded-lg border bg-white',
+  wrap: 'relative overflow-x-auto rounded-xl border bg-card shadow-sm',
   table: 'min-w-full text-sm',
   thead:
     'border-b bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500',

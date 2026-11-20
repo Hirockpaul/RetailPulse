@@ -21,7 +21,7 @@ export function ForecastAccuracyCard({ overview }: { overview: ForecastOverview 
   return (
     <section
       aria-labelledby="accuracy-heading"
-      className="space-y-3 rounded-lg border bg-white p-4"
+      className="space-y-3 rounded-xl border bg-card shadow-sm p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 id="accuracy-heading" className="font-semibold">

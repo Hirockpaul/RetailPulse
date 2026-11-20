@@ -100,7 +100,7 @@ export function TransferForm({ onCreated }: { onCreated: (id: string) => void })
       <h3 id="transfer-form-heading" className="font-semibold">
         Request a transfer
       </h3>
-      <form onSubmit={submit} className="space-y-3 rounded-lg border bg-white p-4">
+      <form onSubmit={submit} className="space-y-3 rounded-xl border bg-card shadow-sm p-4">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex min-w-0 max-w-full flex-col text-xs text-slate-500">
             From

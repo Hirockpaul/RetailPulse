@@ -61,7 +61,7 @@ export function AnomalyDetailPage({ id }: { id: string }) {
       )}
       {finding.status === 'success' && (
         <>
-          <header className="space-y-3 rounded-lg border bg-white p-5">
+          <header className="space-y-3 rounded-xl border bg-card shadow-sm p-5">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold">{KIND_LABEL[finding.data.kind]}</h2>
               <SeverityBadge severity={finding.data.severity} />
@@ -99,7 +99,7 @@ export function AnomalyDetailPage({ id }: { id: string }) {
           {finding.data.nextSteps.length > 0 && (
             <section
               aria-labelledby="review-heading"
-              className="space-y-2 rounded-lg border bg-white p-5"
+              className="space-y-2 rounded-xl border bg-card shadow-sm p-5"
             >
               <h3 id="review-heading" className="font-semibold">
                 Review
@@ -206,7 +206,7 @@ function Words({ id }: { id: string }) {
   return (
     <section
       aria-labelledby="plain-language-heading"
-      className="space-y-3 rounded-lg border bg-white p-5"
+      className="space-y-3 rounded-xl border bg-card shadow-sm p-5"
     >
       <div>
         <h3 id="plain-language-heading" className="font-semibold">

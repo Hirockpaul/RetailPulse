@@ -42,7 +42,7 @@ export function LoginPage() {
 
   return (
     <section aria-labelledby="login-heading" className="mx-auto max-w-md space-y-4">
-      <form onSubmit={submit} className="space-y-4 rounded-lg border bg-white p-6">
+      <form onSubmit={submit} className="space-y-4 rounded-xl border bg-card shadow-sm p-6">
         <h2 id="login-heading" className="text-xl font-semibold">
           Sign in
         </h2>
@@ -83,7 +83,7 @@ export function LoginPage() {
         </button>
       </form>
 
-      <div className="rounded-lg border bg-white p-4 text-sm">
+      <div className="rounded-xl border bg-card shadow-sm p-4 text-sm">
         <h3 className="mb-1 font-medium">Synthetic demo accounts</h3>
         <p className="mb-2 text-xs text-slate-500">
           Fictional users created by <code>npm run db:seed</code>. The shared password is{' '}

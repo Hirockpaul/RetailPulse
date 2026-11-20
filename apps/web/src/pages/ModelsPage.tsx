@@ -184,7 +184,7 @@ export function ModelsPage() {
           {decision && (
             <form
               aria-labelledby="model-decision-heading"
-              className="rounded-lg border bg-white p-4"
+              className="rounded-xl border bg-card shadow-sm p-4"
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();

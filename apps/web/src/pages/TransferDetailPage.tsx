@@ -84,7 +84,7 @@ export function TransferDetailPage({ id }: { id: string }) {
       )}
       {transfer.status === 'success' && (
         <>
-          <header className="rounded-lg border bg-white p-5">
+          <header className="rounded-xl border bg-card shadow-sm p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-xl font-semibold">
                 {transfer.data.sourceCode} → {transfer.data.destinationCode}

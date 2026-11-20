@@ -22,7 +22,7 @@ export function ChartCard(props: {
   numeric?: number[];
 }) {
   return (
-    <section className="min-w-0 space-y-3 rounded-lg border bg-white p-4">
+    <section className="min-w-0 space-y-3 rounded-xl border bg-card shadow-sm p-4">
       <div>
         <h4 className="font-medium">{props.title}</h4>
         {props.subtitle && <p className="text-xs text-slate-500">{props.subtitle}</p>}

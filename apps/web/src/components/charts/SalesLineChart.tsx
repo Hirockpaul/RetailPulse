@@ -1,9 +1,10 @@
-import { type KeyboardEvent, type PointerEvent, useState } from 'react';
+import { type KeyboardEvent, type PointerEvent, useCallback, useState } from 'react';
 import type { DayUnits } from '../../api/overview';
 import { formatDay, formatInt } from '../../lib/format';
 import { CHART } from './theme';
 
-const W = 480;
+/** Drawing width before the first measurement (and in tests, where nothing has a size). */
+const DEFAULT_W = 480;
 const H = 220;
 const PAD = { left: 44, right: 58, top: 12, bottom: 26 };
 
@@ -31,6 +32,17 @@ export function SalesLineChart({
 }) {
   const days = [...history, ...forecast];
   const [active, setActive] = useState<number | null>(null);
+  // Drawn at its real width, so text stays 11 px instead of growing with a wide card.
+  const [W, setW] = useState(DEFAULT_W);
+  const measure = useCallback((el: HTMLElement | null) => {
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => {
+      const w = Math.round(e.contentRect.width);
+      if (w > 0) setW(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   if (days.length < 2) return null;
 
   const { top, step } = niceTop(Math.max(...days.map((d) => d.units)));
@@ -81,7 +93,7 @@ export function SalesLineChart({
   const lastF = forecast[forecast.length - 1];
 
   return (
-    <figure className="space-y-1">
+    <figure ref={measure} className="space-y-1">
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full rounded outline-offset-2 focus:outline-2 focus:outline-sky-500"

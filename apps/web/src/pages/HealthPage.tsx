@@ -12,7 +12,7 @@ export function HealthPage() {
 
   return (
     <div className="space-y-6">
-      <section aria-labelledby="health-heading" className="rounded-lg border bg-white p-5">
+      <section aria-labelledby="health-heading" className="rounded-xl border bg-card shadow-sm p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 id="health-heading" className="font-semibold">
             System health

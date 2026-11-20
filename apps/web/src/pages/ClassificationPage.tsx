@@ -287,7 +287,7 @@ function Matrix({
         )}
       </div>
       <div className="space-y-2 text-sm">
-        <div className="rounded-lg border bg-white p-4">
+        <div className="rounded-xl border bg-card shadow-sm p-4">
           {policy ? (
             <>
               <p className="font-semibold">Suggested policy for {selected}</p>

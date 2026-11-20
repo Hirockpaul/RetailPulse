@@ -1,1 +1,28 @@
 @import 'tailwindcss';
+
+@theme {
+  --color-page: #fcfaf3;
+  --color-card: #f9f5ec;
+  /* Inter is bundled with the app (CSP allows fonts from 'self' only). */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-page);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Inter: single-storey a and open digits read better in dense tables. */
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  /* Tailwind v4 draws borders in the text colour by default; cards and tables want a quiet line. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-slate-200);
+  }
+  h1,
+  h2 {
+    letter-spacing: -0.015em;
+  }
+}

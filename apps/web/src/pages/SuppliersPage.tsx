@@ -119,7 +119,7 @@ export function SupplierDetailPage({ id }: { id: string }) {
       {detail.status === 'error' && <ErrorMessage message={detail.error} onRetry={detail.reload} />}
       {detail.status === 'success' && (
         <>
-          <header className="space-y-2 rounded-lg border bg-white p-5">
+          <header className="space-y-2 rounded-xl border bg-card shadow-sm p-5">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold">{detail.data.name}</h2>
               <ScoreBadge s={detail.data} />

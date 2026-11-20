@@ -31,7 +31,7 @@ export function KpiRow({ c }: { c: ControlTower }) {
       className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
     >
       {tiles.map(([label, value, note]) => (
-        <div key={label} className="rounded-lg border bg-white p-3">
+        <div key={label} className="rounded-xl border bg-card shadow-sm p-3">
           <p className="text-xs text-slate-500">{label}</p>
           <p className="mt-1 text-xl font-semibold">{value}</p>
           <p className="mt-0.5 text-xs text-slate-500">{note}</p>
@@ -106,18 +106,24 @@ export function RiskPanel({ o }: { o: Overview }) {
     },
   ];
   return (
-    <section aria-labelledby="risk-heading" className="space-y-2 rounded-lg border bg-white p-4">
+    <section
+      aria-labelledby="risk-heading"
+      className="space-y-2 rounded-xl border bg-card shadow-sm p-4"
+    >
       <h3 id="risk-heading" className="font-semibold">
         Risks
       </h3>
       <ul className="divide-y text-sm">
         {items.map((i) => (
           <li key={i.label} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2">
-            <span className="w-12 shrink-0 text-right text-lg font-semibold">{i.value}</span>
-            <span className="min-w-0 flex-1">
+            <span className="w-12 shrink-0 text-right text-lg font-semibold tabular-nums">
+              {i.value}
+            </span>
+            <span className="min-w-0">
               <span className="font-medium">{i.label}</span>{' '}
               <span className="text-slate-500">— {i.meaning}</span>
             </span>
+            {/* Next to the text, not at the far edge: on a wide screen the two stay together. */}
             <a className={`${table.link} text-xs`} href={i.to}>
               {i.link} →
             </a>
